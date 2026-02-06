@@ -82,7 +82,7 @@ jobs:
         working-directory: game-code
         env:
           GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
           ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
           FIX_TYPE: ${{ steps.analyze.outputs.fix_type }}
           GITHUB_REPOSITORY: RaufGlasgow/SortingHistory
