@@ -19,6 +19,8 @@ jobs:
       severity: ${{ steps.fix.outputs.severity }}
       validation_failed: ${{ steps.fix.outputs.validation_failed }}
       validation_errors: ${{ steps.fix.outputs.validation_errors }}
+      build_failed: ${{ steps.fix.outputs.build_failed }}
+      build_error: ${{ steps.fix.outputs.build_error }}
 
     steps:
       - name: Checkout bug automation scripts
@@ -89,6 +91,23 @@ jobs:
         run: |
           # Run the fix application script (scripts are in the public repo root)
           node ../Scripts/apply-fix.js
+
+      - name: Post Build Failure to Issue
+        if: steps.fix.outputs.build_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/comments \
+            -f body="## Build Validation Failed (QG-001)
+
+          The automated fix did not compile. No changes were committed.
+
+          \`\`\`
+          ${{ steps.fix.outputs.build_error }}
+          \`\`\`
+
+          The fix will be retried once with error context (QG-002).
+          If retry also fails, manual intervention is required."
 
       - name: Commit Changes
         if: steps.fix.outputs.applied == 'true'
