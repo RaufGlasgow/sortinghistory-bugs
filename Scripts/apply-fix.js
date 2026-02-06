@@ -35,6 +35,7 @@ const GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY;
 // OpenRouter configuration
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const CODE_MODEL = 'anthropic/claude-opus-4-5-20251101';
+const FACT_CHECK_MODEL = 'google/gemini-2.0-flash-001';
 
 // Paths
 const DATA_EVENTS_PATH = 'Data/Events';
@@ -42,6 +43,12 @@ const SETTINGS_VIEW_PATH = 'Views/SettingsView.swift';
 
 // Required fields for content event validation (AC2)
 const REQUIRED_EVENT_FIELDS = ['title', 'year', 'description'];
+
+// Context gathering limits (QG-005 / BA-007.8)
+const PRIMARY_FILE_LIMIT = 20000;    // Primary fix target
+const SECONDARY_FILE_LIMIT = 12000;  // Related files (keyword match, explicit paths)
+const REFERENCE_FILE_LIMIT = 8000;   // Always-included reference files
+const TOTAL_CONTEXT_LIMIT = 80000;   // Hard cap across all files
 
 /**
  * Fetch issue details including comments
@@ -280,22 +287,45 @@ async function applyContentFix(suggestedFix, issue) {
       const event = data.events.find((e) => e.title === suggestedFix.eventTitle);
       if (event) {
         console.log(`Structured fix: Found matching event "${event.title}"`);
+        const changes = {};
+        const eventTitleForCheck = event.title;
         // Date corrections
-        if (suggestedFix.year !== undefined) event.year = suggestedFix.year;
-        if (suggestedFix.month !== undefined) event.month = suggestedFix.month;
-        if (suggestedFix.day !== undefined) event.day = suggestedFix.day;
+        if (suggestedFix.year !== undefined) {
+          changes.year = { from: event.year, to: suggestedFix.year };
+          event.year = suggestedFix.year;
+        }
+        if (suggestedFix.month !== undefined) {
+          changes.month = { from: event.month, to: suggestedFix.month };
+          event.month = suggestedFix.month;
+        }
+        if (suggestedFix.day !== undefined) {
+          changes.day = { from: event.day, to: suggestedFix.day };
+          event.day = suggestedFix.day;
+        }
         // Text replacements
-        if (suggestedFix.description !== undefined) event.description = suggestedFix.description;
-        if (suggestedFix.title !== undefined) event.title = suggestedFix.title;
-        if (suggestedFix.difficulty !== undefined) event.difficulty = suggestedFix.difficulty;
+        if (suggestedFix.description !== undefined) {
+          changes.description = { from: event.description, to: suggestedFix.description };
+          event.description = suggestedFix.description;
+        }
+        if (suggestedFix.title !== undefined) {
+          changes.title = { from: event.title, to: suggestedFix.title };
+          event.title = suggestedFix.title;
+        }
+        if (suggestedFix.difficulty !== undefined) {
+          changes.difficulty = { from: event.difficulty, to: suggestedFix.difficulty };
+          event.difficulty = suggestedFix.difficulty;
+        }
         // Category reassignment (top-level category field)
-        if (suggestedFix.category !== undefined) data.category = suggestedFix.category;
+        if (suggestedFix.category !== undefined) {
+          changes.category = { from: data.category, to: suggestedFix.category };
+          data.category = suggestedFix.category;
+        }
 
         fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
         console.log(`Updated event "${suggestedFix.eventTitle}" in ${filePath}`);
         setOutput('applied', 'true');
         setOutput('summary', `Fixed "${suggestedFix.eventTitle}" in ${path.basename(filePath)}`);
-        return { success: true, filePath };
+        return { success: true, filePath, eventTitle: eventTitleForCheck, changes };
       } else {
         console.log(`Structured fix FAILED: No exact title match found for "${suggestedFix.eventTitle}"`);
         console.log(`Structured fix: Available event titles: ${data.events.map(e => e.title).slice(0, 10).join(', ')}${data.events.length > 10 ? '...' : ''}`);
@@ -362,12 +392,16 @@ async function applyContentFixSmart(issue) {
           console.log(`Smart detection: Event year in file = ${event.year}, expected wrong year = ${parseInt(wrongYear)}`);
 
           if (event.year === parseInt(wrongYear)) {
+            const eventTitleForCheck = event.title;
+            const changes = {
+              year: { from: parseInt(wrongYear), to: parseInt(correctYear) },
+            };
             event.year = parseInt(correctYear);
             fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
             console.log(`Fixed "${event.title}" year from ${wrongYear} to ${correctYear} in ${file}`);
             setOutput('applied', 'true');
             setOutput('summary', `Fixed "${event.title}" year: ${wrongYear} -> ${correctYear}`);
-            return { success: true, filePath };
+            return { success: true, filePath, eventTitle: eventTitleForCheck, changes };
           } else {
             console.log(`Smart detection: Year mismatch - event has ${event.year}, expected ${parseInt(wrongYear)}`);
           }
@@ -525,20 +559,31 @@ async function applyCodeFix(suggestedFix, issue) {
  */
 async function gatherRelevantContext(issue, suggestedFix) {
   const context = {};
+  let totalContextSize = 0;
+  let filesSkipped = 0;
   const body = issue.body || '';
   const title = issue.title || '';
   const combined = `${title} ${body}`.toLowerCase();
 
   // If suggested fix specifies a file, always include it with more context
   if (suggestedFix && suggestedFix.file && fs.existsSync(suggestedFix.file)) {
-    context[suggestedFix.file] = fs.readFileSync(suggestedFix.file, 'utf8').substring(0, 8000);
+    const content = fs.readFileSync(suggestedFix.file, 'utf8').substring(0, PRIMARY_FILE_LIMIT);
+    context[suggestedFix.file] = content;
+    totalContextSize += content.length;
   }
 
   // If suggested fix specifies multiple files, include them
   if (suggestedFix && suggestedFix.files && Array.isArray(suggestedFix.files)) {
     for (const filePath of suggestedFix.files) {
+      if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+        console.log(`Context budget exhausted (${totalContextSize} chars), skipping remaining files`);
+        filesSkipped++;
+        continue;
+      }
       if (fs.existsSync(filePath) && !context[filePath]) {
-        context[filePath] = fs.readFileSync(filePath, 'utf8').substring(0, 5000);
+        const content = fs.readFileSync(filePath, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+        context[filePath] = content;
+        totalContextSize += content.length;
       }
     }
   }
@@ -556,9 +601,16 @@ async function gatherRelevantContext(issue, suggestedFix) {
   ];
 
   for (const pattern of filePatterns) {
+    if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+      console.log(`Context budget exhausted (${totalContextSize} chars), skipping remaining files`);
+      filesSkipped++;
+      break;
+    }
     if (pattern.keywords.some((kw) => combined.includes(kw))) {
       if (fs.existsSync(pattern.file) && !context[pattern.file]) {
-        context[pattern.file] = fs.readFileSync(pattern.file, 'utf8').substring(0, 5000);
+        const content = fs.readFileSync(pattern.file, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+        context[pattern.file] = content;
+        totalContextSize += content.length;
       }
     }
   }
@@ -567,17 +619,31 @@ async function gatherRelevantContext(issue, suggestedFix) {
   const filePathRegex = /(?:^|\s)([\w/]+\.swift)\b/g;
   let fileMatch;
   while ((fileMatch = filePathRegex.exec(body)) !== null) {
+    if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+      console.log(`Context budget exhausted (${totalContextSize} chars), skipping remaining files`);
+      filesSkipped++;
+      break;
+    }
     const filePath = fileMatch[1];
     if (fs.existsSync(filePath) && !context[filePath]) {
-      context[filePath] = fs.readFileSync(filePath, 'utf8').substring(0, 5000);
+      const content = fs.readFileSync(filePath, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+      context[filePath] = content;
+      totalContextSize += content.length;
     }
   }
 
   // Always include GameModels.swift for reference
-  if (!context['Models/GameModels.swift'] && fs.existsSync('Models/GameModels.swift')) {
-    context['Models/GameModels.swift'] = fs.readFileSync('Models/GameModels.swift', 'utf8').substring(0, 3000);
+  if (totalContextSize < TOTAL_CONTEXT_LIMIT) {
+    if (!context['Models/GameModels.swift'] && fs.existsSync('Models/GameModels.swift')) {
+      const content = fs.readFileSync('Models/GameModels.swift', 'utf8').substring(0, REFERENCE_FILE_LIMIT);
+      context['Models/GameModels.swift'] = content;
+      totalContextSize += content.length;
+    }
+  } else {
+    filesSkipped++;
   }
 
+  console.log(`Total context: ${totalContextSize} chars across ${Object.keys(context).length} files${filesSkipped > 0 ? ` (${filesSkipped} skipped due to budget)` : ''}`);
   return context;
 }
 
@@ -733,6 +799,79 @@ function setOutput(name, value) {
 }
 
 /**
+ * Fact-check a content fix using a second LLM call (QG-004)
+ * Advisory only -- never blocks a fix.
+ * Returns { verified, confidence, source, concern }
+ */
+async function factCheckContentFix(issue, eventTitle, changes) {
+  console.log('\n--- Content Fact-Check ---');
+
+  if (!OPENROUTER_API_KEY) {
+    console.log('Fact-check skipped: No API key available');
+    return { verified: false, confidence: 'unknown', concern: 'No API key' };
+  }
+
+  let checkPrompt = `You are a history fact-checker. A user reported a problem with this game content:\n\n`;
+  checkPrompt += `**User's bug report:** ${issue.title}\n${issue.body || ''}\n\n`;
+  checkPrompt += `**Event:** "${eventTitle}"\n`;
+  checkPrompt += `**Changes being applied:**\n`;
+
+  for (const [field, { from, to }] of Object.entries(changes)) {
+    checkPrompt += `- ${field}: ${from} → ${to}\n`;
+  }
+
+  checkPrompt += `\nIs the NEW value factually correct for this historical event? Only check what's being changed.
+
+Respond in JSON only:
+{
+  "verified": true/false,
+  "confidence": "high"/"medium"/"low",
+  "source": "Brief reasoning or citation",
+  "concern": "If not verified, explain why"
+}
+
+JSON ONLY.`;
+
+  try {
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sortinghistory.com',
+        'X-Title': 'Sorting History Fact Check',
+      },
+      body: JSON.stringify({
+        model: FACT_CHECK_MODEL,
+        messages: [{ role: 'user', content: checkPrompt }],
+        max_tokens: 500,
+      }),
+    });
+
+    if (!response.ok) {
+      console.log(`Fact-check API call failed: ${response.status}`);
+      return { verified: false, confidence: 'unknown', concern: 'API call failed' };
+    }
+
+    const result = await response.json();
+    const text = result.choices?.[0]?.message?.content || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (jsonMatch) {
+      const check = JSON.parse(jsonMatch[0]);
+      console.log(`Fact-check: verified=${check.verified}, confidence=${check.confidence}`);
+      if (check.source) console.log(`Fact-check source: ${check.source}`);
+      if (check.concern) console.log(`Fact-check concern: ${check.concern}`);
+      return check;
+    }
+  } catch (e) {
+    console.error('Fact-check error:', e.message);
+  }
+
+  return { verified: false, confidence: 'unknown', concern: 'Could not parse response' };
+}
+
+/**
  * Main function
  */
 async function main() {
@@ -779,6 +918,18 @@ async function main() {
       const result = await applyContentFix(suggestedFix, issue);
       success = result.success;
       contentFilePath = result.filePath;
+
+      // Fact-check content changes (QG-004 - advisory only, never blocks)
+      if (success && result.changes && Object.keys(result.changes).length > 0) {
+        const factCheck = await factCheckContentFix(issue, result.eventTitle, result.changes);
+        setOutput('fact_check_verified', factCheck.verified.toString());
+        setOutput('fact_check_confidence', factCheck.confidence || 'unknown');
+
+        if (!factCheck.verified || factCheck.confidence === 'low') {
+          setOutput('needs_fact_check', 'true');
+          setOutput('fact_check_concern', factCheck.concern || 'Unverified');
+        }
+      }
     } else {
       // All non-content bugs (code, ux, other) route to Claude Opus 4.5
       // for intelligent fix generation
