@@ -27,8 +27,8 @@ jobs:
       - name: Checkout game code
         uses: actions/checkout@v4
         with:
-          repository: RaufGlasgow/SortingHistory
-          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.Private_repo_Pat }}
           ref: main
           path: game-code
           fetch-depth: 0
@@ -37,7 +37,7 @@ jobs:
         id: analyze
         run: |
           # Get issue labels via API
-          LABELS=$(gh api repos/RaufGlasgow/SortingHistory/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
+          LABELS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
           echo "Issue labels: $LABELS"
 
           # Determine fix type from labels
@@ -62,7 +62,7 @@ jobs:
             echo "severity=P4" >> $GITHUB_OUTPUT
           fi
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
 
       - name: Create Branch
         id: branch
@@ -81,11 +81,11 @@ jobs:
         id: fix
         working-directory: game-code
         env:
-          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.Private_repo_Pat }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
           ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
           FIX_TYPE: ${{ steps.analyze.outputs.fix_type }}
-          GITHUB_REPOSITORY: RaufGlasgow/SortingHistory
+          GITHUB_REPOSITORY: RaufGlasgow/Sorting-History
         run: |
           # Run the fix application script (scripts are in the public repo root)
           node ../Scripts/apply-fix.js
@@ -128,14 +128,14 @@ jobs:
       - name: Create Pull Request
         id: create-pr
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
           # Fetch issue title via API
-          ISSUE_TITLE=$(gh api repos/RaufGlasgow/SortingHistory/issues/${{ env.ISSUE_NUM }} --jq '.title')
+          ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }} --jq '.title')
 
           # Create PR in the private repo
           gh pr create \
-            --repo RaufGlasgow/SortingHistory \
+            --repo RaufGlasgow/Sorting-History \
             --head "fix/bug-${{ env.ISSUE_NUM }}" \
             --base main \
             --title "fix: #${{ env.ISSUE_NUM }} - $ISSUE_TITLE" \
@@ -153,15 +153,15 @@ jobs:
           *All fixes require manual review and merge.*"
 
           # Get PR number and URL
-          PR_NUMBER=$(gh pr list --repo RaufGlasgow/SortingHistory --head "fix/bug-${{ env.ISSUE_NUM }}" --json number -q '.[0].number')
-          PR_URL=$(gh pr view --repo RaufGlasgow/SortingHistory "fix/bug-${{ env.ISSUE_NUM }}" --json url -q .url)
+          PR_NUMBER=$(gh pr list --repo RaufGlasgow/Sorting-History --head "fix/bug-${{ env.ISSUE_NUM }}" --json number -q '.[0].number')
+          PR_URL=$(gh pr view --repo RaufGlasgow/Sorting-History "fix/bug-${{ env.ISSUE_NUM }}" --json url -q .url)
           echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
 
       - name: Copy Issue Labels to PR
         if: always() && steps.create-pr.outputs.pr_number != ''
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
 
@@ -171,11 +171,11 @@ jobs:
           fi
 
           # Get severity and type labels from the issue
-          LABELS=$(gh api repos/RaufGlasgow/SortingHistory/issues/${{ env.ISSUE_NUM }}/labels --jq '[.[] | select(.name | startswith("severity/") or startswith("type/")) | .name] | join(",")')
+          LABELS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels --jq '[.[] | select(.name | startswith("severity/") or startswith("type/")) | .name] | join(",")')
 
           if [ -n "$LABELS" ]; then
             echo "Copying labels to PR #$PR_NUMBER: $LABELS"
-            gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "$LABELS"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "$LABELS"
           else
             echo "No severity/type labels found on issue"
           fi
@@ -183,32 +183,32 @@ jobs:
       - name: Add Code Fix Label
         if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_type == 'code'
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
           echo "Code fix PR #$PR_NUMBER - adding code-fix label"
-          gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "code-fix"
+          gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "code-fix"
 
       - name: Add UX Fix Label
         if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_type == 'ux'
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
           echo "UX fix PR #$PR_NUMBER - adding ux-fix label"
-          gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "ux-fix"
+          gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "ux-fix"
 
       - name: Handle Validation Failure
         if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.validation_failed == 'true'
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
           echo "Content fix failed JSON validation - adding needs-manual-review label"
-          gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "needs-manual-review"
+          gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "needs-manual-review"
 
           # Post validation failure comment
-          gh pr comment --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --body "## JSON Validation Failed
+          gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "## JSON Validation Failed
 
           The content fix was applied but the modified JSON file failed structural validation.
 
@@ -223,9 +223,9 @@ jobs:
       - name: Update Issue with PR Link
         if: always() && steps.create-pr.outputs.pr_url != ''
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
-          gh issue comment --repo RaufGlasgow/SortingHistory ${{ env.ISSUE_NUM }} \
+          gh issue comment --repo RaufGlasgow/Sorting-History ${{ env.ISSUE_NUM }} \
             --body "## Fix PR Created
 
           A pull request has been created to fix this issue.
@@ -237,10 +237,10 @@ jobs:
       - name: Update Issue Labels
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
           # Remove approved label
-          gh issue edit --repo RaufGlasgow/SortingHistory ${{ env.ISSUE_NUM }} --remove-label approved || true
+          gh issue edit --repo RaufGlasgow/Sorting-History ${{ env.ISSUE_NUM }} --remove-label approved || true
 
           # Add pr-created label
-          gh issue edit --repo RaufGlasgow/SortingHistory ${{ env.ISSUE_NUM }} --add-label pr-created
+          gh issue edit --repo RaufGlasgow/Sorting-History ${{ env.ISSUE_NUM }} --add-label pr-created

@@ -16,13 +16,13 @@ jobs:
         id: check
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          github-token: ${{ secrets.Private_repo_Pat }}
           script: |
             const issueNumber = ${{ github.event.client_payload.issue_number }};
 
             const issue = await github.rest.issues.get({
               owner: 'RaufGlasgow',
-              repo: 'SortingHistory',
+              repo: 'Sorting-History',
               issue_number: issueNumber
             });
 
@@ -37,7 +37,7 @@ jobs:
             // Check if analysis comment exists
             const comments = await github.rest.issues.listComments({
               owner: 'RaufGlasgow',
-              repo: 'SortingHistory',
+              repo: 'Sorting-History',
               issue_number: issueNumber
             });
             const hasAnalysis = comments.data.some(c =>
@@ -72,12 +72,12 @@ jobs:
         id: issue
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          github-token: ${{ secrets.Private_repo_Pat }}
           script: |
             const issueNumber = ${{ github.event.client_payload.issue_number }};
             const issue = await github.rest.issues.get({
               owner: 'RaufGlasgow',
-              repo: 'SortingHistory',
+              repo: 'Sorting-History',
               issue_number: issueNumber
             });
             core.setOutput('title', issue.data.title);
@@ -87,26 +87,26 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         id: analyze
         env:
-          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GITHUB_TOKEN: ${{ secrets.Private_repo_Pat }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
           ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
           ISSUE_BODY: ${{ steps.issue.outputs.body }}
-          GITHUB_REPOSITORY: RaufGlasgow/SortingHistory
+          GITHUB_REPOSITORY: RaufGlasgow/Sorting-History
         run: node Scripts/analyze-bug.js
 
       - name: Add Labels
         if: steps.check.outputs.skip != 'true' && steps.analyze.outputs.labels != ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          github-token: ${{ secrets.Private_repo_Pat }}
           script: |
             const labels = '${{ steps.analyze.outputs.labels }}'.split(',').filter(l => l.trim());
             const issueNum = ${{ github.event.client_payload.issue_number }};
             if (labels.length > 0) {
               await github.rest.issues.addLabels({
                 owner: 'RaufGlasgow',
-                repo: 'SortingHistory',
+                repo: 'Sorting-History',
                 issue_number: issueNum,
                 labels: labels
               });
@@ -116,7 +116,7 @@ jobs:
             try {
               await github.rest.issues.removeLabel({
                 owner: 'RaufGlasgow',
-                repo: 'SortingHistory',
+                repo: 'Sorting-History',
                 issue_number: issueNum,
                 name: 'needs-triage'
               });
@@ -126,7 +126,7 @@ jobs:
 
             await github.rest.issues.addLabels({
               owner: 'RaufGlasgow',
-              repo: 'SortingHistory',
+              repo: 'Sorting-History',
               issue_number: issueNum,
               labels: ['needs-review']
             });
@@ -135,13 +135,13 @@ jobs:
         if: steps.check.outputs.skip != 'true' && steps.analyze.outputs.analysis != ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          github-token: ${{ secrets.Private_repo_Pat }}
           script: |
             const analysis = process.env.ANALYSIS_COMMENT;
             const issueNum = ${{ github.event.client_payload.issue_number }};
             await github.rest.issues.createComment({
               owner: 'RaufGlasgow',
-              repo: 'SortingHistory',
+              repo: 'Sorting-History',
               issue_number: issueNum,
               body: analysis
             });
