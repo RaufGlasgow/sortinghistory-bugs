@@ -43,6 +43,12 @@ const SETTINGS_VIEW_PATH = 'Views/SettingsView.swift';
 // Required fields for content event validation (AC2)
 const REQUIRED_EVENT_FIELDS = ['title', 'year', 'description'];
 
+// Context gathering limits (QG-005 / BA-007.8)
+const PRIMARY_FILE_LIMIT = 20000;    // Primary fix target
+const SECONDARY_FILE_LIMIT = 12000;  // Related files (keyword match, explicit paths)
+const REFERENCE_FILE_LIMIT = 8000;   // Always-included reference files
+const TOTAL_CONTEXT_LIMIT = 80000;   // Hard cap across all files
+
 /**
  * Fetch issue details including comments
  */
@@ -525,20 +531,31 @@ async function applyCodeFix(suggestedFix, issue) {
  */
 async function gatherRelevantContext(issue, suggestedFix) {
   const context = {};
+  let totalContextSize = 0;
+  let filesSkipped = 0;
   const body = issue.body || '';
   const title = issue.title || '';
   const combined = `${title} ${body}`.toLowerCase();
 
   // If suggested fix specifies a file, always include it with more context
   if (suggestedFix && suggestedFix.file && fs.existsSync(suggestedFix.file)) {
-    context[suggestedFix.file] = fs.readFileSync(suggestedFix.file, 'utf8').substring(0, 8000);
+    const content = fs.readFileSync(suggestedFix.file, 'utf8').substring(0, PRIMARY_FILE_LIMIT);
+    context[suggestedFix.file] = content;
+    totalContextSize += content.length;
   }
 
   // If suggested fix specifies multiple files, include them
   if (suggestedFix && suggestedFix.files && Array.isArray(suggestedFix.files)) {
     for (const filePath of suggestedFix.files) {
+      if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+        console.log(`Context budget exhausted (${totalContextSize} chars), skipping remaining files`);
+        filesSkipped++;
+        continue;
+      }
       if (fs.existsSync(filePath) && !context[filePath]) {
-        context[filePath] = fs.readFileSync(filePath, 'utf8').substring(0, 5000);
+        const content = fs.readFileSync(filePath, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+        context[filePath] = content;
+        totalContextSize += content.length;
       }
     }
   }
@@ -556,9 +573,16 @@ async function gatherRelevantContext(issue, suggestedFix) {
   ];
 
   for (const pattern of filePatterns) {
+    if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+      console.log(`Context budget exhausted (${totalContextSize} chars), skipping remaining files`);
+      filesSkipped++;
+      break;
+    }
     if (pattern.keywords.some((kw) => combined.includes(kw))) {
       if (fs.existsSync(pattern.file) && !context[pattern.file]) {
-        context[pattern.file] = fs.readFileSync(pattern.file, 'utf8').substring(0, 5000);
+        const content = fs.readFileSync(pattern.file, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+        context[pattern.file] = content;
+        totalContextSize += content.length;
       }
     }
   }
@@ -567,17 +591,31 @@ async function gatherRelevantContext(issue, suggestedFix) {
   const filePathRegex = /(?:^|\s)([\w/]+\.swift)\b/g;
   let fileMatch;
   while ((fileMatch = filePathRegex.exec(body)) !== null) {
+    if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+      console.log(`Context budget exhausted (${totalContextSize} chars), skipping remaining files`);
+      filesSkipped++;
+      break;
+    }
     const filePath = fileMatch[1];
     if (fs.existsSync(filePath) && !context[filePath]) {
-      context[filePath] = fs.readFileSync(filePath, 'utf8').substring(0, 5000);
+      const content = fs.readFileSync(filePath, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+      context[filePath] = content;
+      totalContextSize += content.length;
     }
   }
 
   // Always include GameModels.swift for reference
-  if (!context['Models/GameModels.swift'] && fs.existsSync('Models/GameModels.swift')) {
-    context['Models/GameModels.swift'] = fs.readFileSync('Models/GameModels.swift', 'utf8').substring(0, 3000);
+  if (totalContextSize < TOTAL_CONTEXT_LIMIT) {
+    if (!context['Models/GameModels.swift'] && fs.existsSync('Models/GameModels.swift')) {
+      const content = fs.readFileSync('Models/GameModels.swift', 'utf8').substring(0, REFERENCE_FILE_LIMIT);
+      context['Models/GameModels.swift'] = content;
+      totalContextSize += content.length;
+    }
+  } else {
+    filesSkipped++;
   }
 
+  console.log(`Total context: ${totalContextSize} chars across ${Object.keys(context).length} files${filesSkipped > 0 ? ` (${filesSkipped} skipped due to budget)` : ''}`);
   return context;
 }
 
