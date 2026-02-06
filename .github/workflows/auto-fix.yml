@@ -117,10 +117,68 @@ jobs:
         working-directory: game-code
         run: git push origin ${{ steps.branch.outputs.name }}
 
-  # Second job: Create PR
-  # Runs even if create-fix partially fails (fix applied but other steps failed)
-  create-pr:
+  # Second job: Test the fix (build + test on macOS)
+  # Runs on macOS-14 (free on public repo) - tests flag PRs, don't block them
+  test-fix:
     needs: [create-fix]
+    if: needs.create-fix.outputs.fix_applied == 'true'
+    runs-on: macos-14
+    outputs:
+      build_outcome: ${{ steps.build.outcome }}
+      test_outcome: ${{ steps.test.outcome }}
+
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.Private_repo_Pat }}
+          ref: ${{ needs.create-fix.outputs.branch_name }}
+
+      - name: Build Project
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -scheme SortingHistory \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee build.log
+
+      - name: Run Tests
+        id: test
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme SortingHistory \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \
+            -derivedDataPath DerivedData \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
+
+      - name: Upload Build Log
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 14
+
+      - name: Upload Test Log
+        if: always() && steps.test.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          retention-days: 14
+
+  # Third job: Create PR and label with test results
+  # Runs after both create-fix and test-fix complete
+  # Uses always() so PR is created even if tests fail
+  create-pr:
+    needs: [create-fix, test-fix]
     if: always() && needs.create-fix.outputs.fix_applied == 'true'
     runs-on: ubuntu-latest
 
@@ -219,6 +277,76 @@ jobs:
 
           ---
           *This PR requires manual review before merging.*"
+
+      - name: Label Test Results
+        if: always() && steps.create-pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          BUILD_OUTCOME="${{ needs.test-fix.outputs.build_outcome }}"
+          TEST_OUTCOME="${{ needs.test-fix.outputs.test_outcome }}"
+
+          echo "Build outcome: $BUILD_OUTCOME"
+          echo "Test outcome: $TEST_OUTCOME"
+
+          if [ "$TEST_OUTCOME" == "success" ]; then
+            echo "Tests passed - adding tests-passing label"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "tests-passing"
+          elif [ "$BUILD_OUTCOME" != "success" ]; then
+            echo "Build failed - adding build-failed label"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "build-failed"
+          else
+            echo "Tests failed but build passed - adding tests-need-review label"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "tests-need-review"
+          fi
+
+      - name: Post Test Results Comment
+        if: always() && steps.create-pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          BUILD_OUTCOME="${{ needs.test-fix.outputs.build_outcome }}"
+          TEST_OUTCOME="${{ needs.test-fix.outputs.test_outcome }}"
+
+          if [ "$TEST_OUTCOME" == "success" ]; then
+            BODY=$(cat <<'COMMENT_EOF'
+          ## :white_check_mark: Tests: Passing
+
+          All tests passed.
+          COMMENT_EOF
+          )
+            gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
+
+          elif [ "$BUILD_OUTCOME" != "success" ]; then
+            BODY=$(cat <<'COMMENT_EOF'
+          ## :x: Tests: Skipped (Build Failed)
+
+          The project failed to compile, so tests could not run.
+          Check the build log in the [sortinghistory-bugs workflow artifacts](https://github.com/RaufGlasgow/sortinghistory-bugs/actions) for details.
+          COMMENT_EOF
+          )
+            gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
+
+          else
+            BODY=$(cat <<'COMMENT_EOF'
+          ## :warning: Tests: Need Review
+
+          Some tests failed. This may indicate a real regression or flaky tests.
+          Review the output below and decide whether to merge.
+
+          <details><summary>View test failure details</summary>
+
+          Check the test log artifact in the [sortinghistory-bugs workflow run](https://github.com/RaufGlasgow/sortinghistory-bugs/actions) for full output.
+
+          </details>
+
+          *Full logs available as workflow artifacts in the [sortinghistory-bugs](https://github.com/RaufGlasgow/sortinghistory-bugs) repo.*
+          COMMENT_EOF
+          )
+            gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
+          fi
 
       - name: Update Issue with PR Link
         if: always() && steps.create-pr.outputs.pr_url != ''
