@@ -18,9 +18,9 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 
 // Model IDs - using reliable models via OpenRouter
-const TRIAGE_MODEL = 'z-ai/glm-4.7'; // Fast, cheap for triage
-const CODE_MODEL = 'anthropic/claude-opus-4-5'; // Smart for code analysis
-const CONTENT_MODEL = 'z-ai/glm-4.7'; // Fast for content fixes
+const TRIAGE_MODEL = 'google/gemini-2.0-flash-001'; // Fast, cheap, reliable JSON output
+const CODE_MODEL = 'anthropic/claude-sonnet-4-5-20250929'; // Smart for code analysis
+const CONTENT_MODEL = 'google/gemini-2.0-flash-001'; // Fast for content fixes
 
 // Notification: repo owner to @mention in analysis comments
 const REPO_OWNER = process.env.BUG_NOTIFY_USER || 'raufglasgow';
@@ -392,8 +392,7 @@ async function analyzeBug() {
     console.log(JSON.stringify(triageResponse, null, 2));
     console.log('=== END RAW RESPONSE ===');
 
-    const message = triageResponse.choices?.[0]?.message;
-    const triageText = message?.content || message?.reasoning || '';
+    const triageText = triageResponse.choices?.[0]?.message?.content;
     if (!triageText) {
       console.error('=== EMPTY RESPONSE DEBUG ===');
       console.error('choices array:', JSON.stringify(triageResponse.choices, null, 2));
@@ -454,8 +453,7 @@ This has been identified as a code/technical bug. Using the ACTUAL CODE provided
 CRITICAL: The suggestedFix must reference real code from the codebase context.`;
 
       const codeResponse = await callOpenRouter(CODE_MODEL, codePrompt, 2000, codeSystemMessage);
-      const codeMsg = codeResponse.choices?.[0]?.message;
-      const codeText = codeMsg?.content || codeMsg?.reasoning || '';
+      const codeText = codeResponse.choices?.[0]?.message?.content;
 
       if (codeText) {
         const codeResult = parseJsonResponse(codeText);
@@ -498,8 +496,7 @@ CRITICAL: The suggestedFix must reference real events from the context.
 Format the fix so it can be applied to the JSON file automatically.`;
 
       const contentResponse = await callOpenRouter(CONTENT_MODEL, contentPrompt, 1500, contentSystemMessage);
-      const contentMsg = contentResponse.choices?.[0]?.message;
-      const contentText = contentMsg?.content || contentMsg?.reasoning || '';
+      const contentText = contentResponse.choices?.[0]?.message?.content;
 
       if (contentText) {
         const contentResult = parseJsonResponse(contentText);
