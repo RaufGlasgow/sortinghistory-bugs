@@ -527,6 +527,29 @@ async function applyCodeFix(suggestedFix, issue) {
 }
 
 /**
+ * Map currentScreen from issue device info to the corresponding view file.
+ * BA-007.2: Used by gatherRelevantContext() to include the correct view file
+ * when the bug report includes a "Current Screen" field.
+ *
+ * Returns the file path string, or null if no match is found.
+ */
+function getViewFileFromScreen(issueBody) {
+  const screenMatch = issueBody.match(/Current Screen[:\\s]+(\\w+)/i);
+  if (!screenMatch) return null;
+
+  const screenToView = {
+    'GameView': 'Views/Game/ModernSortingGameView.swift',
+    'GameSetupView': 'Views/GameSetup/GameSetupView.swift',
+    'SettingsView': 'Views/SettingsView.swift',
+    'CategorySelectionView': 'Views/Categories/CategorySelectionView.swift',
+    'MainMenuView': 'Views/MainMenu/MainMenuView.swift',
+    'BugReportView': 'Views/BugReport/BugReportView.swift',
+  };
+
+  return screenToView[screenMatch[1]] || null;
+}
+
+/**
  * Gather relevant code context for Claude
  */
 async function gatherRelevantContext(issue, suggestedFix) {
@@ -570,6 +593,12 @@ async function gatherRelevantContext(issue, suggestedFix) {
     { keywords: ['audio', 'sound', 'music'], file: 'Core/Services/DefaultAudioService.swift' },
     { keywords: ['setup', 'difficulty', 'mode'], file: 'Views/GameSetupView.swift' },
     { keywords: ['view', 'ui', 'display', 'layout'], file: 'Views/ContentView.swift' },
+    // BA-007.2: View-specific patterns for UX bugs
+    { keywords: ['layout', 'padding', 'spacing', 'frame'], file: 'Views/Game/ModernSortingGameView.swift' },
+    { keywords: ['modal', 'sheet', 'overlay', 'popup'], file: 'Views/Game/ModernSortingGameView.swift' },
+    { keywords: ['ipad', 'tablet', 'size class'], file: 'Views/Game/ModernSortingGameView.swift' },
+    { keywords: ['menu', 'home', 'main'], file: 'Views/MainMenu/MainMenuView.swift' },
+    { keywords: ['setup', 'configure', 'team'], file: 'Views/GameSetup/GameSetupView.swift' },
   ];
 
   for (const pattern of filePatterns) {
@@ -604,6 +633,17 @@ async function gatherRelevantContext(issue, suggestedFix) {
     }
   }
 
+  // BA-007.2: Include view file mapped from currentScreen in device info
+  const screenViewFile = getViewFileFromScreen(body);
+  if (screenViewFile && totalContextSize < TOTAL_CONTEXT_LIMIT) {
+    if (fs.existsSync(screenViewFile) && !context[screenViewFile]) {
+      const content = fs.readFileSync(screenViewFile, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+      context[screenViewFile] = content;
+      totalContextSize += content.length;
+      console.log(`Included view file from currentScreen: ${screenViewFile} (${content.length} chars)`);
+    }
+  }
+
   // Always include GameModels.swift for reference
   if (totalContextSize < TOTAL_CONTEXT_LIMIT) {
     if (!context['Models/GameModels.swift'] && fs.existsSync('Models/GameModels.swift')) {
@@ -628,6 +668,21 @@ function buildCodeFixPrompt(issue, suggestedFix, relevantFiles) {
     contextSection += `\n### ${file}\n\`\`\`swift\n${content}\n\`\`\`\n`;
   }
 
+  // BA-007.2: Add SwiftUI-specific context for UX bug fixes
+  let uxContextSection = '';
+  if (FIX_TYPE === 'ux') {
+    uxContextSection = `
+## SwiftUI Context
+This app uses DSKit for design system components. If the file imports DSKit,
+use DSKit patterns (DSTextStyle, DSPadding, etc.).
+
+Common SwiftUI fixes for UX bugs:
+- Layout: .frame(maxWidth: .infinity), .padding()
+- iPad adaptive: @Environment(\\.horizontalSizeClass)
+- Safe areas: .ignoresSafeArea() or .safeAreaInset()
+- Modals: .sheet(), .fullScreenCover()\n\n`;
+  }
+
   return `You are a senior iOS developer fixing a bug in the Sorting History app - a history timeline game built with SwiftUI.
 
 ## Bug Report
@@ -641,7 +696,7 @@ ${suggestedFix ? `## Previous Analysis Suggestion\n${JSON.stringify(suggestedFix
 
 ## Relevant Code Context
 ${contextSection}
-
+${uxContextSection}
 ## Your Task
 
 Generate the EXACT code changes needed to fix this bug. For each file that needs modification:
