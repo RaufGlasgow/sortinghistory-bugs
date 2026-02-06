@@ -1,0 +1,149 @@
+name: Bug Analysis
+
+on:
+  repository_dispatch:
+    types: [analyze]
+
+jobs:
+  analyze:
+    concurrency:
+      group: bug-analysis-${{ github.event.client_payload.issue_number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check if already analyzed
+        id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          script: |
+            const issueNumber = ${{ github.event.client_payload.issue_number }};
+
+            const issue = await github.rest.issues.get({
+              owner: 'RaufGlasgow',
+              repo: 'SortingHistory',
+              issue_number: issueNumber
+            });
+
+            // Check if needs-review label already present (indicates analysis completed)
+            const hasNeedsReview = issue.data.labels.some(l => l.name === 'needs-review');
+            if (hasNeedsReview) {
+              console.log('Issue already has needs-review label, skipping analysis');
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            // Check if analysis comment exists
+            const comments = await github.rest.issues.listComments({
+              owner: 'RaufGlasgow',
+              repo: 'SortingHistory',
+              issue_number: issueNumber
+            });
+            const hasAnalysis = comments.data.some(c =>
+              c.body && (
+                c.body.includes('## AI Bug Analysis') ||
+                c.body.includes('## Bug Analysis') ||
+                (c.body.includes('```json') && c.body.includes('suggested_fix'))
+              )
+            );
+
+            if (hasAnalysis) {
+              console.log('Issue already has analysis comment, skipping analysis');
+              core.setOutput('skip', 'true');
+              return;
+            }
+
+            console.log('Issue needs analysis, proceeding');
+            core.setOutput('skip', 'false');
+
+      - name: Checkout repository
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch Issue Details
+        if: steps.check.outputs.skip != 'true'
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          script: |
+            const issueNumber = ${{ github.event.client_payload.issue_number }};
+            const issue = await github.rest.issues.get({
+              owner: 'RaufGlasgow',
+              repo: 'SortingHistory',
+              issue_number: issueNumber
+            });
+            core.setOutput('title', issue.data.title);
+            core.setOutput('body', issue.data.body || '');
+
+      - name: Analyze Bug Report
+        if: steps.check.outputs.skip != 'true'
+        id: analyze
+        env:
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+          ISSUE_BODY: ${{ steps.issue.outputs.body }}
+          GITHUB_REPOSITORY: RaufGlasgow/SortingHistory
+        run: node Scripts/analyze-bug.js
+
+      - name: Add Labels
+        if: steps.check.outputs.skip != 'true' && steps.analyze.outputs.labels != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          script: |
+            const labels = '${{ steps.analyze.outputs.labels }}'.split(',').filter(l => l.trim());
+            const issueNum = ${{ github.event.client_payload.issue_number }};
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: 'RaufGlasgow',
+                repo: 'SortingHistory',
+                issue_number: issueNum,
+                labels: labels
+              });
+            }
+
+            // Remove needs-triage, add needs-review
+            try {
+              await github.rest.issues.removeLabel({
+                owner: 'RaufGlasgow',
+                repo: 'SortingHistory',
+                issue_number: issueNum,
+                name: 'needs-triage'
+              });
+            } catch (e) {
+              // Label might not exist, ignore
+            }
+
+            await github.rest.issues.addLabels({
+              owner: 'RaufGlasgow',
+              repo: 'SortingHistory',
+              issue_number: issueNum,
+              labels: ['needs-review']
+            });
+
+      - name: Post Analysis Comment
+        if: steps.check.outputs.skip != 'true' && steps.analyze.outputs.analysis != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
+          script: |
+            const analysis = process.env.ANALYSIS_COMMENT;
+            const issueNum = ${{ github.event.client_payload.issue_number }};
+            await github.rest.issues.createComment({
+              owner: 'RaufGlasgow',
+              repo: 'SortingHistory',
+              issue_number: issueNum,
+              body: analysis
+            });
+        env:
+          ANALYSIS_COMMENT: ${{ steps.analyze.outputs.analysis }}

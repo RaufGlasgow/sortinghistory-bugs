@@ -1,0 +1,246 @@
+name: Automated Bug Fix
+
+on:
+  repository_dispatch:
+    types: [approve]
+
+env:
+  ISSUE_NUM: ${{ github.event.client_payload.issue_number }}
+
+jobs:
+  # First job: Create branch and apply fix
+  create-fix:
+    runs-on: macos-14
+    outputs:
+      fix_type: ${{ steps.analyze.outputs.fix_type }}
+      branch_name: ${{ steps.branch.outputs.name }}
+      fix_applied: ${{ steps.fix.outputs.applied }}
+      fix_summary: ${{ steps.fix.outputs.summary }}
+      severity: ${{ steps.fix.outputs.severity }}
+      validation_failed: ${{ steps.fix.outputs.validation_failed }}
+      validation_errors: ${{ steps.fix.outputs.validation_errors }}
+
+    steps:
+      - name: Checkout bug automation scripts
+        uses: actions/checkout@v4
+
+      - name: Checkout game code
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/SortingHistory
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: main
+          path: game-code
+          fetch-depth: 0
+
+      - name: Analyze Bug Type
+        id: analyze
+        run: |
+          # Get issue labels via API
+          LABELS=$(gh api repos/RaufGlasgow/SortingHistory/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
+          echo "Issue labels: $LABELS"
+
+          # Determine fix type from labels
+          if echo "$LABELS" | grep -q "type/content"; then
+            echo "fix_type=content" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "type/code"; then
+            echo "fix_type=code" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "type/ux"; then
+            echo "fix_type=ux" >> $GITHUB_OUTPUT
+          else
+            echo "fix_type=other" >> $GITHUB_OUTPUT
+          fi
+
+          # Determine severity
+          if echo "$LABELS" | grep -q "severity/P1"; then
+            echo "severity=P1" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "severity/P2"; then
+            echo "severity=P2" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "severity/P3"; then
+            echo "severity=P3" >> $GITHUB_OUTPUT
+          else
+            echo "severity=P4" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+
+      - name: Create Branch
+        id: branch
+        working-directory: game-code
+        run: |
+          BRANCH="fix/bug-${{ env.ISSUE_NUM }}"
+          git checkout -b $BRANCH
+          echo "name=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Apply Fix
+        id: fix
+        working-directory: game-code
+        env:
+          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
+          FIX_TYPE: ${{ steps.analyze.outputs.fix_type }}
+          GITHUB_REPOSITORY: RaufGlasgow/SortingHistory
+        run: |
+          # Run the fix application script (scripts are in the public repo root)
+          node ../Scripts/apply-fix.js
+
+      - name: Commit Changes
+        if: steps.fix.outputs.applied == 'true'
+        working-directory: game-code
+        run: |
+          git config user.name "Bug Fix Bot"
+          git config user.email "bot@sortinghistory.com"
+          git add -A
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            exit 1
+          fi
+
+          git commit -m "fix(#${{ env.ISSUE_NUM }}): ${{ steps.fix.outputs.summary }}
+
+          Closes #${{ env.ISSUE_NUM }}
+
+          Applied by automated bug fix system
+          Fix type: ${{ steps.analyze.outputs.fix_type }}
+          Severity: ${{ steps.analyze.outputs.severity }}"
+
+      - name: Push Branch
+        if: steps.fix.outputs.applied == 'true'
+        working-directory: game-code
+        run: git push origin ${{ steps.branch.outputs.name }}
+
+  # Second job: Create PR
+  # Runs even if create-fix partially fails (fix applied but other steps failed)
+  create-pr:
+    needs: [create-fix]
+    if: always() && needs.create-fix.outputs.fix_applied == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create Pull Request
+        id: create-pr
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Fetch issue title via API
+          ISSUE_TITLE=$(gh api repos/RaufGlasgow/SortingHistory/issues/${{ env.ISSUE_NUM }} --jq '.title')
+
+          # Create PR in the private repo
+          gh pr create \
+            --repo RaufGlasgow/SortingHistory \
+            --head "fix/bug-${{ env.ISSUE_NUM }}" \
+            --base main \
+            --title "fix: #${{ env.ISSUE_NUM }} - $ISSUE_TITLE" \
+            --body "## Automated Bug Fix
+
+          Fixes #${{ env.ISSUE_NUM }}
+
+          **Type:** ${{ needs.create-fix.outputs.fix_type }}
+
+          ### Changes Made
+          ${{ needs.create-fix.outputs.fix_summary }}
+
+          ---
+          *This PR was automatically created by the bug fix system.*
+          *All fixes require manual review and merge.*"
+
+          # Get PR number and URL
+          PR_NUMBER=$(gh pr list --repo RaufGlasgow/SortingHistory --head "fix/bug-${{ env.ISSUE_NUM }}" --json number -q '.[0].number')
+          PR_URL=$(gh pr view --repo RaufGlasgow/SortingHistory "fix/bug-${{ env.ISSUE_NUM }}" --json url -q .url)
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Copy Issue Labels to PR
+        if: always() && steps.create-pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Could not find PR number, skipping label copy"
+            exit 0
+          fi
+
+          # Get severity and type labels from the issue
+          LABELS=$(gh api repos/RaufGlasgow/SortingHistory/issues/${{ env.ISSUE_NUM }}/labels --jq '[.[] | select(.name | startswith("severity/") or startswith("type/")) | .name] | join(",")')
+
+          if [ -n "$LABELS" ]; then
+            echo "Copying labels to PR #$PR_NUMBER: $LABELS"
+            gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "$LABELS"
+          else
+            echo "No severity/type labels found on issue"
+          fi
+
+      - name: Add Code Fix Label
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_type == 'code'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          echo "Code fix PR #$PR_NUMBER - adding code-fix label"
+          gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "code-fix"
+
+      - name: Add UX Fix Label
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_type == 'ux'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          echo "UX fix PR #$PR_NUMBER - adding ux-fix label"
+          gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "ux-fix"
+
+      - name: Handle Validation Failure
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.validation_failed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          echo "Content fix failed JSON validation - adding needs-manual-review label"
+          gh pr edit --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --add-label "needs-manual-review"
+
+          # Post validation failure comment
+          gh pr comment --repo RaufGlasgow/SortingHistory "$PR_NUMBER" --body "## JSON Validation Failed
+
+          The content fix was applied but the modified JSON file failed structural validation.
+
+          **Validation errors:**
+          ${{ needs.create-fix.outputs.validation_errors }}
+
+          This PR requires manual review to ensure the JSON content is correct before merging.
+
+          ---
+          *This PR requires manual review before merging.*"
+
+      - name: Update Issue with PR Link
+        if: always() && steps.create-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          gh issue comment --repo RaufGlasgow/SortingHistory ${{ env.ISSUE_NUM }} \
+            --body "## Fix PR Created
+
+          A pull request has been created to fix this issue.
+
+          **PR:** ${{ steps.create-pr.outputs.pr_url }}
+
+          Please review and merge when ready."
+
+      - name: Update Issue Labels
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Remove approved label
+          gh issue edit --repo RaufGlasgow/SortingHistory ${{ env.ISSUE_NUM }} --remove-label approved || true
+
+          # Add pr-created label
+          gh issue edit --repo RaufGlasgow/SortingHistory ${{ env.ISSUE_NUM }} --add-label pr-created
