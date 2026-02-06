@@ -784,6 +784,121 @@ function validateBuild() {
 }
 
 /**
+ * QG-002: Retry a failed fix by feeding the build error back to Claude.
+ *
+ * Reverts the broken attempt, re-gathers context (files now clean),
+ * builds a retry prompt that includes the compilation error, calls
+ * Claude again, applies the revised fix, and validates the build.
+ *
+ * Returns { success: true } if the retry fix compiles, otherwise
+ * { success: false, retryError: string? } after reverting everything.
+ *
+ * Called at most ONCE per fix attempt (no recursion, no loops).
+ */
+async function retryFixWithError(issue, originalFix, buildError) {
+  console.log('\n--- Retry Fix with Error Context (QG-002) ---');
+
+  if (!OPENROUTER_API_KEY) {
+    console.error('OPENROUTER_API_KEY not set - cannot retry');
+    return { success: false };
+  }
+
+  // Revert the failed attempt so context files are back to their original state
+  execSync('git checkout -- .');
+  console.log('Reverted failed fix attempt');
+
+  // Re-gather context (files now back to original state)
+  const relevantFiles = await gatherRelevantContext(issue, originalFix);
+
+  const retryPrompt = buildCodeFixPrompt(issue, originalFix, relevantFiles) + `
+
+## IMPORTANT: Previous Fix Attempt Failed Compilation
+
+\`\`\`
+${buildError}
+\`\`\`
+
+Please revise the fix to address both the original bug AND this compilation error.
+Do not repeat the same mistake. Double-check your code compiles before responding.`;
+
+  try {
+    console.log(`[DEBUG] Calling OpenRouter API for retry...`);
+    console.log(`[DEBUG] Model: ${CODE_MODEL}`);
+    console.log(`[DEBUG] Retry prompt length: ${retryPrompt.length} chars`);
+
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sortinghistory.com',
+        'X-Title': 'Sorting History Bug Fix (Retry)',
+      },
+      body: JSON.stringify({
+        model: CODE_MODEL,
+        messages: [{ role: 'user', content: retryPrompt }],
+        max_tokens: 4000,
+      }),
+    });
+
+    console.log(`[DEBUG] Retry response status: ${response.status} ${response.statusText}`);
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`[DEBUG] Retry OpenRouter error: ${errorBody}`);
+      return { success: false };
+    }
+
+    const result = await response.json();
+    const fixText = result.choices?.[0]?.message?.content;
+
+    if (!fixText) {
+      console.error('No response from Claude on retry');
+      return { success: false };
+    }
+
+    console.log(`[DEBUG] Retry fix text length: ${fixText.length} chars`);
+
+    const fixData = parseCodeFixResponse(fixText);
+    if (!fixData?.modifications?.length) {
+      console.error('Could not parse retry fix from Claude response');
+      return { success: false };
+    }
+
+    // Apply each modification from the retry
+    let appliedCount = 0;
+    for (const mod of fixData.modifications) {
+      if (await applyModification(mod)) appliedCount++;
+    }
+
+    if (appliedCount === 0) {
+      console.error('Retry: No modifications could be applied');
+      return { success: false };
+    }
+
+    console.log(`Retry: Applied ${appliedCount} modification(s), validating build...`);
+
+    // Validate retry fix compiles
+    const retryBuild = validateBuild();
+    if (!retryBuild.success) {
+      console.log('Retry build validation also FAILED - reverting everything');
+      execSync('git checkout -- .');
+      return { success: false, retryError: retryBuild.error };
+    }
+
+    console.log('Retry build validation: PASSED');
+    await updateVersionString();
+    setOutput('retry_used', 'true');
+    setOutput('summary', (fixData.summary || 'Code fix applied') + ' (retry succeeded)');
+    return { success: true };
+  } catch (e) {
+    console.error('Retry failed:', e.message);
+    execSync('git checkout -- .');
+    return { success: false };
+  }
+}
+
+/**
  * Main function
  */
 async function main() {
@@ -843,13 +958,24 @@ async function main() {
     if (success && FIX_TYPE !== 'content') {
       const buildResult = validateBuild();
       if (!buildResult.success) {
-        console.log('Build validation failed -- reverting all file changes');
-        execSync('git checkout -- .');
-        setOutput('applied', 'false');
-        setOutput('build_failed', 'true');
-        setOutput('build_error', buildResult.error.substring(0, 500));
-        setOutput('summary', 'Fix failed compilation validation');
-        success = false;
+        // QG-002: Retry with error context (max 1 retry)
+        console.log('Build validation failed - attempting retry with error context...');
+        const retryResult = await retryFixWithError(issue, suggestedFix, buildResult.error);
+
+        if (!retryResult.success) {
+          // Both original and retry failed - give up
+          console.log('Retry also failed -- reverting all file changes');
+          execSync('git checkout -- .');
+          setOutput('applied', 'false');
+          setOutput('build_failed', 'true');
+          setOutput('build_error', buildResult.error.substring(0, 500));
+          if (retryResult.retryError) {
+            setOutput('retry_error', retryResult.retryError.substring(0, 500));
+          }
+          setOutput('summary', 'Fix failed compilation validation (retry also failed)');
+          success = false;
+        }
+        // If retryResult.success === true, outputs were already set by retryFixWithError()
       }
     } else if (success && FIX_TYPE === 'content') {
       console.log('Content fix -- skipping build validation (QG-001)');
