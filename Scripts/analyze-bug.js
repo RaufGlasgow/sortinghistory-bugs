@@ -392,7 +392,8 @@ async function analyzeBug() {
     console.log(JSON.stringify(triageResponse, null, 2));
     console.log('=== END RAW RESPONSE ===');
 
-    const triageText = triageResponse.choices?.[0]?.message?.content;
+    const message = triageResponse.choices?.[0]?.message;
+    const triageText = message?.content || message?.reasoning || '';
     if (!triageText) {
       console.error('=== EMPTY RESPONSE DEBUG ===');
       console.error('choices array:', JSON.stringify(triageResponse.choices, null, 2));
@@ -453,7 +454,8 @@ This has been identified as a code/technical bug. Using the ACTUAL CODE provided
 CRITICAL: The suggestedFix must reference real code from the codebase context.`;
 
       const codeResponse = await callOpenRouter(CODE_MODEL, codePrompt, 2000, codeSystemMessage);
-      const codeText = codeResponse.choices?.[0]?.message?.content;
+      const codeMsg = codeResponse.choices?.[0]?.message;
+      const codeText = codeMsg?.content || codeMsg?.reasoning || '';
 
       if (codeText) {
         const codeResult = parseJsonResponse(codeText);
@@ -496,7 +498,8 @@ CRITICAL: The suggestedFix must reference real events from the context.
 Format the fix so it can be applied to the JSON file automatically.`;
 
       const contentResponse = await callOpenRouter(CONTENT_MODEL, contentPrompt, 1500, contentSystemMessage);
-      const contentText = contentResponse.choices?.[0]?.message?.content;
+      const contentMsg = contentResponse.choices?.[0]?.message;
+      const contentText = contentMsg?.content || contentMsg?.reasoning || '';
 
       if (contentText) {
         const contentResult = parseJsonResponse(contentText);
