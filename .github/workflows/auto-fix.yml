@@ -19,6 +19,9 @@ jobs:
       severity: ${{ steps.fix.outputs.severity }}
       validation_failed: ${{ steps.fix.outputs.validation_failed }}
       validation_errors: ${{ steps.fix.outputs.validation_errors }}
+      needs_fact_check: ${{ steps.fix.outputs.needs_fact_check }}
+      fact_check_confidence: ${{ steps.fix.outputs.fact_check_confidence }}
+      fact_check_concern: ${{ steps.fix.outputs.fact_check_concern }}
 
     steps:
       - name: Checkout bug automation scripts
@@ -219,6 +222,27 @@ jobs:
 
           ---
           *This PR requires manual review before merging.*"
+
+      - name: Flag Fact-Check Concern
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.needs_fact_check == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          echo "Content fact-check flagged concern - adding needs-fact-check label"
+          gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "needs-fact-check"
+
+          gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "## Fact-Check Warning
+
+          The content fix could not be confidently verified.
+
+          **Confidence:** ${{ needs.create-fix.outputs.fact_check_confidence }}
+          **Concern:** ${{ needs.create-fix.outputs.fact_check_concern }}
+
+          Please manually verify the historical accuracy before merging.
+
+          ---
+          *This is an advisory flag only. The fix has still been applied and the PR is ready for review.*"
 
       - name: Update Issue with PR Link
         if: always() && steps.create-pr.outputs.pr_url != ''

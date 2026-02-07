@@ -35,6 +35,7 @@ const GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY;
 // OpenRouter configuration
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const CODE_MODEL = 'anthropic/claude-opus-4-5-20251101';
+const FACT_CHECK_MODEL = 'google/gemini-2.0-flash-001';
 
 // Paths
 const DATA_EVENTS_PATH = 'Data/Events';
@@ -286,22 +287,45 @@ async function applyContentFix(suggestedFix, issue) {
       const event = data.events.find((e) => e.title === suggestedFix.eventTitle);
       if (event) {
         console.log(`Structured fix: Found matching event "${event.title}"`);
+        const changes = {};
+        const eventTitleForCheck = event.title;
         // Date corrections
-        if (suggestedFix.year !== undefined) event.year = suggestedFix.year;
-        if (suggestedFix.month !== undefined) event.month = suggestedFix.month;
-        if (suggestedFix.day !== undefined) event.day = suggestedFix.day;
+        if (suggestedFix.year !== undefined) {
+          changes.year = { from: event.year, to: suggestedFix.year };
+          event.year = suggestedFix.year;
+        }
+        if (suggestedFix.month !== undefined) {
+          changes.month = { from: event.month, to: suggestedFix.month };
+          event.month = suggestedFix.month;
+        }
+        if (suggestedFix.day !== undefined) {
+          changes.day = { from: event.day, to: suggestedFix.day };
+          event.day = suggestedFix.day;
+        }
         // Text replacements
-        if (suggestedFix.description !== undefined) event.description = suggestedFix.description;
-        if (suggestedFix.title !== undefined) event.title = suggestedFix.title;
-        if (suggestedFix.difficulty !== undefined) event.difficulty = suggestedFix.difficulty;
+        if (suggestedFix.description !== undefined) {
+          changes.description = { from: event.description, to: suggestedFix.description };
+          event.description = suggestedFix.description;
+        }
+        if (suggestedFix.title !== undefined) {
+          changes.title = { from: event.title, to: suggestedFix.title };
+          event.title = suggestedFix.title;
+        }
+        if (suggestedFix.difficulty !== undefined) {
+          changes.difficulty = { from: event.difficulty, to: suggestedFix.difficulty };
+          event.difficulty = suggestedFix.difficulty;
+        }
         // Category reassignment (top-level category field)
-        if (suggestedFix.category !== undefined) data.category = suggestedFix.category;
+        if (suggestedFix.category !== undefined) {
+          changes.category = { from: data.category, to: suggestedFix.category };
+          data.category = suggestedFix.category;
+        }
 
         fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
         console.log(`Updated event "${suggestedFix.eventTitle}" in ${filePath}`);
         setOutput('applied', 'true');
         setOutput('summary', `Fixed "${suggestedFix.eventTitle}" in ${path.basename(filePath)}`);
-        return { success: true, filePath };
+        return { success: true, filePath, eventTitle: eventTitleForCheck, changes };
       } else {
         console.log(`Structured fix FAILED: No exact title match found for "${suggestedFix.eventTitle}"`);
         console.log(`Structured fix: Available event titles: ${data.events.map(e => e.title).slice(0, 10).join(', ')}${data.events.length > 10 ? '...' : ''}`);
@@ -368,12 +392,16 @@ async function applyContentFixSmart(issue) {
           console.log(`Smart detection: Event year in file = ${event.year}, expected wrong year = ${parseInt(wrongYear)}`);
 
           if (event.year === parseInt(wrongYear)) {
+            const eventTitleForCheck = event.title;
+            const changes = {
+              year: { from: parseInt(wrongYear), to: parseInt(correctYear) },
+            };
             event.year = parseInt(correctYear);
             fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
             console.log(`Fixed "${event.title}" year from ${wrongYear} to ${correctYear} in ${file}`);
             setOutput('applied', 'true');
             setOutput('summary', `Fixed "${event.title}" year: ${wrongYear} -> ${correctYear}`);
-            return { success: true, filePath };
+            return { success: true, filePath, eventTitle: eventTitleForCheck, changes };
           } else {
             console.log(`Smart detection: Year mismatch - event has ${event.year}, expected ${parseInt(wrongYear)}`);
           }
@@ -771,6 +799,79 @@ function setOutput(name, value) {
 }
 
 /**
+ * Fact-check a content fix using a second LLM call (QG-004)
+ * Advisory only -- never blocks a fix.
+ * Returns { verified, confidence, source, concern }
+ */
+async function factCheckContentFix(issue, eventTitle, changes) {
+  console.log('\n--- Content Fact-Check ---');
+
+  if (!OPENROUTER_API_KEY) {
+    console.log('Fact-check skipped: No API key available');
+    return { verified: false, confidence: 'unknown', concern: 'No API key' };
+  }
+
+  let checkPrompt = `You are a history fact-checker. A user reported a problem with this game content:\n\n`;
+  checkPrompt += `**User's bug report:** ${issue.title}\n${issue.body || ''}\n\n`;
+  checkPrompt += `**Event:** "${eventTitle}"\n`;
+  checkPrompt += `**Changes being applied:**\n`;
+
+  for (const [field, { from, to }] of Object.entries(changes)) {
+    checkPrompt += `- ${field}: ${from} → ${to}\n`;
+  }
+
+  checkPrompt += `\nIs the NEW value factually correct for this historical event? Only check what's being changed.
+
+Respond in JSON only:
+{
+  "verified": true/false,
+  "confidence": "high"/"medium"/"low",
+  "source": "Brief reasoning or citation",
+  "concern": "If not verified, explain why"
+}
+
+JSON ONLY.`;
+
+  try {
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sortinghistory.com',
+        'X-Title': 'Sorting History Fact Check',
+      },
+      body: JSON.stringify({
+        model: FACT_CHECK_MODEL,
+        messages: [{ role: 'user', content: checkPrompt }],
+        max_tokens: 500,
+      }),
+    });
+
+    if (!response.ok) {
+      console.log(`Fact-check API call failed: ${response.status}`);
+      return { verified: false, confidence: 'unknown', concern: 'API call failed' };
+    }
+
+    const result = await response.json();
+    const text = result.choices?.[0]?.message?.content || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+    if (jsonMatch) {
+      const check = JSON.parse(jsonMatch[0]);
+      console.log(`Fact-check: verified=${check.verified}, confidence=${check.confidence}`);
+      if (check.source) console.log(`Fact-check source: ${check.source}`);
+      if (check.concern) console.log(`Fact-check concern: ${check.concern}`);
+      return check;
+    }
+  } catch (e) {
+    console.error('Fact-check error:', e.message);
+  }
+
+  return { verified: false, confidence: 'unknown', concern: 'Could not parse response' };
+}
+
+/**
  * Main function
  */
 async function main() {
@@ -817,6 +918,18 @@ async function main() {
       const result = await applyContentFix(suggestedFix, issue);
       success = result.success;
       contentFilePath = result.filePath;
+
+      // Fact-check content changes (QG-004 - advisory only, never blocks)
+      if (success && result.changes && Object.keys(result.changes).length > 0) {
+        const factCheck = await factCheckContentFix(issue, result.eventTitle, result.changes);
+        setOutput('fact_check_verified', factCheck.verified.toString());
+        setOutput('fact_check_confidence', factCheck.confidence || 'unknown');
+
+        if (!factCheck.verified || factCheck.confidence === 'low') {
+          setOutput('needs_fact_check', 'true');
+          setOutput('fact_check_concern', factCheck.concern || 'Unverified');
+        }
+      }
     } else {
       // All non-content bugs (code, ux, other) route to Claude Opus 4.5
       // for intelligent fix generation
