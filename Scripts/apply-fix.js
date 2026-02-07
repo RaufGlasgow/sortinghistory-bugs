@@ -24,6 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 // Environment
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
@@ -49,6 +50,9 @@ const PRIMARY_FILE_LIMIT = 20000;    // Primary fix target
 const SECONDARY_FILE_LIMIT = 12000;  // Related files (keyword match, explicit paths)
 const REFERENCE_FILE_LIMIT = 8000;   // Always-included reference files
 const TOTAL_CONTEXT_LIMIT = 80000;   // Hard cap across all files
+
+// QG-001: Build validation timeout (3 minutes)
+const BUILD_TIMEOUT_MS = 180000;
 
 /**
  * Fetch issue details including comments
@@ -927,6 +931,53 @@ JSON ONLY.`;
 }
 
 /**
+ * QG-001: Pre-commit build validation
+ *
+ * Runs xcodebuild to verify the fix compiles before committing.
+ * Only called for code/ux fixes (content fixes skip this).
+ * Returns { success: true } or { success: false, error: string }
+ */
+function validateBuild() {
+  console.log('\n--- Pre-Commit Build Validation (QG-001) ---');
+  console.log('Running xcodebuild build...');
+
+  try {
+    execSync(
+      'xcodebuild build ' +
+      '-scheme SortingHistory ' +
+      '-destination "platform=iOS Simulator,name=iPhone 16,OS=18.2" ' +
+      '-quiet ' +
+      'CODE_SIGNING_ALLOWED=NO',
+      {
+        timeout: BUILD_TIMEOUT_MS,
+        stdio: 'pipe',
+        cwd: process.cwd()
+      }
+    );
+    console.log('Build validation: PASSED');
+    return { success: true };
+  } catch (error) {
+    const stderr = error.stderr?.toString() || '';
+    const stdout = error.stdout?.toString() || '';
+    const errorOutput = stderr || stdout || error.message;
+
+    // Extract only lines containing 'error:' for a concise summary
+    const errorLines = errorOutput
+      .split('\n')
+      .filter(line => line.includes('error:'))
+      .slice(0, 20)
+      .join('\n');
+
+    // Cap at 2000 chars to prevent massive log dumps
+    const errorSummary = (errorLines || errorOutput).substring(0, 2000);
+
+    console.log('Build validation: FAILED');
+    console.log(`Build errors:\n${errorSummary}`);
+    return { success: false, error: errorSummary };
+  }
+}
+
+/**
  * Main function
  */
 async function main() {
@@ -993,6 +1044,22 @@ async function main() {
       success = await applyCodeFix(suggestedFix, issue);
     }
     console.log(`[DEBUG] Fix path completed. Success: ${success}`);
+
+    // QG-001: Pre-commit build validation for non-content fixes
+    if (success && FIX_TYPE !== 'content') {
+      const buildResult = validateBuild();
+      if (!buildResult.success) {
+        console.log('Build validation failed -- reverting all file changes');
+        execSync('git checkout -- .');
+        setOutput('applied', 'false');
+        setOutput('build_failed', 'true');
+        setOutput('build_error', buildResult.error.substring(0, 500));
+        setOutput('summary', 'Fix failed compilation validation');
+        success = false;
+      }
+    } else if (success && FIX_TYPE === 'content') {
+      console.log('Content fix -- skipping build validation (QG-001)');
+    }
 
     if (success) {
       // For content fixes, validate the modified JSON (AC2)
