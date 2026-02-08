@@ -324,6 +324,7 @@ jobs:
 
       - name: Label Test Results
         if: always() && steps.create-pr.outputs.pr_number != ''
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
@@ -336,13 +337,13 @@ jobs:
 
           if [ "$TEST_OUTCOME" == "success" ]; then
             echo "Tests passed - adding tests-passing label"
-            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "tests-passing"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "tests-passing" || echo "Warning: could not add tests-passing label"
           elif [ "$BUILD_OUTCOME" != "success" ]; then
             echo "Build failed - adding build-failed label"
-            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "build-failed"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "build-failed" || echo "Warning: could not add build-failed label"
           else
             echo "Tests failed but build passed - adding tests-need-review label"
-            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "tests-need-review"
+            gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "tests-need-review" || echo "Warning: could not add label"
           fi
 
       - name: Post Test Results Comment
