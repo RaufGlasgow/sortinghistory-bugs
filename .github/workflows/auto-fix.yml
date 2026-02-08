@@ -146,6 +146,8 @@ jobs:
     outputs:
       build_outcome: ${{ steps.build.outcome }}
       test_outcome: ${{ steps.test.outcome }}
+      visual_review: ${{ steps.visual-review.outputs.review_result }}
+      visual_summary: ${{ steps.visual-review.outputs.review_summary }}
 
     steps:
       - name: Checkout fix branch
@@ -155,8 +157,18 @@ jobs:
           token: ${{ secrets.Private_repo_Pat }}
           ref: ${{ needs.create-fix.outputs.branch_name }}
 
+      - name: Checkout automation scripts
+        uses: actions/checkout@v4
+        with:
+          path: automation
+
       - name: Select Xcode 16.2
         run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Build Project
         id: build
@@ -181,6 +193,83 @@ jobs:
             -derivedDataPath DerivedData \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
 
+      - name: Capture App Screenshot
+        id: screenshot
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          # Find the built .app
+          APP_PATH=$(find DerivedData -name "SortingHistory.app" -path "*/Debug-iphonesimulator/*" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Could not find built .app"
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+
+          # Get bundle ID from built app
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist")
+          echo "Bundle ID: $BUNDLE_ID"
+
+          # Find a booted iPhone simulator (tests should have booted one)
+          DEVICE_ID=$(xcrun simctl list devices booted -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in data['devices'].items():
+              for d in devices:
+                  if d.get('state') == 'Booted' and 'iPhone' in d.get('name', ''):
+                      print(d['udid'])
+                      sys.exit(0)
+          " 2>/dev/null)
+
+          if [ -z "$DEVICE_ID" ]; then
+            # No booted device — try to boot iPhone 16
+            DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in data['devices'].items():
+              if '18' in runtime:
+                  for d in devices:
+                      if 'iPhone 16' in d['name'] and d['isAvailable']:
+                          print(d['udid'])
+                          sys.exit(0)
+          " 2>/dev/null)
+            if [ -n "$DEVICE_ID" ]; then
+              xcrun simctl boot "$DEVICE_ID"
+              sleep 5
+            fi
+          fi
+
+          if [ -z "$DEVICE_ID" ]; then
+            echo "No simulator available for screenshot"
+            exit 1
+          fi
+          echo "Using device: $DEVICE_ID"
+
+          # Install and launch app
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
+
+          # Wait for app to fully load
+          sleep 8
+
+          # Take screenshot
+          xcrun simctl io "$DEVICE_ID" screenshot screenshot.png
+          echo "Screenshot captured"
+          echo "screenshot_taken=true" >> $GITHUB_OUTPUT
+
+      - name: AI Visual Review
+        id: visual-review
+        if: steps.screenshot.outputs.screenshot_taken == 'true'
+        continue-on-error: true
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.Private_repo_Pat }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
+          PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
+          FIX_SUMMARY: ${{ needs.create-fix.outputs.fix_summary }}
+          FIX_TYPE: ${{ needs.create-fix.outputs.fix_type }}
+        run: node automation/Scripts/visual-review.js screenshot.png
+
       - name: Upload Build Log
         if: always() && steps.build.outcome != 'skipped'
         uses: actions/upload-artifact@v4
@@ -195,6 +284,22 @@ jobs:
         with:
           name: test-log
           path: test.log
+          retention-days: 14
+
+      - name: Upload Screenshot
+        if: steps.screenshot.outputs.screenshot_taken == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-screenshot
+          path: screenshot.png
+          retention-days: 14
+
+      - name: Upload App Bundle
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-bundle
+          path: DerivedData/Build/Products/Debug-iphonesimulator/SortingHistory.app
           retention-days: 14
 
   # Third job: Create PR and label with test results
@@ -392,6 +497,49 @@ jobs:
           )
             gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
           fi
+
+      - name: Post Visual Review Comment
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_type == 'ux'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          VISUAL_REVIEW="${{ needs.test-fix.outputs.visual_review }}"
+          VISUAL_SUMMARY="${{ needs.test-fix.outputs.visual_summary }}"
+          RUN_URL="https://github.com/RaufGlasgow/sortinghistory-bugs/actions/runs/${{ github.run_id }}"
+
+          if [ "$VISUAL_REVIEW" == "approve" ]; then
+            ICON=":white_check_mark:"
+          elif [ "$VISUAL_REVIEW" == "visual_concerns" ]; then
+            ICON=":x:"
+          else
+            ICON=":eyes:"
+          fi
+
+          BODY=$(cat <<COMMENT_EOF
+          ## ${ICON} Visual Review: ${VISUAL_REVIEW:-not run}
+
+          ${VISUAL_SUMMARY:-AI visual review was not available for this run.}
+
+          ### Test Your Build
+          1. Download the **app-bundle** artifact from the [workflow run](${RUN_URL})
+          2. Unzip and install: \`xcrun simctl install booted SortingHistory.app\`
+          3. Launch: \`xcrun simctl launch booted <bundle-id>\`
+
+          Or checkout the branch locally:
+          \`\`\`
+          git fetch origin fix/bug-${{ env.ISSUE_NUM }}
+          git checkout fix/bug-${{ env.ISSUE_NUM }}
+          \`\`\`
+
+          **Screenshot artifact** is also attached to the workflow run for quick visual check.
+
+          ---
+          *UI fixes require manual visual verification before merging.*
+          COMMENT_EOF
+          )
+          gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
 
       - name: Update Issue with PR Link
         if: always() && steps.create-pr.outputs.pr_url != ''
