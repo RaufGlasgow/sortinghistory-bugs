@@ -31,7 +31,11 @@ const GITHUB_TOKEN = process.env.PRIVATE_REPO_TOKEN || process.env.GITHUB_TOKEN;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ISSUE_NUMBER = process.env.ISSUE_NUMBER;
 const FIX_TYPE = process.env.FIX_TYPE;
-const GITHUB_REPOSITORY = process.env.GITHUB_REPOSITORY;
+const GITHUB_REPOSITORY = process.env.PRIVATE_REPO_NAME || process.env.GITHUB_REPOSITORY;
+
+// Debug: log resolved env vars so future failures are diagnosable
+console.log(`Repository: ${GITHUB_REPOSITORY}`);
+console.log(`Token present: ${!!GITHUB_TOKEN}`);
 
 // OpenRouter configuration
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -65,7 +69,7 @@ async function fetchIssueWithComments() {
     `https://api.github.com/repos/${owner}/${repo}/issues/${ISSUE_NUMBER}`,
     {
       headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Authorization: `token ${GITHUB_TOKEN}`,
         Accept: 'application/vnd.github.v3+json',
         'User-Agent': 'SortingHistory-AutoFix',
       },
@@ -83,7 +87,7 @@ async function fetchIssueWithComments() {
     `https://api.github.com/repos/${owner}/${repo}/issues/${ISSUE_NUMBER}/comments`,
     {
       headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Authorization: `token ${GITHUB_TOKEN}`,
         Accept: 'application/vnd.github.v3+json',
         'User-Agent': 'SortingHistory-AutoFix',
       },
@@ -191,7 +195,7 @@ async function getIssueSeverity() {
       `https://api.github.com/repos/${owner}/${repo}/issues/${ISSUE_NUMBER}/labels`,
       {
         headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
+          Authorization: `token ${GITHUB_TOKEN}`,
           Accept: 'application/vnd.github.v3+json',
           'User-Agent': 'SortingHistory-AutoFix',
         },

@@ -92,7 +92,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
           ISSUE_BODY: ${{ steps.issue.outputs.body }}
-          GITHUB_REPOSITORY: RaufGlasgow/Sorting-History
+          PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
         run: node Scripts/analyze-bug.js
 
       - name: Add Labels

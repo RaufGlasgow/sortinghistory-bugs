@@ -90,7 +90,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
           ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
           FIX_TYPE: ${{ steps.analyze.outputs.fix_type }}
-          GITHUB_REPOSITORY: RaufGlasgow/Sorting-History
+          PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
         run: |
           # Run the fix application script (scripts are in the public repo root)
           node ../Scripts/apply-fix.js
