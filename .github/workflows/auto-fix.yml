@@ -199,7 +199,7 @@ jobs:
         continue-on-error: true
         run: |
           # Find the built .app
-          APP_PATH=$(find DerivedData -name "SortingHistory.app" -path "*/Debug-iphonesimulator/*" -type d | head -1)
+          APP_PATH=$(find DerivedData/Build/Products/Debug-iphonesimulator -maxdepth 1 -name "*.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "Could not find built .app"
             exit 1
@@ -252,9 +252,21 @@ jobs:
           # Wait for app to fully load
           sleep 8
 
-          # Take screenshot
-          xcrun simctl io "$DEVICE_ID" screenshot screenshot.png
-          echo "Screenshot captured"
+          # Light mode screenshot (default)
+          xcrun simctl io "$DEVICE_ID" screenshot screenshot-light.png
+          echo "Light mode screenshot captured"
+
+          # Switch to dark mode
+          xcrun simctl ui "$DEVICE_ID" appearance dark
+          sleep 3
+
+          # Dark mode screenshot
+          xcrun simctl io "$DEVICE_ID" screenshot screenshot-dark.png
+          echo "Dark mode screenshot captured"
+
+          # Reset to light mode (clean up)
+          xcrun simctl ui "$DEVICE_ID" appearance light
+
           echo "screenshot_taken=true" >> $GITHUB_OUTPUT
 
       - name: AI Visual Review
@@ -268,7 +280,7 @@ jobs:
           PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
           FIX_SUMMARY: ${{ needs.create-fix.outputs.fix_summary }}
           FIX_TYPE: ${{ needs.create-fix.outputs.fix_type }}
-        run: node automation/Scripts/visual-review.js screenshot.png
+        run: node automation/Scripts/visual-review.js screenshot-light.png screenshot-dark.png
 
       - name: Upload Build Log
         if: always() && steps.build.outcome != 'skipped'
@@ -286,12 +298,14 @@ jobs:
           path: test.log
           retention-days: 14
 
-      - name: Upload Screenshot
+      - name: Upload Screenshots
         if: steps.screenshot.outputs.screenshot_taken == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: app-screenshot
-          path: screenshot.png
+          name: app-screenshots
+          path: |
+            screenshot-light.png
+            screenshot-dark.png
           retention-days: 14
 
       - name: Upload App Bundle
@@ -299,7 +313,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-bundle
-          path: DerivedData/Build/Products/Debug-iphonesimulator/SortingHistory.app
+          path: "DerivedData/Build/Products/Debug-iphonesimulator/Sorting History.app"
           retention-days: 14
 
   # Third job: Create PR and label with test results
@@ -522,9 +536,11 @@ jobs:
 
           ${VISUAL_SUMMARY:-AI visual review was not available for this run.}
 
+          **Modes tested:** Light + Dark
+
           ### Test Your Build
           1. Download the **app-bundle** artifact from the [workflow run](${RUN_URL})
-          2. Unzip and install: \`xcrun simctl install booted SortingHistory.app\`
+          2. Unzip and install: \`xcrun simctl install booted "Sorting History.app"\`
           3. Launch: \`xcrun simctl launch booted <bundle-id>\`
 
           Or checkout the branch locally:
@@ -533,7 +549,7 @@ jobs:
           git checkout fix/bug-${{ env.ISSUE_NUM }}
           \`\`\`
 
-          **Screenshot artifact** is also attached to the workflow run for quick visual check.
+          **Screenshot artifacts** (light + dark) are attached to the [workflow run](${RUN_URL}) for quick visual check.
 
           ---
           *UI fixes require manual visual verification before merging.*
