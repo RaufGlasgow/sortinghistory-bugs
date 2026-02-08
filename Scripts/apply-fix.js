@@ -39,8 +39,8 @@ console.log(`Token present: ${!!GITHUB_TOKEN}`);
 
 // OpenRouter configuration
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const CODE_MODEL = 'anthropic/claude-opus-4-5-20251101';
-const FACT_CHECK_MODEL = 'google/gemini-2.0-flash-001';
+const CODE_MODEL = 'anthropic/claude-opus-4.6';
+const FACT_CHECK_MODEL = 'moonshotai/kimi-k2.5';
 
 // Paths
 const DATA_EVENTS_PATH = 'Data/Events';
