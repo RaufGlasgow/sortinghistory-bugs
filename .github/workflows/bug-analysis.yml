@@ -87,7 +87,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         id: analyze
         env:
-          GITHUB_TOKEN: ${{ secrets.Private_repo_Pat }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.Private_repo_Pat }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
           ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}

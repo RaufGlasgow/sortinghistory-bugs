@@ -27,7 +27,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 // Environment
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_TOKEN = process.env.PRIVATE_REPO_TOKEN || process.env.GITHUB_TOKEN;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const ISSUE_NUMBER = process.env.ISSUE_NUMBER;
 const FIX_TYPE = process.env.FIX_TYPE;
@@ -1104,7 +1104,7 @@ async function main() {
 
   // Validate environment
   if (!GITHUB_TOKEN) {
-    console.error('GITHUB_TOKEN not set');
+    console.error('PRIVATE_REPO_TOKEN (or GITHUB_TOKEN) not set');
     process.exit(1);
   }
   if (!ISSUE_NUMBER) {
