@@ -824,7 +824,95 @@ async function applyModification(mod) {
 }
 
 /**
- * Update version string in SettingsView.swift
+ * Read the NEXT_ALPHA_VERSION GitHub Actions variable from the private repo.
+ * Uses the GitHub REST API: GET /repos/{owner}/{repo}/actions/variables/{name}
+ *
+ * Returns { success: true, value: "N" } on success,
+ * or { success: false } on any failure (network, auth, missing variable).
+ */
+async function getNextVersionFromVariable() {
+  try {
+    const url = `https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/NEXT_ALPHA_VERSION`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'SortingHistory-AutoFix',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+
+    if (!response.ok) {
+      console.warn(`GitHub variable read failed: ${response.status} ${response.statusText}`);
+      return { success: false };
+    }
+
+    const data = await response.json();
+    const value = data.value;
+
+    if (!value || isNaN(parseInt(value))) {
+      console.warn(`GitHub variable NEXT_ALPHA_VERSION has invalid value: "${value}"`);
+      return { success: false };
+    }
+
+    console.log(`Read NEXT_ALPHA_VERSION from GitHub: ${value}`);
+    return { success: true, value: value };
+  } catch (e) {
+    console.warn(`GitHub variable read error: ${e.message}`);
+    return { success: false };
+  }
+}
+
+/**
+ * Update the NEXT_ALPHA_VERSION GitHub Actions variable on the private repo.
+ * Uses the GitHub REST API: PATCH /repos/{owner}/{repo}/actions/variables/{name}
+ *
+ * @param {string} newValue - The new value to set (e.g., "135")
+ * @returns {boolean} true on success, false on failure
+ */
+async function setVersionVariable(newValue) {
+  try {
+    const url = `https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/NEXT_ALPHA_VERSION`;
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'SortingHistory-AutoFix',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        name: 'NEXT_ALPHA_VERSION',
+        value: String(newValue),
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`GitHub variable update failed: ${response.status} ${response.statusText}`);
+      return false;
+    }
+
+    console.log(`Updated NEXT_ALPHA_VERSION to ${newValue}`);
+    return true;
+  } catch (e) {
+    console.error(`GitHub variable update error: ${e.message}`);
+    return false;
+  }
+}
+
+/**
+ * Update version string in SettingsView.swift.
+ *
+ * Primary approach: Reads the centralized NEXT_ALPHA_VERSION GitHub Actions
+ * variable from the private repo, uses it as the alpha suffix, writes it to
+ * SettingsView.swift, then increments the variable for the next pipeline run.
+ * This prevents version collisions across branches.
+ *
+ * Fallback: If the GitHub variable API call fails for any reason (network,
+ * auth, missing variable), falls back to the original behavior of reading
+ * the current version from SettingsView.swift and incrementing by 1.
  */
 async function updateVersionString() {
   if (!fs.existsSync(SETTINGS_VIEW_PATH)) {
@@ -834,20 +922,44 @@ async function updateVersionString() {
 
   let content = fs.readFileSync(SETTINGS_VIEW_PATH, 'utf8');
 
-  // Parse current version: "1.1.0-alpha.XXX"
+  // Parse current version pattern: "1.1.0-alpha.XXX"
   const versionMatch = content.match(/value:\s*"(\d+\.\d+\.\d+)-alpha\.(\d+)"/);
+  if (!versionMatch) {
+    console.log('Could not find version string to update');
+    return;
+  }
 
-  if (versionMatch) {
-    const [fullMatch, version, alpha] = versionMatch;
-    const newAlpha = parseInt(alpha) + 1;
+  const [fullMatch, version] = versionMatch;
+
+  // Primary: try centralized GitHub variable
+  const variableResult = await getNextVersionFromVariable();
+
+  if (variableResult.success) {
+    const newAlpha = parseInt(variableResult.value);
     const newVersion = `value: "${version}-alpha.${newAlpha}"`;
 
     content = content.replace(fullMatch, newVersion);
     fs.writeFileSync(SETTINGS_VIEW_PATH, content);
-    console.log(`Updated version to ${version}-alpha.${newAlpha}`);
-  } else {
-    console.log('Could not find version string to update');
+    console.log(`Updated version to ${version}-alpha.${newAlpha} (from GitHub variable)`);
+
+    // Increment and store next value
+    const nextValue = newAlpha + 1;
+    const writeSuccess = await setVersionVariable(String(nextValue));
+    if (!writeSuccess) {
+      console.warn(`Warning: Version ${newAlpha} was used but NEXT_ALPHA_VERSION was not incremented to ${nextValue}. Next run may reuse this version.`);
+    }
+    return;
   }
+
+  // Fallback: file-based increment (original behavior)
+  console.warn('Falling back to file-based version increment (GitHub variable unavailable)');
+  const alpha = versionMatch[2];
+  const newAlpha = parseInt(alpha) + 1;
+  const newVersion = `value: "${version}-alpha.${newAlpha}"`;
+
+  content = content.replace(fullMatch, newVersion);
+  fs.writeFileSync(SETTINGS_VIEW_PATH, content);
+  console.log(`Updated version to ${version}-alpha.${newAlpha} (file-based fallback)`);
 }
 
 /**
