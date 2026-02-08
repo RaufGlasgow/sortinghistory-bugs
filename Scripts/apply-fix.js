@@ -960,7 +960,8 @@ function validateBuild() {
       {
         timeout: BUILD_TIMEOUT_MS,
         stdio: 'pipe',
-        cwd: process.cwd()
+        cwd: process.cwd(),
+        maxBuffer: 50 * 1024 * 1024
       }
     );
     console.log('Build validation: PASSED');
@@ -1218,9 +1219,9 @@ async function main() {
       // Only update version string if the fix was actually successful
       // (code fixes already call updateVersionString internally)
       // Do NOT update version if validation failed - the fix needs manual review
-      if (FIX_TYPE !== 'code' && validationPassed) {
+      if (FIX_TYPE === 'content' && validationPassed) {
         await updateVersionString();
-      } else if (FIX_TYPE !== 'code' && !validationPassed) {
+      } else if (FIX_TYPE === 'content' && !validationPassed) {
         console.log('Skipping version update: JSON validation failed, manual review required');
       }
 

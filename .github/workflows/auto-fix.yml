@@ -77,6 +77,9 @@ jobs:
           git checkout -b $BRANCH
           echo "name=$BRANCH" >> $GITHUB_OUTPUT
 
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -100,17 +103,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
-          gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/comments \
-            -f body="## Build Validation Failed (QG-001)
-
-          The automated fix did not compile. No changes were committed.
-
-          \`\`\`
-          ${{ steps.fix.outputs.build_error }}
-          \`\`\`
-
-          The fix will be retried once with error context (QG-002).
-          If retry also fails, manual intervention is required."
+          cat > /tmp/comment-body.json << 'JSONEOF'
+          {
+            "body": "## Build Validation Failed (QG-001)\n\nBoth the initial fix and retry (QG-002) failed compilation. No changes were committed.\n\nManual intervention required."
+          }
+          JSONEOF
+          gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/comments --input /tmp/comment-body.json
 
       - name: Commit Changes
         if: steps.fix.outputs.applied == 'true'
@@ -156,6 +154,9 @@ jobs:
           repository: RaufGlasgow/Sorting-History
           token: ${{ secrets.Private_repo_Pat }}
           ref: ${{ needs.create-fix.outputs.branch_name }}
+
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
 
       - name: Build Project
         id: build
