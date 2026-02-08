@@ -570,12 +570,12 @@ async function applyCodeFix(suggestedFix, issue) {
  * Returns the file path string, or null if no match is found.
  */
 function getViewFileFromScreen(issueBody) {
-  const screenMatch = issueBody.match(/Current Screen[:\\s]+(\\w+)/i);
+  const screenMatch = issueBody.match(/Current Screen[:\s]+(\w+)/i);
   if (!screenMatch) return null;
 
   const screenToView = {
     'GameView': 'Views/Game/ModernSortingGameView.swift',
-    'GameSetupView': 'Views/GameSetup/GameSetupView.swift',
+    'GameSetupView': 'Views/GameSetupView.swift',
     'SettingsView': 'Views/SettingsView.swift',
     'CategorySelectionView': 'Views/Categories/CategorySelectionView.swift',
     'MainMenuView': 'Views/MainMenu/MainMenuView.swift',
@@ -634,7 +634,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
     { keywords: ['modal', 'sheet', 'overlay', 'popup'], file: 'Views/Game/ModernSortingGameView.swift' },
     { keywords: ['ipad', 'tablet', 'size class'], file: 'Views/Game/ModernSortingGameView.swift' },
     { keywords: ['menu', 'home', 'main'], file: 'Views/MainMenu/MainMenuView.swift' },
-    { keywords: ['setup', 'configure', 'team'], file: 'Views/GameSetup/GameSetupView.swift' },
+    { keywords: ['setup', 'configure', 'team'], file: 'Views/GameSetupView.swift' },
   ];
 
   for (const pattern of filePatterns) {
@@ -855,10 +855,16 @@ async function updateVersionString() {
  */
 function setOutput(name, value) {
   const outputFile = process.env.GITHUB_OUTPUT;
+  const strValue = String(value);
   if (outputFile) {
-    fs.appendFileSync(outputFile, `${name}=${value}\n`);
+    if (strValue.includes('\n')) {
+      const delimiter = 'GHEOF_' + Date.now();
+      fs.appendFileSync(outputFile, `${name}<<${delimiter}\n${strValue}\n${delimiter}\n`);
+    } else {
+      fs.appendFileSync(outputFile, `${name}=${strValue}\n`);
+    }
   }
-  console.log(`Output: ${name}=${value}`);
+  console.log(`Output: ${name}=${strValue}`);
 }
 
 /**
@@ -950,7 +956,6 @@ function validateBuild() {
       'xcodebuild build ' +
       '-scheme SortingHistory ' +
       '-destination "platform=iOS Simulator,name=iPhone 16,OS=18.2" ' +
-      '-quiet ' +
       'CODE_SIGNING_ALLOWED=NO',
       {
         timeout: BUILD_TIMEOUT_MS,
@@ -963,7 +968,7 @@ function validateBuild() {
   } catch (error) {
     const stderr = error.stderr?.toString() || '';
     const stdout = error.stdout?.toString() || '';
-    const errorOutput = stderr || stdout || error.message;
+    const errorOutput = (stderr + '\n' + stdout).trim() || error.message;
 
     // Extract only lines containing 'error:' for a concise summary
     const errorLines = errorOutput
