@@ -605,6 +605,48 @@ function getViewFileFromScreen(issueBody) {
 }
 
 /**
+ * BA-007.25: Find files similar to a non-existent suggested file path.
+ * Extracts meaningful name parts and searches the codebase for matches.
+ * Returns up to 3 matching file paths, prioritizing exact basename matches.
+ */
+function findSimilarFiles(suggestedPath) {
+  const basename = path.basename(suggestedPath, '.swift');
+  // Extract meaningful words from the filename (e.g., "GameSetupHelpManager" -> ["Game", "Setup", "Help", "Manager"])
+  const nameWords = basename.match(/[A-Z][a-z]+/g) || [basename];
+  // Remove generic suffixes like "Manager", "Controller", "Service", "Model"
+  const meaningfulWords = nameWords.filter(w => !['Manager', 'Controller', 'Service', 'Model', 'View', 'Helper', 'Provider'].includes(w));
+
+  const results = [];
+  const searchDirs = ['Views', 'ViewModels', 'Models', 'Features', 'Core', 'Network'];
+
+  function searchDir(dir) {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        searchDir(fullPath);
+      } else if (entry.name.endsWith('.swift')) {
+        const entryBasename = entry.name.replace('.swift', '');
+        // Score: how many meaningful words from the suggested name appear in this file name
+        const score = meaningfulWords.filter(w => entryBasename.includes(w)).length;
+        if (score >= 2 || (meaningfulWords.length === 1 && score === 1)) {
+          results.push({ path: fullPath, score });
+        }
+      }
+    }
+  }
+
+  for (const dir of searchDirs) {
+    searchDir(dir);
+  }
+
+  // Sort by score descending, return top 3
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, 3).map(r => r.path);
+}
+
+/**
  * Gather relevant code context for Claude
  */
 async function gatherRelevantContext(issue, suggestedFix) {
@@ -613,13 +655,34 @@ async function gatherRelevantContext(issue, suggestedFix) {
   let filesSkipped = 0;
   const body = issue.body || '';
   const title = issue.title || '';
-  const combined = `${title} ${body}`.toLowerCase();
+  // Normalize compound words so "set up" matches "setup", "time line" matches "timeline", etc.
+  const combined = `${title} ${body}`.toLowerCase().replace(/set up/g, 'setup').replace(/time line/g, 'timeline').replace(/pop up/g, 'popup');
 
-  // If suggested fix specifies a file, always include it with more context
-  if (suggestedFix && suggestedFix.file && fs.existsSync(suggestedFix.file)) {
-    const content = readFileWithLimit(suggestedFix.file, PRIMARY_FILE_LIMIT);
-    context[suggestedFix.file] = content;
-    totalContextSize += content.length;
+  // If suggested fix specifies a file, try to include it with more context
+  if (suggestedFix && suggestedFix.file) {
+    if (fs.existsSync(suggestedFix.file)) {
+      const content = readFileWithLimit(suggestedFix.file, PRIMARY_FILE_LIMIT);
+      context[suggestedFix.file] = content;
+      totalContextSize += content.length;
+    } else {
+      // BA-007.25: Suggested file doesn't exist — search for similar files
+      console.log(`[DIAG] Suggested file "${suggestedFix.file}" does not exist. Searching for similar files...`);
+      const similarFiles = findSimilarFiles(suggestedFix.file);
+      if (similarFiles.length > 0) {
+        console.log(`[DIAG] Found ${similarFiles.length} similar file(s): ${similarFiles.join(', ')}`);
+        for (const similarFile of similarFiles) {
+          if (totalContextSize >= TOTAL_CONTEXT_LIMIT) break;
+          if (!context[similarFile]) {
+            const content = readFileWithLimit(similarFile, PRIMARY_FILE_LIMIT);
+            context[similarFile] = content;
+            totalContextSize += content.length;
+            console.log(`[DIAG] Included similar file: ${similarFile} (${content.length} chars)`);
+          }
+        }
+      } else {
+        console.log(`[DIAG] No similar files found for "${suggestedFix.file}"`);
+      }
+    }
   }
 
   // If suggested fix specifies multiple files, include them
@@ -643,17 +706,22 @@ async function gatherRelevantContext(issue, suggestedFix) {
     { keywords: ['game', 'score', 'timer', 'round'], file: 'ViewModels/GameManager.swift' },
     { keywords: ['multiplayer', 'network', 'peer', 'player'], file: 'Network/MultipeerManager.swift' },
     { keywords: ['category', 'event', 'timeline'], file: 'Models/GameModels.swift' },
-    { keywords: ['settings', 'preference', 'config'], file: 'Views/SettingsView.swift' },
+    { keywords: ['settings', 'preference', 'config', 'version'], file: 'Views/SettingsView.swift' },
     { keywords: ['content', 'json', 'data', 'load'], file: 'Data/HistoricalEventsData.swift' },
     { keywords: ['audio', 'sound', 'music'], file: 'Core/Services/DefaultAudioService.swift' },
-    { keywords: ['setup', 'difficulty', 'mode'], file: 'Views/GameSetupView.swift' },
+    { keywords: ['setup', 'difficulty', 'mode', 'configure', 'team'], file: 'Views/GameSetupView.swift' },
+    { keywords: ['setup', 'help', 'hint', 'bubble', 'tooltip', 'popup'], file: 'Views/GameSetupSections.swift' },
+    { keywords: ['help', 'hint', 'bubble', 'tooltip', 'popup', 'info'], file: 'Views/GameSetupView.swift' },
     { keywords: ['view', 'ui', 'display', 'layout'], file: 'Views/ContentView.swift' },
     // BA-007.2: View-specific patterns for UX bugs
     { keywords: ['layout', 'padding', 'spacing', 'frame'], file: 'Views/Game/ModernSortingGameView.swift' },
-    { keywords: ['modal', 'sheet', 'overlay', 'popup'], file: 'Views/Game/ModernSortingGameView.swift' },
+    { keywords: ['modal', 'sheet', 'overlay'], file: 'Views/Game/ModernSortingGameView.swift' },
     { keywords: ['ipad', 'tablet', 'size class'], file: 'Views/Game/ModernSortingGameView.swift' },
     { keywords: ['menu', 'home', 'main'], file: 'Views/MainMenu/MainMenuView.swift' },
-    { keywords: ['setup', 'configure', 'team'], file: 'Views/GameSetupView.swift' },
+    { keywords: ['top bar', 'topbar', 'navigation', 'header'], file: 'Views/Components/GameTopBarDSKit.swift' },
+    { keywords: ['top bar', 'topbar', 'navigation', 'header'], file: 'Views/Components/MenuTopBarDSKit.swift' },
+    { keywords: ['statistics', 'stats', 'history', 'record'], file: 'Features/Statistics/Views/StatisticsView.swift' },
+    { keywords: ['coordinator', 'navigation', 'deep link', 'deeplink'], file: 'Models/App/AppCoordinator.swift' },
   ];
 
   for (const pattern of filePatterns) {
@@ -767,6 +835,8 @@ CRITICAL REQUIREMENTS:
 - Use the EXACT text that appears in the file for the search string
 - Keep changes minimal and focused on the fix
 - Do not change unrelated code
+- You can ONLY modify files shown in "Relevant Code Context" above. Do NOT reference files not shown. Do NOT create new files — action must be "replace" or "insert_after", NEVER "create".
+- If the Previous Analysis Suggestion references a file that is NOT in the context above, IGNORE that suggestion and work only with the files you can see.
 - File contents above may be TRUNCATED (look for "[TRUNCATED]" markers). Your search text MUST use ONLY code visible in the provided context. Do NOT guess, infer, or reconstruct code beyond what is shown.
 - Your search text MUST include the EXACT indentation (leading spaces) as shown in the context above.
 
@@ -987,6 +1057,12 @@ function logNearMisses(content, search, file, modIndex, totalMods) {
  * @param {number} totalMods - Total number of modifications (e.g., 3)
  */
 async function applyModification(mod, modIndex = 1, totalMods = 1) {
+  // BA-007.25: Reject file creation — only modifications to existing files are allowed
+  if (mod.action === 'create') {
+    console.error(`[DIAG] REJECTED: File creation not allowed (modification ${modIndex}/${totalMods}). AI tried to create "${mod.file}". Only "replace" and "insert_after" actions on existing files are supported.`);
+    return false;
+  }
+
   if (!mod.file || !fs.existsSync(mod.file)) {
     console.error(`[DIAG] File not found: ${mod.file} (modification ${modIndex}/${totalMods})`);
     return false;
