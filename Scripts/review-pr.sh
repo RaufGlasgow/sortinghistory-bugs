@@ -70,7 +70,7 @@ if [ -n "$GH_TOKEN" ]; then
   CURL_AUTH_ARGS=(-H "Authorization: token $GH_TOKEN")
 fi
 
-HTTP_CODE=$(curl -sL -w "%{http_code}" "${CURL_AUTH_ARGS[@]}" "$DOWNLOAD_URL" -o "$ZIP_PATH")
+HTTP_CODE=$(curl -sL -w "%{http_code}" ${CURL_AUTH_ARGS[@]+"${CURL_AUTH_ARGS[@]}"} "$DOWNLOAD_URL" -o "$ZIP_PATH")
 if [ "$HTTP_CODE" != "200" ]; then
   echo "ERROR: Failed to download build from $DOWNLOAD_URL (HTTP $HTTP_CODE)"
   exit 1
