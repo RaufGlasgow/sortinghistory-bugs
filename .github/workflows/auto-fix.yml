@@ -16,6 +16,7 @@ jobs:
       branch_name: ${{ steps.branch.outputs.name }}
       fix_applied: ${{ steps.fix.outputs.applied }}
       fix_summary: ${{ steps.fix.outputs.summary }}
+      modified_files: ${{ steps.fix.outputs.modified_files }}
       severity: ${{ steps.fix.outputs.severity }}
       validation_failed: ${{ steps.fix.outputs.validation_failed }}
       validation_errors: ${{ steps.fix.outputs.validation_errors }}
@@ -252,7 +253,29 @@ jobs:
           # Wait for app to fully load
           sleep 8
 
-          # Light mode screenshot (default)
+          # Navigate to the correct screen via deep link
+          MODIFIED_FILES="${{ needs.create-fix.outputs.modified_files }}"
+          DEEP_LINK=""
+
+          if echo "$MODIFIED_FILES" | grep -qi "SettingsView"; then
+            DEEP_LINK="sortinghistory://settings"
+          elif echo "$MODIFIED_FILES" | grep -qi "SetupView\|SetupHelp\|GameSetup"; then
+            DEEP_LINK="sortinghistory://setup"
+          elif echo "$MODIFIED_FILES" | grep -qi "StatisticsView"; then
+            DEEP_LINK="sortinghistory://stats"
+          elif echo "$MODIFIED_FILES" | grep -qi "TimelineHistory\|HistoryView"; then
+            DEEP_LINK="sortinghistory://history"
+          fi
+
+          if [ -n "$DEEP_LINK" ]; then
+            echo "Navigating to: $DEEP_LINK"
+            xcrun simctl openurl "$DEVICE_ID" "$DEEP_LINK"
+            sleep 3
+          else
+            echo "No deep-link route found for modified files: $MODIFIED_FILES. Screenshotting home screen."
+          fi
+
+          # Light mode screenshot
           xcrun simctl io "$DEVICE_ID" screenshot screenshot-light.png
           echo "Light mode screenshot captured"
 
