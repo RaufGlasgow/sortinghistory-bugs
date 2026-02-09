@@ -16,6 +16,7 @@ jobs:
       branch_name: ${{ steps.branch.outputs.name }}
       fix_applied: ${{ steps.fix.outputs.applied }}
       fix_summary: ${{ steps.fix.outputs.summary }}
+      fix_test_instructions: ${{ steps.fix.outputs.test_instructions }}
       modified_files: ${{ steps.fix.outputs.modified_files }}
       severity: ${{ steps.fix.outputs.severity }}
       validation_failed: ${{ steps.fix.outputs.validation_failed }}
@@ -149,6 +150,9 @@ jobs:
       test_outcome: ${{ steps.test.outcome }}
       visual_review: ${{ steps.visual-review.outputs.review_result }}
       visual_summary: ${{ steps.visual-review.outputs.review_summary }}
+      screenshot_light_url: ${{ steps.release.outputs.screenshot_light_url }}
+      screenshot_dark_url: ${{ steps.release.outputs.screenshot_dark_url }}
+      build_url: ${{ steps.release.outputs.build_url }}
 
     steps:
       - name: Checkout fix branch
@@ -270,7 +274,7 @@ jobs:
           if [ -n "$DEEP_LINK" ]; then
             echo "Navigating to: $DEEP_LINK"
             xcrun simctl openurl "$DEVICE_ID" "$DEEP_LINK"
-            sleep 3
+            sleep 8
           else
             echo "No deep-link route found for modified files: $MODIFIED_FILES. Screenshotting home screen."
           fi
@@ -339,6 +343,51 @@ jobs:
           path: "DerivedData/Build/Products/Debug-iphonesimulator/Sorting History.app"
           retention-days: 14
 
+      - name: Create Release with Build and Screenshots
+        id: release
+        if: steps.build.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="fix-${{ env.ISSUE_NUM }}"
+
+          # Package .app as proper zip
+          cd DerivedData/Build/Products/Debug-iphonesimulator
+          zip -r /tmp/SortingHistory-fix-${{ env.ISSUE_NUM }}.zip "Sorting History.app"
+          cd "$GITHUB_WORKSPACE"
+
+          # Clean up any existing release with this tag (for re-runs)
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          # Collect assets to upload
+          ASSETS=""
+          if [ -f screenshot-light.png ]; then
+            ASSETS="$ASSETS screenshot-light.png"
+          fi
+          if [ -f screenshot-dark.png ]; then
+            ASSETS="$ASSETS screenshot-dark.png"
+          fi
+          ASSETS="$ASSETS /tmp/SortingHistory-fix-${{ env.ISSUE_NUM }}.zip"
+
+          # Create release with assets
+          gh release create "$TAG" \
+            --title "Build: Fix #${{ env.ISSUE_NUM }}" \
+            --notes "Automated build artifacts for bug fix #${{ env.ISSUE_NUM }}" \
+            $ASSETS
+
+          # Output direct download URLs
+          BASE_URL="https://github.com/RaufGlasgow/sortinghistory-bugs/releases/download/$TAG"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if [ -f screenshot-light.png ]; then
+            echo "screenshot_light_url=$BASE_URL/screenshot-light.png" >> $GITHUB_OUTPUT
+          fi
+          if [ -f screenshot-dark.png ]; then
+            echo "screenshot_dark_url=$BASE_URL/screenshot-dark.png" >> $GITHUB_OUTPUT
+          fi
+          echo "build_url=$BASE_URL/SortingHistory-fix-${{ env.ISSUE_NUM }}.zip" >> $GITHUB_OUTPUT
+
   # Third job: Create PR and label with test results
   # Runs after both create-fix and test-fix complete
   # Uses always() so PR is created even if tests fail
@@ -357,23 +406,50 @@ jobs:
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }} --jq '.title')
 
           # Create PR in the private repo
-          gh pr create \
-            --repo RaufGlasgow/Sorting-History \
-            --head "fix/bug-${{ env.ISSUE_NUM }}" \
-            --base main \
-            --title "fix: #${{ env.ISSUE_NUM }} - $ISSUE_TITLE" \
-            --body "## Automated Bug Fix
+          # Build PR body with test instructions if available
+          TEST_INSTRUCTIONS="${{ needs.create-fix.outputs.fix_test_instructions }}"
+          BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
+
+          PR_BODY="## Automated Bug Fix
 
           Fixes #${{ env.ISSUE_NUM }}
 
           **Type:** ${{ needs.create-fix.outputs.fix_type }}
 
           ### Changes Made
-          ${{ needs.create-fix.outputs.fix_summary }}
+          ${{ needs.create-fix.outputs.fix_summary }}"
+
+          if [ -n "$BUILD_URL" ]; then
+            PR_BODY="$PR_BODY
+
+          ### Download Build
+          **[Download Build (.app.zip)]($BUILD_URL)** — install on simulator:
+          \`\`\`bash
+          unzip SortingHistory-fix-${{ env.ISSUE_NUM }}.zip
+          xcrun simctl install booted \"Sorting History.app\"
+          xcrun simctl launch booted com.raul.sortinghistory.877348
+          \`\`\`"
+          fi
+
+          if [ -n "$TEST_INSTRUCTIONS" ]; then
+            PR_BODY="$PR_BODY
+
+          ### How to Test
+          $TEST_INSTRUCTIONS"
+          fi
+
+          PR_BODY="$PR_BODY
 
           ---
           *This PR was automatically created by the bug fix system.*
           *All fixes require manual review and merge.*"
+
+          gh pr create \
+            --repo RaufGlasgow/Sorting-History \
+            --head "fix/bug-${{ env.ISSUE_NUM }}" \
+            --base main \
+            --title "fix: #${{ env.ISSUE_NUM }} - $ISSUE_TITLE" \
+            --body "$PR_BODY"
 
           # Get PR number and URL
           PR_NUMBER=$(gh pr list --repo RaufGlasgow/Sorting-History --head "fix/bug-${{ env.ISSUE_NUM }}" --json number -q '.[0].number')
@@ -544,7 +620,9 @@ jobs:
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
           VISUAL_REVIEW="${{ needs.test-fix.outputs.visual_review }}"
           VISUAL_SUMMARY="${{ needs.test-fix.outputs.visual_summary }}"
-          RUN_URL="https://github.com/RaufGlasgow/sortinghistory-bugs/actions/runs/${{ github.run_id }}"
+          LIGHT_URL="${{ needs.test-fix.outputs.screenshot_light_url }}"
+          DARK_URL="${{ needs.test-fix.outputs.screenshot_dark_url }}"
+          BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
 
           if [ "$VISUAL_REVIEW" == "approve" ]; then
             ICON=":white_check_mark:"
@@ -554,28 +632,44 @@ jobs:
             ICON=":eyes:"
           fi
 
+          # Build screenshot section
+          SCREENSHOT_SECTION=""
+          if [ -n "$LIGHT_URL" ] && [ -n "$DARK_URL" ]; then
+            SCREENSHOT_SECTION="### Screenshots
+
+          | Light Mode | Dark Mode |
+          |:---:|:---:|
+          | <img src=\"${LIGHT_URL}\" width=\"300\"> | <img src=\"${DARK_URL}\" width=\"300\"> |"
+          elif [ -n "$LIGHT_URL" ]; then
+            SCREENSHOT_SECTION="### Screenshot
+          <img src=\"${LIGHT_URL}\" width=\"400\">"
+          fi
+
+          # Build download section
+          DOWNLOAD_SECTION=""
+          if [ -n "$BUILD_URL" ]; then
+            DOWNLOAD_SECTION="### Download Build
+          **[Download Build (.app.zip)]($BUILD_URL)**
+
+          Install on simulator:
+          \`\`\`bash
+          unzip SortingHistory-fix-${{ env.ISSUE_NUM }}.zip
+          xcrun simctl install booted \"Sorting History.app\"
+          xcrun simctl launch booted com.raul.sortinghistory.877348
+          \`\`\`"
+          fi
+
           BODY=$(cat <<COMMENT_EOF
           ## ${ICON} Visual Review: ${VISUAL_REVIEW:-not run}
 
           ${VISUAL_SUMMARY:-AI visual review was not available for this run.}
 
-          **Modes tested:** Light + Dark
+          ${SCREENSHOT_SECTION}
 
-          ### Test Your Build
-          1. Download the **app-bundle** artifact from the [workflow run](${RUN_URL})
-          2. Unzip and install: \`xcrun simctl install booted "Sorting History.app"\`
-          3. Launch: \`xcrun simctl launch booted <bundle-id>\`
-
-          Or checkout the branch locally:
-          \`\`\`
-          git fetch origin fix/bug-${{ env.ISSUE_NUM }}
-          git checkout fix/bug-${{ env.ISSUE_NUM }}
-          \`\`\`
-
-          **Screenshot artifacts** (light + dark) are attached to the [workflow run](${RUN_URL}) for quick visual check.
+          ${DOWNLOAD_SECTION}
 
           ---
-          *UI fixes require manual visual verification before merging.*
+          *UI fixes require visual verification before merging.*
           COMMENT_EOF
           )
           gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
