@@ -357,9 +357,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           # Clean up any existing release with this tag (for re-runs)
-          gh release delete "$TAG" --yes 2>/dev/null || true
-          git tag -d "$TAG" 2>/dev/null || true
-          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          gh release delete "$TAG" --repo RaufGlasgow/sortinghistory-bugs --yes 2>/dev/null || true
 
           # Collect assets to upload
           ASSETS=""
@@ -371,8 +369,9 @@ jobs:
           fi
           ASSETS="$ASSETS /tmp/SortingHistory-fix-${{ env.ISSUE_NUM }}.zip"
 
-          # Create release with assets
+          # Create release with assets on the PUBLIC repo
           gh release create "$TAG" \
+            --repo RaufGlasgow/sortinghistory-bugs \
             --title "Build: Fix #${{ env.ISSUE_NUM }}" \
             --notes "Automated build artifacts for bug fix #${{ env.ISSUE_NUM }}" \
             $ASSETS
