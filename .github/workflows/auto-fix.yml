@@ -4,6 +4,9 @@ on:
   repository_dispatch:
     types: [approve]
 
+permissions:
+  contents: write
+
 env:
   ISSUE_NUM: ${{ github.event.client_payload.issue_number }}
 
