@@ -1285,15 +1285,36 @@ JSON ONLY.`;
 
     const result = await response.json();
     const text = result.choices?.[0]?.message?.content || '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
 
-    if (jsonMatch) {
-      const check = JSON.parse(jsonMatch[0]);
-      console.log(`Fact-check: verified=${check.verified}, confidence=${check.confidence}`);
-      if (check.source) console.log(`Fact-check source: ${check.source}`);
-      if (check.concern) console.log(`Fact-check concern: ${check.concern}`);
-      return check;
+    // Use balanced-brace matching instead of greedy regex
+    const startIdx = text.indexOf('{');
+    if (startIdx === -1) {
+      console.log('Fact-check: No JSON object found in response');
+      return { verified: false, confidence: 'unknown', concern: 'No JSON in response' };
     }
+
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = startIdx; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      if (text[i] === '}') depth--;
+      if (depth === 0) {
+        endIdx = i;
+        break;
+      }
+    }
+
+    if (endIdx === -1) {
+      console.log('Fact-check: Unbalanced braces in response');
+      return { verified: false, confidence: 'unknown', concern: 'Malformed JSON' };
+    }
+
+    const jsonStr = text.substring(startIdx, endIdx + 1);
+    const check = JSON.parse(jsonStr);
+    console.log(`Fact-check: verified=${check.verified}, confidence=${check.confidence}`);
+    if (check.source) console.log(`Fact-check source: ${check.source}`);
+    if (check.concern) console.log(`Fact-check concern: ${check.concern}`);
+    return check;
   } catch (e) {
     console.error('Fact-check error:', e.message);
   }
