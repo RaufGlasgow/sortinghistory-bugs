@@ -55,6 +55,23 @@ const SECONDARY_FILE_LIMIT = 12000;  // Related files (keyword match, explicit p
 const REFERENCE_FILE_LIMIT = 8000;   // Always-included reference files
 const TOTAL_CONTEXT_LIMIT = 80000;   // Hard cap across all files
 
+/**
+ * Read a file with a character limit, appending a truncation marker if cut.
+ * Truncates at the last newline before the limit to avoid cutting mid-line.
+ * BA-007.23: Context Truncation Awareness
+ */
+function readFileWithLimit(filePath, limit) {
+  const fullContent = fs.readFileSync(filePath, 'utf8');
+  if (fullContent.length <= limit) {
+    return fullContent;  // No truncation needed
+  }
+  // Truncate at last newline before limit to avoid cutting mid-line
+  const truncated = fullContent.substring(0, limit);
+  const lastNewline = truncated.lastIndexOf('\n');
+  const cleanTruncated = lastNewline > 0 ? truncated.substring(0, lastNewline) : truncated;
+  return cleanTruncated + `\n\n// ... [TRUNCATED — showing ${cleanTruncated.length} of ${fullContent.length} chars] ...`;
+}
+
 // QG-001: Build validation timeout (3 minutes)
 const BUILD_TIMEOUT_MS = 180000;
 
@@ -533,8 +550,10 @@ async function applyCodeFix(suggestedFix, issue) {
     // Apply each modification
     let appliedCount = 0;
     const modifiedFiles = [];
-    for (const mod of fixData.modifications) {
-      if (await applyModification(mod)) {
+    for (let i = 0; i < fixData.modifications.length; i++) {
+      const mod = fixData.modifications[i];
+      console.log(`[DIAG] Applying modification ${i + 1}/${fixData.modifications.length}: ${mod.action} on ${mod.file}`);
+      if (await applyModification(mod, i + 1, fixData.modifications.length)) {
         appliedCount++;
         if (mod.file && !modifiedFiles.includes(mod.file)) {
           modifiedFiles.push(mod.file);
@@ -598,7 +617,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
 
   // If suggested fix specifies a file, always include it with more context
   if (suggestedFix && suggestedFix.file && fs.existsSync(suggestedFix.file)) {
-    const content = fs.readFileSync(suggestedFix.file, 'utf8').substring(0, PRIMARY_FILE_LIMIT);
+    const content = readFileWithLimit(suggestedFix.file, PRIMARY_FILE_LIMIT);
     context[suggestedFix.file] = content;
     totalContextSize += content.length;
   }
@@ -612,7 +631,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
         continue;
       }
       if (fs.existsSync(filePath) && !context[filePath]) {
-        const content = fs.readFileSync(filePath, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+        const content = readFileWithLimit(filePath, SECONDARY_FILE_LIMIT);
         context[filePath] = content;
         totalContextSize += content.length;
       }
@@ -645,7 +664,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
     }
     if (pattern.keywords.some((kw) => combined.includes(kw))) {
       if (fs.existsSync(pattern.file) && !context[pattern.file]) {
-        const content = fs.readFileSync(pattern.file, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+        const content = readFileWithLimit(pattern.file, SECONDARY_FILE_LIMIT);
         context[pattern.file] = content;
         totalContextSize += content.length;
       }
@@ -663,7 +682,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
     }
     const filePath = fileMatch[1];
     if (fs.existsSync(filePath) && !context[filePath]) {
-      const content = fs.readFileSync(filePath, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+      const content = readFileWithLimit(filePath, SECONDARY_FILE_LIMIT);
       context[filePath] = content;
       totalContextSize += content.length;
     }
@@ -673,7 +692,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
   const screenViewFile = getViewFileFromScreen(body);
   if (screenViewFile && totalContextSize < TOTAL_CONTEXT_LIMIT) {
     if (fs.existsSync(screenViewFile) && !context[screenViewFile]) {
-      const content = fs.readFileSync(screenViewFile, 'utf8').substring(0, SECONDARY_FILE_LIMIT);
+      const content = readFileWithLimit(screenViewFile, SECONDARY_FILE_LIMIT);
       context[screenViewFile] = content;
       totalContextSize += content.length;
       console.log(`Included view file from currentScreen: ${screenViewFile} (${content.length} chars)`);
@@ -683,7 +702,7 @@ async function gatherRelevantContext(issue, suggestedFix) {
   // Always include GameModels.swift for reference
   if (totalContextSize < TOTAL_CONTEXT_LIMIT) {
     if (!context['Models/GameModels.swift'] && fs.existsSync('Models/GameModels.swift')) {
-      const content = fs.readFileSync('Models/GameModels.swift', 'utf8').substring(0, REFERENCE_FILE_LIMIT);
+      const content = readFileWithLimit('Models/GameModels.swift', REFERENCE_FILE_LIMIT);
       context['Models/GameModels.swift'] = content;
       totalContextSize += content.length;
     }
@@ -701,7 +720,9 @@ async function gatherRelevantContext(issue, suggestedFix) {
 function buildCodeFixPrompt(issue, suggestedFix, relevantFiles) {
   let contextSection = '';
   for (const [file, content] of Object.entries(relevantFiles)) {
-    contextSection += `\n### ${file}\n\`\`\`swift\n${content}\n\`\`\`\n`;
+    const isPrimary = suggestedFix?.file === file || (issue.body && issue.body.includes(file));
+    const marker = isPrimary ? ' (PRIMARY FIX TARGET)' : '';
+    contextSection += `\n### ${file}${marker}\n\`\`\`swift\n${content}\n\`\`\`\n`;
   }
 
   // BA-007.2: Add SwiftUI-specific context for UX bug fixes
@@ -746,6 +767,8 @@ CRITICAL REQUIREMENTS:
 - Use the EXACT text that appears in the file for the search string
 - Keep changes minimal and focused on the fix
 - Do not change unrelated code
+- File contents above may be TRUNCATED (look for "[TRUNCATED]" markers). Your search text MUST use ONLY code visible in the provided context. Do NOT guess, infer, or reconstruct code beyond what is shown.
+- Your search text MUST include the EXACT indentation (leading spaces) as shown in the context above.
 
 Respond in this exact JSON format:
 {
@@ -766,60 +789,286 @@ JSON ONLY - no other text.`;
 
 /**
  * Parse Claude's code fix response
+ * BA-007.23: Robust JSON parsing with code-fence extraction,
+ * balanced-brace fallback, and per-modification validation.
  */
 function parseCodeFixResponse(text) {
-  // Extract JSON from response
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    console.error('No JSON found in response');
+  // Log the raw response for diagnostics
+  console.log(`[DIAG] Raw AI response (${text.length} chars):\n${text}`);
+
+  // Strategy 1: Try to find JSON in a code fence first (most reliable)
+  const fenceMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+
+  // Strategy 2: Fall back to finding a standalone JSON object
+  // Use a balanced-brace approach instead of greedy regex
+  let jsonStr = null;
+
+  if (fenceMatch) {
+    jsonStr = fenceMatch[1];
+    console.log('[DIAG] Extracted JSON from code fence');
+  } else {
+    // Find the first { and match to its balanced closing }
+    const startIdx = text.indexOf('{');
+    if (startIdx === -1) {
+      console.error('[DIAG] No JSON object found in response — no opening brace');
+      return null;
+    }
+
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = startIdx; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      if (text[i] === '}') depth--;
+      if (depth === 0) {
+        endIdx = i;
+        break;
+      }
+    }
+
+    if (endIdx === -1) {
+      console.error('[DIAG] Unbalanced braces in response — could not find matching }');
+      return null;
+    }
+
+    jsonStr = text.substring(startIdx, endIdx + 1);
+    console.log('[DIAG] Extracted JSON via balanced-brace matching');
+  }
+
+  // Parse
+  let parsed;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch (e) {
+    console.error(`[DIAG] JSON parse failed: ${e.message}`);
+    console.error(`[DIAG] Attempted to parse:\n${jsonStr.substring(0, 500)}`);
     return null;
   }
 
-  try {
-    return JSON.parse(jsonMatch[0]);
-  } catch (e) {
-    console.error('Failed to parse JSON:', e.message);
+  // Validate structure
+  if (!parsed.modifications || !Array.isArray(parsed.modifications)) {
+    console.error('[DIAG] Parsed JSON has no "modifications" array');
+    console.error(`[DIAG] Top-level keys: ${Object.keys(parsed).join(', ')}`);
     return null;
+  }
+
+  // Validate each modification
+  const validMods = [];
+  for (let i = 0; i < parsed.modifications.length; i++) {
+    const mod = parsed.modifications[i];
+
+    if (!mod.file) {
+      console.error(`[DIAG] Modification ${i + 1}/${parsed.modifications.length}: missing "file" field — skipping`);
+      continue;
+    }
+    if (!mod.action) {
+      console.error(`[DIAG] Modification ${i + 1}/${parsed.modifications.length}: missing "action" field — skipping`);
+      continue;
+    }
+    if (mod.action === 'replace' && (!mod.search || !mod.replace)) {
+      console.error(`[DIAG] Modification ${i + 1}/${parsed.modifications.length}: action=replace but missing search/replace — skipping`);
+      continue;
+    }
+    if (mod.action === 'insert_after' && (!mod.marker || !mod.code)) {
+      console.error(`[DIAG] Modification ${i + 1}/${parsed.modifications.length}: action=insert_after but missing marker/code — skipping`);
+      continue;
+    }
+
+    validMods.push(mod);
+  }
+
+  if (validMods.length < parsed.modifications.length) {
+    console.log(`[DIAG] ${parsed.modifications.length - validMods.length} modification(s) failed validation and were skipped`);
+  }
+
+  parsed.modifications = validMods;
+  return parsed;
+}
+
+/**
+ * Normalize indentation: collapse leading whitespace on each line.
+ * BA-007.23: Used for whitespace-tolerant search matching.
+ */
+function normalizeIndentation(text) {
+  return text.split('\n').map(line => line.trimStart()).join('\n');
+}
+
+/**
+ * Attempt whitespace-normalized matching and return the replacement
+ * with the original file's indentation preserved.
+ * Returns { matched: true, result: string } or { matched: false }.
+ * BA-007.23: Whitespace-tolerant search matching.
+ */
+function normalizedSearchReplace(content, search, replace) {
+  const searchLines = search.split('\n').map(l => l.trimStart());
+  const contentLines = content.split('\n');
+
+  let matchStartLine = -1;
+  for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+    let matches = true;
+    for (let j = 0; j < searchLines.length; j++) {
+      if (contentLines[i + j].trimStart() !== searchLines[j]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      matchStartLine = i;
+      break;
+    }
+  }
+
+  if (matchStartLine < 0) {
+    return { matched: false };
+  }
+
+  // Determine the indentation of the first matched line in the original file
+  const originalIndent = contentLines[matchStartLine].match(/^(\s*)/)[1];
+
+  // Determine the base indentation from the AI's search text
+  const searchBaseIndent = search.split('\n')[0].match(/^(\s*)/)[1];
+
+  // Apply the replacement, preserving the original file's indentation
+  const replaceLines = replace.split('\n');
+  const reindentedReplace = replaceLines.map((line, idx) => {
+    if (idx === 0) return originalIndent + line.trimStart();
+    // Preserve relative indentation from the AI's replacement
+    const lineIndent = line.match(/^(\s*)/)[1];
+    const relativeIndent = lineIndent.length - searchBaseIndent.length;
+    const newIndent = originalIndent + ' '.repeat(Math.max(0, relativeIndent));
+    return newIndent + line.trimStart();
+  }).join('\n');
+
+  // Replace the original lines
+  const matchedOriginalLines = contentLines.slice(matchStartLine, matchStartLine + searchLines.length);
+  const originalText = matchedOriginalLines.join('\n');
+  const result = content.replace(originalText, reindentedReplace);
+
+  return { matched: true, result, indent: originalIndent.length };
+}
+
+/**
+ * Log diagnostic near-miss information when a search string is not found.
+ * BA-007.23: Diagnostic logging for failed matches.
+ */
+function logNearMisses(content, search, file, modIndex, totalMods) {
+  console.error(`[DIAG] Search text NOT FOUND in ${file} (modification ${modIndex}/${totalMods})`);
+  console.error(`[DIAG] Full search text (${search.length} chars):\n${search}`);
+
+  // Show what the file actually contains near likely match points
+  const searchFirstLine = search.split('\n')[0].trim();
+  if (!searchFirstLine) {
+    console.error(`[DIAG] Search text first line is empty — cannot detect near-misses`);
+    return;
+  }
+
+  const fileLines = content.split('\n');
+  const nearMisses = [];
+  for (let i = 0; i < fileLines.length; i++) {
+    if (fileLines[i].trim().includes(searchFirstLine) ||
+        searchFirstLine.includes(fileLines[i].trim())) {
+      nearMisses.push({ line: i + 1, content: fileLines[i] });
+    }
+  }
+  if (nearMisses.length > 0) {
+    console.error(`[DIAG] Near-misses found (first line of search appears at):`);
+    for (const nm of nearMisses) {
+      console.error(`  Line ${nm.line}: "${nm.content.substring(0, 120)}"`);
+    }
+  } else {
+    console.error(`[DIAG] No near-misses — first line of search "${searchFirstLine}" not found anywhere in file`);
   }
 }
 
 /**
  * Apply a single file modification
+ * BA-007.23: Whitespace-tolerant matching, diagnostic logging, modification index tracking.
+ * @param {object} mod - The modification object
+ * @param {number} modIndex - 1-based index of this modification (e.g., 1)
+ * @param {number} totalMods - Total number of modifications (e.g., 3)
  */
-async function applyModification(mod) {
+async function applyModification(mod, modIndex = 1, totalMods = 1) {
   if (!mod.file || !fs.existsSync(mod.file)) {
-    console.error(`File not found: ${mod.file}`);
+    console.error(`[DIAG] File not found: ${mod.file} (modification ${modIndex}/${totalMods})`);
     return false;
   }
 
   let content = fs.readFileSync(mod.file, 'utf8');
 
   if (mod.action === 'replace' && mod.search && mod.replace) {
-    if (!content.includes(mod.search)) {
-      console.error(`Search text not found in ${mod.file}`);
-      console.log('Looking for:', mod.search.substring(0, 100));
-      return false;
+    // Phase 1: Try exact match first (preserves current behavior for simple cases)
+    if (content.includes(mod.search)) {
+      content = content.replace(mod.search, mod.replace);
+      fs.writeFileSync(mod.file, content);
+      console.log(`[DIAG] Applied modification ${modIndex}/${totalMods} to ${mod.file} (exact match)`);
+      return true;
     }
 
-    content = content.replace(mod.search, mod.replace);
-    fs.writeFileSync(mod.file, content);
-    console.log(`Applied modification to ${mod.file}`);
-    return true;
+    // Phase 2: Try whitespace-normalized matching
+    const normalized = normalizedSearchReplace(content, mod.search, mod.replace);
+    if (normalized.matched) {
+      fs.writeFileSync(mod.file, normalized.result);
+      console.log(`[DIAG] Applied modification ${modIndex}/${totalMods} to ${mod.file} via whitespace-normalized match (original indent: ${normalized.indent} spaces)`);
+      return true;
+    }
+
+    // Both phases failed — log diagnostics
+    logNearMisses(content, mod.search, mod.file, modIndex, totalMods);
+    return false;
   }
 
   if (mod.action === 'insert_after' && mod.marker && mod.code) {
-    if (!content.includes(mod.marker)) {
-      console.error(`Marker not found in ${mod.file}`);
-      return false;
+    // Phase 1: Try exact match for marker
+    if (content.includes(mod.marker)) {
+      content = content.replace(mod.marker, mod.marker + '\n' + mod.code);
+      fs.writeFileSync(mod.file, content);
+      console.log(`[DIAG] Inserted code after marker in ${mod.file} (modification ${modIndex}/${totalMods}, exact match)`);
+      return true;
     }
 
-    content = content.replace(mod.marker, mod.marker + '\n' + mod.code);
-    fs.writeFileSync(mod.file, content);
-    console.log(`Inserted code after marker in ${mod.file}`);
-    return true;
+    // Phase 2: Try whitespace-normalized matching for marker
+    // For insert_after, we find the marker via normalized match, then insert after it
+    const markerLines = mod.marker.split('\n').map(l => l.trimStart());
+    const contentLines = content.split('\n');
+
+    let matchStartLine = -1;
+    for (let i = 0; i <= contentLines.length - markerLines.length; i++) {
+      let matches = true;
+      for (let j = 0; j < markerLines.length; j++) {
+        if (contentLines[i + j].trimStart() !== markerLines[j]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) {
+        matchStartLine = i;
+        break;
+      }
+    }
+
+    if (matchStartLine >= 0) {
+      const matchEndLine = matchStartLine + markerLines.length - 1;
+      const originalIndent = contentLines[matchStartLine].match(/^(\s*)/)[1];
+
+      // Re-indent the inserted code to match the original file's indentation
+      const codeLines = mod.code.split('\n');
+      const reindentedCode = codeLines.map(line => {
+        return originalIndent + line.trimStart();
+      }).join('\n');
+
+      // Insert after the matched marker lines
+      contentLines.splice(matchEndLine + 1, 0, reindentedCode);
+      content = contentLines.join('\n');
+      fs.writeFileSync(mod.file, content);
+      console.log(`[DIAG] Inserted code after marker in ${mod.file} (modification ${modIndex}/${totalMods}, whitespace-normalized match, indent: ${originalIndent.length} spaces)`);
+      return true;
+    }
+
+    // Both phases failed — log diagnostics
+    logNearMisses(content, mod.marker, mod.file, modIndex, totalMods);
+    return false;
   }
 
-  console.error(`Unknown modification action: ${mod.action}`);
+  console.error(`[DIAG] Unknown modification action: ${mod.action} (modification ${modIndex}/${totalMods})`);
   return false;
 }
 
@@ -1183,8 +1432,10 @@ Do not repeat the same mistake. Double-check your code compiles before respondin
 
     // Apply each modification from the retry
     let appliedCount = 0;
-    for (const mod of fixData.modifications) {
-      if (await applyModification(mod)) appliedCount++;
+    for (let i = 0; i < fixData.modifications.length; i++) {
+      const mod = fixData.modifications[i];
+      console.log(`[DIAG] Retry: Applying modification ${i + 1}/${fixData.modifications.length}: ${mod.action} on ${mod.file}`);
+      if (await applyModification(mod, i + 1, fixData.modifications.length)) appliedCount++;
     }
 
     if (appliedCount === 0) {
