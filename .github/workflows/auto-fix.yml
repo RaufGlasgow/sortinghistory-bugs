@@ -253,14 +253,10 @@ jobs:
           fi
           echo "Using device: $DEVICE_ID"
 
-          # Install and launch app
+          # Install app (do NOT launch yet — we need to determine deep link first)
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
-          xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
 
-          # Wait for app to fully load
-          sleep 8
-
-          # Navigate to the correct screen via deep link
+          # Determine deep link from modified files BEFORE any launch
           MODIFIED_FILES="${{ needs.create-fix.outputs.modified_files }}"
           DEEP_LINK=""
 
@@ -275,12 +271,18 @@ jobs:
           fi
 
           if [ -n "$DEEP_LINK" ]; then
-            echo "Navigating to: $DEEP_LINK"
+            # Cold-launch via deep link — app opens directly to target screen
+            # openurl on a not-yet-running app triggers both launch AND onOpenURL
+            echo "Launching app via deep link: $DEEP_LINK"
             xcrun simctl openurl "$DEVICE_ID" "$DEEP_LINK"
-            sleep 8
           else
-            echo "No deep-link route found for modified files: $MODIFIED_FILES. Screenshotting home screen."
+            # No deep-link route — launch normally (home screen)
+            echo "No deep-link route for: $MODIFIED_FILES. Launching to home screen."
+            xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
           fi
+
+          # Wait for app to fully load and render target screen
+          sleep 10
 
           # Light mode screenshot
           xcrun simctl io "$DEVICE_ID" screenshot screenshot-light.png
