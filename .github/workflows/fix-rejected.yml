@@ -116,10 +116,10 @@ jobs:
         if: steps.extract.outputs.issue_found == 'true'
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
+          ATTEMPT: ${{ steps.count.outputs.attempt }}
+          FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
         run: |
-          ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
-          ATTEMPT="${{ steps.count.outputs.attempt }}"
-          FIX_SUMMARY="${{ steps.extract.outputs.fix_summary }}"
 
           # Build comment body via printf to safely handle user-provided content
           {
@@ -145,10 +145,10 @@ jobs:
         if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.attempt == '1'
         env:
           GH_TOKEN: ${{ github.token }}
+          ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
+          ATTEMPT: ${{ steps.count.outputs.attempt }}
+          FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
         run: |
-          ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
-          ATTEMPT="${{ steps.count.outputs.attempt }}"
-          FIX_SUMMARY="${{ steps.extract.outputs.fix_summary }}"
 
           NEXT_ATTEMPT=$((ATTEMPT + 1))
           echo "Attempt $ATTEMPT < 2 — dispatching retry (attempt $NEXT_ATTEMPT)..."
