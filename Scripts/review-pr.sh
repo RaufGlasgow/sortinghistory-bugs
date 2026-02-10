@@ -1,15 +1,15 @@
 #!/bin/bash
-# review-pr.sh — Download and install a PR build on local simulator
+# review-pr.sh — Build and install a PR fix on local simulator
 #
-# Downloads the build artifact linked in a PR, installs it on a local
-# iOS simulator, and deep-links to the affected screen so the reviewer
-# can visually verify the fix with zero manual steps.
+# Clones the PR branch, builds locally with xcodebuild, installs on a
+# local iOS simulator, and deep-links to the affected screen so the
+# reviewer can visually verify the fix with zero manual steps.
 #
 # Usage: ./review-pr.sh <PR_NUMBER>
 #
 # Requirements:
-#   - gh CLI authenticated (for PR data and release downloads)
-#   - Xcode command line tools (xcrun simctl)
+#   - gh CLI authenticated (for PR data and private repo clone)
+#   - Xcode command line tools (xcodebuild, xcrun simctl)
 #   - macOS with Simulator.app
 
 set -euo pipefail
@@ -28,76 +28,63 @@ echo "=== Reviewing PR #$PR_NUMBER ==="
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. Fetch PR body and extract the build download URL
+# 1. Get the PR's source branch name
 # ---------------------------------------------------------------------------
-echo "[1/6] Fetching PR #$PR_NUMBER from $REPO..."
-PR_BODY=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body -q '.body')
+echo "[1/6] Fetching PR #$PR_NUMBER branch from $REPO..."
+BRANCH=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName -q '.headRefName')
 
-if [ -z "$PR_BODY" ]; then
+if [ -z "$BRANCH" ]; then
   echo "ERROR: Could not fetch PR #$PR_NUMBER from $REPO"
   echo "       Check that the PR exists and gh is authenticated."
   exit 1
 fi
 
-# The PR body contains a markdown link like:
-#   [Download Build (.app.zip)](https://github.com/.../releases/download/.../SortingHistory-....zip)
-# Extract the URL from inside the parentheses.
-DOWNLOAD_URL=$(echo "$PR_BODY" | grep -oE 'https://github\.com/[^)]+\.zip' | head -1)
+echo "       Branch: $BRANCH"
 
-if [ -z "$DOWNLOAD_URL" ]; then
-  echo "ERROR: No build artifact found on PR #$PR_NUMBER"
-  echo "       The PR body must contain a .zip download link."
+# ---------------------------------------------------------------------------
+# 2. Shallow clone the PR branch
+# ---------------------------------------------------------------------------
+echo "[2/6] Cloning branch $BRANCH..."
+gh repo clone "$REPO" "$TEMP_DIR/repo" -- --branch "$BRANCH" --depth 1 --single-branch
+
+if [ ! -d "$TEMP_DIR/repo/SortingHistory.xcodeproj" ]; then
+  echo "ERROR: Clone succeeded but SortingHistory.xcodeproj not found"
+  echo "       Contents of cloned directory:"
+  ls "$TEMP_DIR/repo" 2>/dev/null || true
+  exit 1
+fi
+
+echo "       Cloned to $TEMP_DIR/repo"
+
+# ---------------------------------------------------------------------------
+# 3. Build locally with xcodebuild
+# ---------------------------------------------------------------------------
+echo "[3/6] Building locally... this may take 1-3 minutes"
+
+if ! xcodebuild build \
+  -project "$TEMP_DIR/repo/SortingHistory.xcodeproj" \
+  -scheme SortingHistory \
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -derivedDataPath "$TEMP_DIR/DerivedData" \
+  CODE_SIGNING_ALLOWED=NO \
+  -quiet; then
   echo ""
-  echo "PR body (first 500 chars):"
-  echo "$PR_BODY" | head -c 500
+  echo "ERROR: xcodebuild build failed. Check the output above for details."
   exit 1
 fi
 
-echo "       Build URL: $DOWNLOAD_URL"
-
-# ---------------------------------------------------------------------------
-# 2. Download and unzip the build
-# ---------------------------------------------------------------------------
-echo "[2/6] Downloading build..."
-ZIP_PATH="$TEMP_DIR/build.zip"
-
-# Get a GitHub token from gh CLI for authenticated downloads.
-# This handles both public releases and private repo assets.
-GH_TOKEN=$(gh auth token 2>/dev/null || true)
-
-CURL_AUTH_ARGS=()
-if [ -n "$GH_TOKEN" ]; then
-  CURL_AUTH_ARGS=(-H "Authorization: token $GH_TOKEN")
-fi
-
-HTTP_CODE=$(curl -sL -w "%{http_code}" ${CURL_AUTH_ARGS[@]+"${CURL_AUTH_ARGS[@]}"} "$DOWNLOAD_URL" -o "$ZIP_PATH")
-if [ "$HTTP_CODE" != "200" ]; then
-  echo "ERROR: Failed to download build from $DOWNLOAD_URL (HTTP $HTTP_CODE)"
-  exit 1
-fi
-
-if [ ! -f "$ZIP_PATH" ] || [ ! -s "$ZIP_PATH" ]; then
-  echo "ERROR: Download produced no .zip file or file is empty"
-  exit 1
-fi
-
-echo "       Downloaded $(du -h "$ZIP_PATH" | cut -f1) to temp dir"
-
-echo "[3/6] Unzipping..."
-unzip -q "$ZIP_PATH" -d "$TEMP_DIR/app"
-
-# Find the .app bundle (may be nested in subdirectories)
-APP_PATH=$(find "$TEMP_DIR/app" -name "*.app" -type d | head -1)
+# Find the built .app bundle
+APP_PATH=$(find "$TEMP_DIR/DerivedData/Build/Products/Debug-iphonesimulator" -maxdepth 1 -name "*.app" -type d | head -1)
 if [ -z "$APP_PATH" ]; then
-  echo "ERROR: No .app bundle found in downloaded archive"
-  echo "       Contents of archive:"
-  ls -R "$TEMP_DIR/app" 2>/dev/null || true
+  echo "ERROR: Build completed but no .app bundle found in DerivedData"
+  echo "       Contents of build products:"
+  ls -R "$TEMP_DIR/DerivedData/Build/Products/" 2>/dev/null || true
   exit 1
 fi
 
-echo "       App bundle: $(basename "$APP_PATH")"
+echo "       Built: $(basename "$APP_PATH")"
 
-# Read bundle ID from the .app's Info.plist (don't hardcode — it may differ)
+# Read bundle ID from the built .app's Info.plist
 BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist" 2>/dev/null || echo "")
 if [ -z "$BUNDLE_ID" ]; then
   echo "WARNING: Could not read bundle ID from Info.plist, using default"
@@ -114,18 +101,28 @@ CHANGED_FILES=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json files -q '.files[]
 DEEP_LINK=""
 SCREEN_NAME="home"
 
+# Filter to view files only, then exclude SettingsView if other views present
+# SettingsView is changed in EVERY bug fix PR (version bump) so it would
+# always match first, hiding the actual fix screen (BA-007.28)
+VIEW_FILES=$(echo "$CHANGED_FILES" | grep -i "View" || true)
+if [ "$(echo "$VIEW_FILES" | grep -c .)" -gt 1 ]; then
+  TARGET_FILES=$(echo "$VIEW_FILES" | grep -vi "SettingsView")
+else
+  TARGET_FILES="$CHANGED_FILES"
+fi
+
 # Match file patterns to deep links — MUST match BA-007.25 CI mapping exactly
-# (auto-fix.yml lines 266-273)
-if echo "$CHANGED_FILES" | grep -qi "SettingsView"; then
+# (auto-fix.yml screenshot step)
+if echo "$TARGET_FILES" | grep -qi "SettingsView"; then
   DEEP_LINK="sortinghistory://settings"
   SCREEN_NAME="Settings"
-elif echo "$CHANGED_FILES" | grep -qi "SetupView\|SetupHelp\|GameSetup"; then
+elif echo "$TARGET_FILES" | grep -qi "SetupView\|SetupHelp\|GameSetup"; then
   DEEP_LINK="sortinghistory://setup"
   SCREEN_NAME="Game Setup"
-elif echo "$CHANGED_FILES" | grep -qi "StatisticsView"; then
+elif echo "$TARGET_FILES" | grep -qi "StatisticsView"; then
   DEEP_LINK="sortinghistory://stats"
   SCREEN_NAME="Statistics"
-elif echo "$CHANGED_FILES" | grep -qi "TimelineHistory\|HistoryView"; then
+elif echo "$TARGET_FILES" | grep -qi "TimelineHistory\|HistoryView"; then
   DEEP_LINK="sortinghistory://history"
   SCREEN_NAME="History"
 fi
