@@ -538,10 +538,6 @@ jobs:
         id: create-pr
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
-          FIX_TEST_INSTRUCTIONS: ${{ needs.create-fix.outputs.fix_test_instructions }}
-          FIX_SUMMARY: ${{ needs.create-fix.outputs.fix_summary }}
-          FIX_TYPE: ${{ needs.create-fix.outputs.fix_type }}
-          BUILD_URL: ${{ needs.test-fix.outputs.build_url }}
         run: |
           # Fetch issue title via API
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }} --jq '.title')
@@ -554,16 +550,19 @@ jobs:
           > **Re-run:** Replaces PR #$OLD_PR (auto-closed by pipeline re-run)"
           fi
 
-          # Build PR body — TEST_INSTRUCTIONS and FIX_SUMMARY are env vars
-          # (not inline ${{ }} expressions) to avoid backtick command substitution
+          # Create PR in the private repo
+          # Build PR body with test instructions if available
+          TEST_INSTRUCTIONS="${{ needs.create-fix.outputs.fix_test_instructions }}"
+          BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
+
           PR_BODY="## Automated Bug Fix
           ${REPLACES_NOTE}
           Fixes #${{ env.ISSUE_NUM }}
 
-          **Type:** $FIX_TYPE
+          **Type:** ${{ needs.create-fix.outputs.fix_type }}
 
           ### Changes Made
-          $FIX_SUMMARY"
+          ${{ needs.create-fix.outputs.fix_summary }}"
 
           if [ -n "$BUILD_URL" ]; then
             PR_BODY="$PR_BODY
@@ -577,11 +576,11 @@ jobs:
           \`\`\`"
           fi
 
-          if [ -n "$FIX_TEST_INSTRUCTIONS" ]; then
+          if [ -n "$TEST_INSTRUCTIONS" ]; then
             PR_BODY="$PR_BODY
 
           ### How to Test
-          $FIX_TEST_INSTRUCTIONS"
+          $TEST_INSTRUCTIONS"
           fi
 
           PR_BODY="$PR_BODY
