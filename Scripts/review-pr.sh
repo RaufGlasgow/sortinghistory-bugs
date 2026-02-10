@@ -30,7 +30,7 @@ echo ""
 # ---------------------------------------------------------------------------
 # 1. Get the PR's source branch name
 # ---------------------------------------------------------------------------
-echo "[1/6] Fetching PR #$PR_NUMBER branch from $REPO..."
+echo "[1/5] Fetching PR #$PR_NUMBER branch from $REPO..."
 BRANCH=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName -q '.headRefName')
 
 if [ -z "$BRANCH" ]; then
@@ -44,7 +44,7 @@ echo "       Branch: $BRANCH"
 # ---------------------------------------------------------------------------
 # 2. Shallow clone the PR branch
 # ---------------------------------------------------------------------------
-echo "[2/6] Cloning branch $BRANCH..."
+echo "[2/5] Cloning branch $BRANCH..."
 gh repo clone "$REPO" "$TEMP_DIR/repo" -- --branch "$BRANCH" --depth 1 --single-branch
 
 if [ ! -d "$TEMP_DIR/repo/SortingHistory.xcodeproj" ]; then
@@ -57,14 +57,74 @@ fi
 echo "       Cloned to $TEMP_DIR/repo"
 
 # ---------------------------------------------------------------------------
-# 3. Build locally with xcodebuild
+# 3. Discover simulator, then build targeting it
 # ---------------------------------------------------------------------------
-echo "[3/6] Building locally... this may take 1-3 minutes"
+echo "[3/5] Preparing simulator and building..."
+
+# --- Discover or boot a simulator BEFORE building ---
+# This ensures xcodebuild targets the exact device we will install on.
+
+# Check for an already-booted simulator
+DEVICE_ID=$(xcrun simctl list devices booted -j 2>/dev/null | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for runtime, devices in data.get('devices', {}).items():
+    for d in devices:
+        if d.get('state') == 'Booted':
+            print(d['udid'])
+            sys.exit(0)
+" 2>/dev/null || true)
+
+if [ -n "$DEVICE_ID" ]; then
+  echo "       Reusing booted simulator: $DEVICE_ID"
+else
+  echo "       No booted simulator — finding an available iPhone..."
+
+  # Find an available iPhone (prefer iPhone 16 variants, fall back to any)
+  DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for runtime, devices in data.get('devices', {}).items():
+    if 'iOS' not in runtime:
+        continue
+    for d in devices:
+        if 'iPhone 16' in d['name'] and d.get('isAvailable', False):
+            print(d['udid'])
+            sys.exit(0)
+# Fallback: any available iPhone
+for runtime, devices in data.get('devices', {}).items():
+    if 'iOS' not in runtime:
+        continue
+    for d in devices:
+        if 'iPhone' in d['name'] and d.get('isAvailable', False):
+            print(d['udid'])
+            sys.exit(0)
+print('', file=sys.stderr)
+sys.exit(1)
+" 2>/dev/null)
+
+  if [ -z "$DEVICE_ID" ]; then
+    echo "ERROR: No available iPhone simulator found"
+    echo "       Run 'xcrun simctl list devices available' to check available devices."
+    exit 1
+  fi
+
+  echo "       Booting simulator $DEVICE_ID..."
+  xcrun simctl boot "$DEVICE_ID"
+
+  # Open Simulator.app so the user can see it
+  open -a Simulator
+  echo "       Waiting for simulator to finish booting..."
+  sleep 5
+fi
+
+# --- Build locally targeting the discovered device ---
+echo "       Building locally... this may take 1-3 minutes"
 
 if ! xcodebuild build \
   -project "$TEMP_DIR/repo/SortingHistory.xcodeproj" \
   -scheme SortingHistory \
-  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -destination "platform=iOS Simulator,id=$DEVICE_ID" \
   -derivedDataPath "$TEMP_DIR/DerivedData" \
   CODE_SIGNING_ALLOWED=NO \
   -quiet; then
@@ -95,7 +155,7 @@ echo "       Bundle ID: $BUNDLE_ID"
 # ---------------------------------------------------------------------------
 # 4. Determine deep link from PR changed files
 # ---------------------------------------------------------------------------
-echo "[4/6] Determining target screen from changed files..."
+echo "[4/5] Determining target screen from changed files..."
 CHANGED_FILES=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json files -q '.files[].path')
 
 DEEP_LINK=""
@@ -136,71 +196,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Boot simulator (or reuse already-booted one)
+# 5. Install and launch
 # ---------------------------------------------------------------------------
-echo "[5/6] Preparing simulator..."
+echo "[5/5] Installing and launching..."
 
-# Check for an already-booted simulator
-DEVICE_ID=$(xcrun simctl list devices booted -j 2>/dev/null | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for runtime, devices in data.get('devices', {}).items():
-    for d in devices:
-        if d.get('state') == 'Booted':
-            print(d['udid'])
-            sys.exit(0)
-" 2>/dev/null || true)
-
-if [ -n "$DEVICE_ID" ]; then
-  echo "       Reusing booted simulator: $DEVICE_ID"
-else
-  echo "       No booted simulator — looking for iPhone 16..."
-
-  # Find an available iPhone 16 (any variant)
-  DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for runtime, devices in data.get('devices', {}).items():
-    if 'iOS' not in runtime:
-        continue
-    for d in devices:
-        if 'iPhone 16' in d['name'] and d.get('isAvailable', False):
-            print(d['udid'])
-            sys.exit(0)
-# Fallback: any available iPhone
-for runtime, devices in data.get('devices', {}).items():
-    if 'iOS' not in runtime:
-        continue
-    for d in devices:
-        if 'iPhone' in d['name'] and d.get('isAvailable', False):
-            print(d['udid'])
-            sys.exit(0)
-print('', file=sys.stderr)
-sys.exit(1)
-" 2>/dev/null)
-
-  if [ -z "$DEVICE_ID" ]; then
-    echo "ERROR: No available iPhone simulator found"
-    echo "       Run 'xcrun simctl list devices available' to check available devices."
-    exit 1
-  fi
-
-  echo "       Booting simulator $DEVICE_ID..."
-  xcrun simctl boot "$DEVICE_ID"
-
-  # Open Simulator.app so the user can see it
-  open -a Simulator
-  echo "       Waiting for simulator to finish booting..."
-  sleep 5
-fi
-
-# Ensure Simulator.app is in the foreground (even if already booted)
+# Ensure Simulator.app is in the foreground
 open -a Simulator
-
-# ---------------------------------------------------------------------------
-# 6. Install and launch
-# ---------------------------------------------------------------------------
-echo "[6/6] Installing and launching..."
 
 # Terminate app if already running (clean state — lesson from BA-007.25 QA)
 xcrun simctl terminate "$DEVICE_ID" "$BUNDLE_ID" 2>/dev/null || true
