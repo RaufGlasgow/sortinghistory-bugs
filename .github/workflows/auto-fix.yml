@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: fix-${{ github.event.client_payload.issue_number }}
+  cancel-in-progress: true
+
 env:
   ISSUE_NUM: ${{ github.event.client_payload.issue_number }}
 
@@ -42,6 +46,15 @@ jobs:
           ref: main
           path: game-code
           fetch-depth: 0
+
+      - name: Reset Stale Labels (Re-run Resilience)
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          echo "Removing stale pipeline labels from issue #${{ env.ISSUE_NUM }} (if any)..."
+          gh issue edit ${{ env.ISSUE_NUM }} --repo RaufGlasgow/Sorting-History \
+            --remove-label "fix-generated,pr-created,build-passed,tests-passed,build-failed,tests-need-review,tests-passing" 2>/dev/null || true
+          echo "Stale labels cleaned up"
 
       - name: Analyze Bug Type
         id: analyze
@@ -140,7 +153,16 @@ jobs:
       - name: Push Branch
         if: steps.fix.outputs.applied == 'true'
         working-directory: game-code
-        run: git push origin ${{ steps.branch.outputs.name }}
+        run: |
+          BRANCH="${{ steps.branch.outputs.name }}"
+          # Check if branch already exists on remote (re-run case)
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists on remote — force-pushing new fix"
+            git push origin "$BRANCH" --force
+          else
+            echo "Branch $BRANCH is new — pushing"
+            git push origin "$BRANCH"
+          fi
 
   # Second job: Test the fix (build + test on macOS)
   # Runs on macOS-14 (free on public repo) - tests flag PRs, don't block them
@@ -263,13 +285,23 @@ jobs:
           MODIFIED_FILES="${{ needs.create-fix.outputs.modified_files }}"
           DEEP_LINK=""
 
-          if echo "$MODIFIED_FILES" | grep -qi "SettingsView"; then
+          # Filter to view files only, then exclude SettingsView if other views present
+          # SettingsView is changed in EVERY bug fix PR (version bump) so it would
+          # always match first, hiding the actual fix screen (BA-007.28)
+          VIEW_FILES=$(echo "$MODIFIED_FILES" | grep -i "View" || true)
+          if [ "$(echo "$VIEW_FILES" | grep -c .)" -gt 1 ]; then
+            TARGET_FILES=$(echo "$VIEW_FILES" | grep -vi "SettingsView")
+          else
+            TARGET_FILES="$MODIFIED_FILES"
+          fi
+
+          if echo "$TARGET_FILES" | grep -qi "SettingsView"; then
             DEEP_LINK="sortinghistory://settings"
-          elif echo "$MODIFIED_FILES" | grep -qi "SetupView\|SetupHelp\|GameSetup"; then
+          elif echo "$TARGET_FILES" | grep -qi "SetupView\|SetupHelp\|GameSetup"; then
             DEEP_LINK="sortinghistory://setup"
-          elif echo "$MODIFIED_FILES" | grep -qi "StatisticsView"; then
+          elif echo "$TARGET_FILES" | grep -qi "StatisticsView"; then
             DEEP_LINK="sortinghistory://stats"
-          elif echo "$MODIFIED_FILES" | grep -qi "TimelineHistory\|HistoryView"; then
+          elif echo "$TARGET_FILES" | grep -qi "TimelineHistory\|HistoryView"; then
             DEEP_LINK="sortinghistory://history"
           fi
 
@@ -364,8 +396,8 @@ jobs:
           zip -r /tmp/SortingHistory-fix-${{ env.ISSUE_NUM }}.zip "Sorting History.app"
           cd "$GITHUB_WORKSPACE"
 
-          # Clean up any existing release with this tag (for re-runs)
-          gh release delete "$TAG" --repo RaufGlasgow/sortinghistory-bugs --yes 2>/dev/null || true
+          # Clean up any existing release AND git tag (for re-runs)
+          gh release delete "$TAG" --repo RaufGlasgow/sortinghistory-bugs --yes --cleanup-tag 2>/dev/null || true
 
           # Collect assets to upload
           ASSETS=""
@@ -404,6 +436,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Close Existing PR (Re-run Resilience)
+        id: close-old-pr
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          BRANCH="fix/bug-${{ env.ISSUE_NUM }}"
+          echo "Checking for existing PR on branch $BRANCH..."
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --repo RaufGlasgow/Sorting-History --json number -q '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Found existing PR #$EXISTING_PR — closing it"
+            gh pr close "$EXISTING_PR" --repo RaufGlasgow/Sorting-History 2>/dev/null || true
+            echo "old_pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+            echo "Closed existing PR #$EXISTING_PR"
+          else
+            echo "No existing PR found for $BRANCH"
+            echo "old_pr_number=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create Pull Request
         id: create-pr
         env:
@@ -412,13 +462,21 @@ jobs:
           # Fetch issue title via API
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }} --jq '.title')
 
+          # Check if this is a re-run (old PR was closed)
+          OLD_PR="${{ steps.close-old-pr.outputs.old_pr_number }}"
+          REPLACES_NOTE=""
+          if [ -n "$OLD_PR" ]; then
+            REPLACES_NOTE="
+          > **Re-run:** Replaces PR #$OLD_PR (auto-closed by pipeline re-run)"
+          fi
+
           # Create PR in the private repo
           # Build PR body with test instructions if available
           TEST_INSTRUCTIONS="${{ needs.create-fix.outputs.fix_test_instructions }}"
           BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
 
           PR_BODY="## Automated Bug Fix
-
+          ${REPLACES_NOTE}
           Fixes #${{ env.ISSUE_NUM }}
 
           **Type:** ${{ needs.create-fix.outputs.fix_type }}
