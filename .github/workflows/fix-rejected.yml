@@ -1,0 +1,142 @@
+name: Fix Rejected
+
+on:
+  repository_dispatch:
+    types: [reject-fix]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: reject-${{ github.event.client_payload.pr_number }}
+  cancel-in-progress: true
+
+env:
+  PR_NUM: ${{ github.event.client_payload.pr_number }}
+  REJECTION_REASON: ${{ github.event.client_payload.rejection_reason }}
+  PRIVATE_REPO: RaufGlasgow/Sorting-History
+
+jobs:
+  reject-fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract Issue Number from PR Body
+        id: extract
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          echo "Fetching PR #$PR_NUM from $PRIVATE_REPO..."
+
+          # Get PR body
+          PR_BODY=$(gh pr view "$PR_NUM" --repo "$PRIVATE_REPO" --json body -q .body)
+
+          # Extract issue number from "Fixes #XX" pattern (portable — no grep -P)
+          ISSUE_NUM=$(echo "$PR_BODY" | grep -o 'Fixes #[0-9]*' | head -1 | grep -o '[0-9]*')
+
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "WARNING: Could not extract issue number from PR body"
+            echo "issue_found=false" >> $GITHUB_OUTPUT
+            echo "issue_num=" >> $GITHUB_OUTPUT
+          else
+            echo "Found linked issue: #$ISSUE_NUM"
+            echo "issue_found=true" >> $GITHUB_OUTPUT
+            echo "issue_num=$ISSUE_NUM" >> $GITHUB_OUTPUT
+          fi
+
+          # Extract fix summary from "### Changes Made" section
+          FIX_SUMMARY=$(echo "$PR_BODY" | sed -n '/### Changes Made/,/^###\|^---/p' | sed '1d;$d' | head -20)
+          if [ -z "$FIX_SUMMARY" ]; then
+            FIX_SUMMARY="(Could not extract fix summary from PR body)"
+          fi
+          # Write multiline output
+          echo "fix_summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$FIX_SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Close PR with Rejection Comment
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          echo "Closing PR #$PR_NUM..."
+
+          # Build comment via printf to avoid shell injection from REJECTION_REASON
+          {
+            echo "## Fix Rejected"
+            echo ""
+            printf "**Reason:** %s\n" "$REJECTION_REASON"
+            echo ""
+            echo "Automated pipeline fix did not resolve the bug. This PR has been closed automatically."
+            echo ""
+            echo "---"
+            echo "*Closed by fix-rejection workflow.*"
+          } > /tmp/reject-comment.md
+
+          gh pr comment "$PR_NUM" --repo "$PRIVATE_REPO" -F /tmp/reject-comment.md
+          gh pr close "$PR_NUM" --repo "$PRIVATE_REPO"
+          echo "PR #$PR_NUM closed"
+
+      - name: Update Issue Labels
+        if: steps.extract.outputs.issue_found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
+          echo "Updating labels on issue #$ISSUE_NUM..."
+
+          # Remove pipeline progress labels
+          gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
+            --remove-label "fix-generated,pr-created,build-passed,tests-passed,tests-passing" 2>/dev/null || true
+
+          # Add fix-failed label
+          gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
+            --add-label "fix-failed"
+
+          echo "Labels updated on issue #$ISSUE_NUM"
+
+      - name: Count Previous Rejections
+        id: count
+        if: steps.extract.outputs.issue_found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
+
+          # Count comments containing "## Fix Rejected (Attempt" pattern
+          REJECTION_COUNT=$(gh api "repos/$PRIVATE_REPO/issues/$ISSUE_NUM/comments" \
+            --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt"))] | length')
+
+          # This is the current attempt (previous rejections + 1)
+          ATTEMPT=$((REJECTION_COUNT + 1))
+          echo "This is rejection attempt $ATTEMPT (found $REJECTION_COUNT previous rejections)"
+          echo "attempt=$ATTEMPT" >> $GITHUB_OUTPUT
+          echo "rejection_count=$REJECTION_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Post Failure Context on Issue
+        if: steps.extract.outputs.issue_found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
+          ATTEMPT="${{ steps.count.outputs.attempt }}"
+          FIX_SUMMARY="${{ steps.extract.outputs.fix_summary }}"
+
+          # Build comment body via printf to safely handle user-provided content
+          {
+            echo "## Fix Rejected (Attempt $ATTEMPT/2)"
+            echo ""
+            echo "**PR:** #$PR_NUM (closed)"
+            printf "**Rejection reason:** %s\n" "$REJECTION_REASON"
+            echo ""
+            echo "### What the fix attempted"
+            echo "$FIX_SUMMARY"
+            echo ""
+            echo "### Next steps"
+            echo "Re-approve the issue to trigger a new fix attempt, or assign to a developer for manual resolution."
+            echo ""
+            echo "---"
+            echo "*Posted by fix-rejection workflow.*"
+          } > /tmp/failure-context.md
+
+          gh issue comment "$ISSUE_NUM" --repo "$PRIVATE_REPO" -F /tmp/failure-context.md
+          echo "Failure context posted on issue #$ISSUE_NUM"
