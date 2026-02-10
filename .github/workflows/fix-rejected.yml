@@ -84,15 +84,11 @@ jobs:
           ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
           echo "Updating labels on issue #$ISSUE_NUM..."
 
-          # Remove pipeline progress labels
+          # Remove pipeline progress labels (fix-failed added later only if NOT retrying)
           gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
             --remove-label "fix-generated,pr-created,build-passed,tests-passed,tests-passing" 2>/dev/null || true
 
-          # Add fix-failed label
-          gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
-            --add-label "fix-failed"
-
-          echo "Labels updated on issue #$ISSUE_NUM"
+          echo "Pipeline labels removed from issue #$ISSUE_NUM"
 
       - name: Count Previous Rejections
         id: count
@@ -144,7 +140,7 @@ jobs:
       - name: Dispatch Retry (if under max attempts)
         if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.attempt == '1'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
           FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
@@ -183,26 +179,27 @@ jobs:
         run: |
           echo "Attempt $ATTEMPT >= 2 — retries exhausted, escalating to manual fix"
 
-          # Add needs-manual-fix label
+          # Add fix-failed + needs-manual-fix labels (only on escalation, not on retry)
           gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
-            --add-label "needs-manual-fix"
+            --add-label "fix-failed,needs-manual-fix"
 
-          # Build escalation comment with full attempt history
-          # Fetch all previous rejection comments from the issue
-          HISTORY=$(gh api "repos/$PRIVATE_REPO/issues/$ISSUE_NUM/comments" \
-            --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt"))] | map(.body) | join("\n\n---\n\n")')
+          # Build escalation comment with attempt history summary
+          # Use jq to extract rejection reasons only (not full comment bodies,
+          # which would embed the "## Fix Rejected (Attempt" pattern and inflate future counts)
+          REASONS=$(gh api "repos/$PRIVATE_REPO/issues/$ISSUE_NUM/comments" \
+            --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt")) | .body | capture("\\*\\*Rejection reason:\\*\\* (?<r>.+)") | .r] | to_entries | map("- Attempt \(.key + 1): \(.value)") | join("\n")' 2>/dev/null || echo "")
 
           {
             echo "## Automated Fix Attempts Exhausted"
             echo ""
             echo "**$ATTEMPT automated fix attempts have been tried and rejected.** This bug needs manual developer attention."
             echo ""
-            echo "### Attempt History"
+            echo "### Rejection History"
             echo ""
-            if [ -n "$HISTORY" ]; then
-              echo "$HISTORY"
+            if [ -n "$REASONS" ]; then
+              echo "$REASONS"
             else
-              echo "(Could not retrieve attempt history)"
+              echo "(Could not retrieve rejection reasons)"
             fi
             echo ""
             echo "---"

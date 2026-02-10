@@ -47,7 +47,37 @@ jobs:
           path: game-code
           fetch-depth: 0
 
+      - name: Check Escalation Guard
+        id: guard
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          LABELS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
+          if echo "$LABELS" | grep -q "needs-manual-fix"; then
+            echo "Issue #${{ env.ISSUE_NUM }} has needs-manual-fix label — pipeline will not run."
+            echo "Remove the needs-manual-fix label first if you want to retry."
+            echo "blocked=true" >> $GITHUB_OUTPUT
+          else
+            echo "blocked=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post Escalation Block Notice
+        if: steps.guard.outputs.blocked == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --body "## Pipeline Blocked
+
+          This issue has the \`needs-manual-fix\` label (max automated attempts exhausted).
+
+          To re-enable automated fixes, remove the \`needs-manual-fix\` label first, then approve again.
+
+          ---
+          *Posted by automated bug fix pipeline.*"
+
       - name: Reset Stale Labels (Re-run Resilience)
+        if: steps.guard.outputs.blocked != 'true'
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
@@ -58,6 +88,7 @@ jobs:
 
       - name: Analyze Bug Type
         id: analyze
+        if: steps.guard.outputs.blocked != 'true'
         run: |
           # Get issue labels via API
           LABELS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
@@ -89,6 +120,7 @@ jobs:
 
       - name: Create Branch
         id: branch
+        if: steps.guard.outputs.blocked != 'true'
         working-directory: game-code
         run: |
           BRANCH="fix/bug-${{ env.ISSUE_NUM }}"
@@ -96,15 +128,18 @@ jobs:
           echo "name=$BRANCH" >> $GITHUB_OUTPUT
 
       - name: Select Xcode 16.2
+        if: steps.guard.outputs.blocked != 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
 
       - name: Setup Node.js
+        if: steps.guard.outputs.blocked != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Apply Fix
         id: fix
+        if: steps.guard.outputs.blocked != 'true'
         working-directory: game-code
         env:
           PRIVATE_REPO_TOKEN: ${{ secrets.Private_repo_Pat }}
@@ -131,6 +166,47 @@ jobs:
           }
           JSONEOF
           gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/comments --input /tmp/comment-body.json
+
+      - name: Post Apply Failure to Issue
+        if: steps.guard.outputs.blocked != 'true' && steps.fix.outputs.applied != 'true' && steps.fix.outputs.build_failed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          IS_RETRY="${{ github.event.client_payload.retry || '' }}"
+          ATTEMPT="${{ github.event.client_payload.attempt || '1' }}"
+
+          if [ "$IS_RETRY" = "true" ]; then
+            RETRY_NOTE="This was retry attempt $ATTEMPT."
+          else
+            RETRY_NOTE=""
+          fi
+
+          {
+            echo "## Fix Generation Failed"
+            echo ""
+            echo "The automated fix system could not generate an applicable fix for this issue."
+            echo "The AI either produced no changes or proposed changes that could not be applied"
+            echo "(e.g., tried to create new files instead of modifying existing ones)."
+            if [ -n "$RETRY_NOTE" ]; then
+              echo ""
+              echo "$RETRY_NOTE"
+            fi
+            echo ""
+            echo "**Fix type:** ${{ steps.analyze.outputs.fix_type }}"
+            echo ""
+            echo "This issue needs manual developer attention."
+            echo ""
+            echo "---"
+            echo "*Posted by automated bug fix pipeline.*"
+          } > /tmp/apply-failure.md
+
+          gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" -F /tmp/apply-failure.md
+
+          # Remove approved label and add fix-failed so issue isn't stuck
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "approved" 2>/dev/null || true
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --add-label "fix-failed"
 
       - name: Commit Changes
         if: steps.fix.outputs.applied == 'true'
