@@ -173,3 +173,42 @@ jobs:
           gh api "repos/${{ github.repository }}/dispatches" --input /tmp/retry-payload.json
 
           echo "Retry dispatch sent for issue #$ISSUE_NUM (attempt $NEXT_ATTEMPT)"
+
+      - name: Escalate to Manual Fix (max attempts reached)
+        if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.attempt != '1'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
+          ATTEMPT: ${{ steps.count.outputs.attempt }}
+        run: |
+          echo "Attempt $ATTEMPT >= 2 — retries exhausted, escalating to manual fix"
+
+          # Add needs-manual-fix label
+          gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
+            --add-label "needs-manual-fix"
+
+          # Build escalation comment with full attempt history
+          # Fetch all previous rejection comments from the issue
+          HISTORY=$(gh api "repos/$PRIVATE_REPO/issues/$ISSUE_NUM/comments" \
+            --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt"))] | map(.body) | join("\n\n---\n\n")')
+
+          {
+            echo "## Automated Fix Attempts Exhausted"
+            echo ""
+            echo "**$ATTEMPT automated fix attempts have been tried and rejected.** This bug needs manual developer attention."
+            echo ""
+            echo "### Attempt History"
+            echo ""
+            if [ -n "$HISTORY" ]; then
+              echo "$HISTORY"
+            else
+              echo "(Could not retrieve attempt history)"
+            fi
+            echo ""
+            echo "---"
+            echo "*Escalated by fix-rejection workflow.*"
+          } > /tmp/escalation-comment.md
+
+          gh issue comment "$ISSUE_NUM" --repo "$PRIVATE_REPO" -F /tmp/escalation-comment.md
+
+          echo "Issue #$ISSUE_NUM escalated — needs-manual-fix label applied"
