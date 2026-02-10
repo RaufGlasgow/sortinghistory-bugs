@@ -140,3 +140,36 @@ jobs:
 
           gh issue comment "$ISSUE_NUM" --repo "$PRIVATE_REPO" -F /tmp/failure-context.md
           echo "Failure context posted on issue #$ISSUE_NUM"
+
+      - name: Dispatch Retry (if under max attempts)
+        if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.attempt == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
+          ATTEMPT="${{ steps.count.outputs.attempt }}"
+          FIX_SUMMARY="${{ steps.extract.outputs.fix_summary }}"
+
+          NEXT_ATTEMPT=$((ATTEMPT + 1))
+          echo "Attempt $ATTEMPT < 2 — dispatching retry (attempt $NEXT_ATTEMPT)..."
+
+          # Build JSON safely using jq (handles special characters in user content)
+          jq -n \
+            --arg issue_num "$ISSUE_NUM" \
+            --arg attempt "$NEXT_ATTEMPT" \
+            --arg fix_summary "$FIX_SUMMARY" \
+            --arg rejection_reason "$REJECTION_REASON" \
+            '{
+              event_type: "approve",
+              client_payload: {
+                issue_number: ($issue_num | tonumber),
+                retry: true,
+                attempt: ($attempt | tonumber),
+                previous_fix_summary: $fix_summary,
+                rejection_reason: $rejection_reason
+              }
+            }' > /tmp/retry-payload.json
+
+          gh api "repos/${{ github.repository }}/dispatches" --input /tmp/retry-payload.json
+
+          echo "Retry dispatch sent for issue #$ISSUE_NUM (attempt $NEXT_ATTEMPT)"

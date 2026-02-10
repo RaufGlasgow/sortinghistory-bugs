@@ -53,7 +53,7 @@ jobs:
         run: |
           echo "Removing stale pipeline labels from issue #${{ env.ISSUE_NUM }} (if any)..."
           gh issue edit ${{ env.ISSUE_NUM }} --repo RaufGlasgow/Sorting-History \
-            --remove-label "fix-generated,pr-created,build-passed,tests-passed,build-failed,tests-need-review,tests-passing" 2>/dev/null || true
+            --remove-label "fix-generated,pr-created,build-passed,tests-passed,build-failed,tests-need-review,tests-passing,fix-failed" 2>/dev/null || true
           echo "Stale labels cleaned up"
 
       - name: Analyze Bug Type
@@ -112,6 +112,10 @@ jobs:
           ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
           FIX_TYPE: ${{ steps.analyze.outputs.fix_type }}
           PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
+          RETRY: ${{ github.event.client_payload.retry || '' }}
+          ATTEMPT: ${{ github.event.client_payload.attempt || '' }}
+          PREVIOUS_FIX_SUMMARY: ${{ github.event.client_payload.previous_fix_summary || '' }}
+          REJECTION_REASON: ${{ github.event.client_payload.rejection_reason || '' }}
         run: |
           # Run the fix application script (scripts are in the public repo root)
           node ../Scripts/apply-fix.js

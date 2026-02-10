@@ -33,6 +33,12 @@ const ISSUE_NUMBER = process.env.ISSUE_NUMBER;
 const FIX_TYPE = process.env.FIX_TYPE;
 const GITHUB_REPOSITORY = process.env.PRIVATE_REPO_NAME || process.env.GITHUB_REPOSITORY;
 
+// Retry context (Story 1.2 — rejection retry with failure context)
+const IS_RETRY = process.env.RETRY === 'true';
+const ATTEMPT_NUMBER = parseInt(process.env.ATTEMPT, 10) || 1;
+const PREVIOUS_FIX_SUMMARY = process.env.PREVIOUS_FIX_SUMMARY || '';
+const REJECTION_REASON = process.env.REJECTION_REASON || '';
+
 // Debug: log resolved env vars so future failures are diagnosable
 console.log(`Repository: ${GITHUB_REPOSITORY}`);
 console.log(`Token present: ${!!GITHUB_TOKEN}`);
@@ -808,7 +814,7 @@ Common SwiftUI fixes for UX bugs:
 - Modals: .sheet(), .fullScreenCover()\n\n`;
   }
 
-  return `You are a senior iOS developer fixing a bug in the Sorting History app - a history timeline game built with SwiftUI.
+  let prompt = `You are a senior iOS developer fixing a bug in the Sorting History app - a history timeline game built with SwiftUI.
 
 ## Bug Report
 
@@ -855,6 +861,29 @@ Respond in this exact JSON format:
 }
 
 JSON ONLY - no other text.`;
+
+  // Story 1.2: Append rejection context for retry attempts
+  if (IS_RETRY && REJECTION_REASON) {
+    console.log(`[RETRY] Appending rejection context (attempt ${ATTEMPT_NUMBER}, reason: ${REJECTION_REASON.substring(0, 80)}...)`);
+    prompt += `
+
+## IMPORTANT: Previous Fix Was Rejected (Attempt ${ATTEMPT_NUMBER - 1} failed)
+
+The previous automated fix attempt was reviewed and **rejected** by a human reviewer.
+
+**Rejection Reason:** ${REJECTION_REASON}
+
+**What the previous fix attempted:**
+${PREVIOUS_FIX_SUMMARY || '(Not available)'}
+
+**You MUST try a FUNDAMENTALLY DIFFERENT approach.** Do not repeat the same strategy.
+- If the previous fix changed file A, consider if the real fix is in file B
+- If the previous fix added code, consider if the fix is removing or modifying existing code
+- If the previous fix addressed symptoms, look for the root cause
+- Think about WHY the reviewer rejected it and address their specific concern`;
+  }
+
+  return prompt;
 }
 
 /**
@@ -1570,6 +1599,10 @@ async function main() {
   console.log(`Bug Fix Application Script`);
   console.log(`Issue: #${ISSUE_NUMBER}`);
   console.log(`Type: ${FIX_TYPE}`);
+  if (IS_RETRY) {
+    console.log(`RETRY: attempt ${ATTEMPT_NUMBER} (previous fix rejected)`);
+    console.log(`Rejection reason: ${REJECTION_REASON}`);
+  }
   console.log(`${'='.repeat(50)}\n`);
 
   // Validate environment
