@@ -550,9 +550,19 @@ jobs:
           > **Re-run:** Replaces PR #$OLD_PR (auto-closed by pipeline re-run)"
           fi
 
-          # Create PR in the private repo
-          # Build PR body with test instructions if available
-          TEST_INSTRUCTIONS="${{ needs.create-fix.outputs.fix_test_instructions }}"
+          # Write AI-generated text to temp files via quoted heredoc
+          # to prevent backticks in AI output from being interpreted as
+          # command substitution (e.g., `showSetupHints` → "command not found")
+          cat > /tmp/fix_summary.txt <<'FIXSUMMARY_EOF'
+          ${{ needs.create-fix.outputs.fix_summary }}
+          FIXSUMMARY_EOF
+          FIX_SUMMARY=$(cat /tmp/fix_summary.txt)
+
+          cat > /tmp/test_instructions.txt <<'TESTINST_EOF'
+          ${{ needs.create-fix.outputs.fix_test_instructions }}
+          TESTINST_EOF
+          TEST_INSTRUCTIONS=$(cat /tmp/test_instructions.txt)
+
           BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
 
           PR_BODY="## Automated Bug Fix
@@ -562,7 +572,7 @@ jobs:
           **Type:** ${{ needs.create-fix.outputs.fix_type }}
 
           ### Changes Made
-          ${{ needs.create-fix.outputs.fix_summary }}"
+          $FIX_SUMMARY"
 
           if [ -n "$BUILD_URL" ]; then
             PR_BODY="$PR_BODY
