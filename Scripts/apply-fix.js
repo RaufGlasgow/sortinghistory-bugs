@@ -1188,6 +1188,7 @@ JSON ONLY - no other text.`;
         max_tokens: 4096,
         temperature: 0.2,
         response_format: { type: 'json_object' },
+        plugins: [{ id: 'response-healing' }],
       }),
       signal: controller.signal,
     });
@@ -1230,6 +1231,7 @@ JSON ONLY - no other text.`;
               max_tokens: 4096,
               temperature: 0.2,
               response_format: { type: 'json_object' },
+              plugins: [{ id: 'response-healing' }],
             }),
           });
           if (retryResp.ok) {
