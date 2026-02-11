@@ -1033,6 +1033,75 @@ function structuralChecks(diff) {
  * Receives the diff, RCA, bug report, structural check output, and previous attempts.
  * Returns { approved: boolean, reason: string, suggestions: string, failure_type: string }
  */
+/**
+ * Parse QA response text into structured result.
+ * Handles truncated JSON by attempting to close unbalanced braces.
+ */
+function parseAndReturnQA(qaText) {
+  console.log(`[QA] Raw QA response:\n${qaText}`);
+
+  let qaJson;
+  try {
+    const fenceMatch = qaText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+    let jsonStr;
+
+    if (fenceMatch) {
+      jsonStr = fenceMatch[1];
+    } else {
+      const startIdx = qaText.indexOf('{');
+      if (startIdx === -1) {
+        console.warn('[QA] No JSON object found in QA response');
+        return { approved: false, reason: 'Could not parse QA response', suggestions: 'Retry', failure_type: 'none' };
+      }
+      let depth = 0;
+      let endIdx = -1;
+      for (let i = startIdx; i < qaText.length; i++) {
+        if (qaText[i] === '{') depth++;
+        if (qaText[i] === '}') depth--;
+        if (depth === 0) { endIdx = i; break; }
+      }
+      if (endIdx === -1) {
+        // Truncated JSON — try to repair by extracting known fields
+        console.warn(`[QA] Unbalanced braces (depth=${depth}) — attempting truncated JSON repair`);
+        const partialJson = qaText.substring(startIdx);
+        const approvedMatch = partialJson.match(/"approved"\s*:\s*(true|false)/);
+        const reasonMatch = partialJson.match(/"reason"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/);
+        const failureMatch = partialJson.match(/"failure_type"\s*:\s*"([^"]*)"/);
+        const suggestionsMatch = partialJson.match(/"suggestions"\s*:\s*"([^"]*(?:\\.[^"]*)*)"/);
+        if (approvedMatch) {
+          const approved = approvedMatch[1] === 'true';
+          const reason = reasonMatch ? reasonMatch[1] : (approved ? 'Approved (parsed from truncated response)' : 'Rejected (parsed from truncated response)');
+          const failure_type = failureMatch ? failureMatch[1] : 'none';
+          const suggestions = suggestionsMatch ? suggestionsMatch[1] : '';
+          console.log(`[QA] Repaired truncated JSON — approved: ${approved}, reason: ${reason}`);
+          return { approved, reason, suggestions, failure_type };
+        }
+        return { approved: false, reason: 'Malformed QA response (truncated)', suggestions: 'Retry', failure_type: 'none' };
+      }
+      jsonStr = qaText.substring(startIdx, endIdx + 1);
+    }
+
+    qaJson = JSON.parse(jsonStr);
+  } catch (e) {
+    console.warn(`[QA] QA JSON parse error: ${e.message}`);
+    return { approved: false, reason: `QA parse error: ${e.message}`, suggestions: 'Retry', failure_type: 'none' };
+  }
+
+  const approved = qaJson.approved === true;
+  const reason = qaJson.reason || (approved ? 'Approved' : 'Rejected without reason');
+  const suggestions = qaJson.suggestions || '';
+  const failure_type = qaJson.failure_type || 'none';
+
+  console.log(`[QA] Decision: ${approved ? 'APPROVED' : 'REJECTED'}`);
+  console.log(`[QA] Reason: ${reason}`);
+  if (!approved) {
+    console.log(`[QA] Failure type: ${failure_type}`);
+    console.log(`[QA] Suggestions: ${suggestions}`);
+  }
+
+  return { approved, reason, suggestions, failure_type };
+}
+
 async function performQAReview(diff, rcaResult, issue, behaviorInfo, structuralResult, previousAttempts, bannedApproaches) {
   console.log('\n--- QA Review (BA-008.9) ---');
   console.log(`[QA] Model: ${QA_MODEL}`);
@@ -1116,8 +1185,9 @@ JSON ONLY - no other text.`;
       body: JSON.stringify({
         model: QA_MODEL,
         messages: [{ role: 'user', content: qaPrompt }],
-        max_tokens: 1500,
+        max_tokens: 4096,
         temperature: 0.2,
+        response_format: { type: 'json_object' },
       }),
       signal: controller.signal,
     });
@@ -1137,60 +1207,52 @@ JSON ONLY - no other text.`;
     const qaText = result.choices?.[0]?.message?.content;
 
     if (!qaText) {
-      console.warn('[QA] No response content from QA model');
-      return { approved: false, reason: 'No response from QA model', suggestions: 'Retry', failure_type: 'none' };
-    }
-
-    console.log(`[QA] Raw QA response:\n${qaText}`);
-
-    // Parse QA JSON response
-    let qaJson;
-    try {
-      const fenceMatch = qaText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-      let jsonStr;
-
-      if (fenceMatch) {
-        jsonStr = fenceMatch[1];
+      // Check reasoning_content fallback (some reasoning models put output there)
+      const altText = result.choices?.[0]?.message?.reasoning_content;
+      if (altText) {
+        console.log('[QA] Found response in reasoning_content field');
+        // Fall through using altText — reassign below
       } else {
-        const startIdx = qaText.indexOf('{');
-        if (startIdx === -1) {
-          console.warn('[QA] No JSON object found in QA response');
-          return { approved: false, reason: 'Could not parse QA response', suggestions: 'Retry', failure_type: 'none' };
+        // Retry once on empty response
+        console.warn('[QA] No response content from QA model — retrying once...');
+        try {
+          const retryResp = await fetch(OPENROUTER_URL, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+              'Content-Type': 'application/json',
+              'HTTP-Referer': 'https://sortinghistory.com',
+              'X-Title': 'Sorting History QA Review (retry)',
+            },
+            body: JSON.stringify({
+              model: QA_MODEL,
+              messages: [{ role: 'user', content: qaPrompt }],
+              max_tokens: 4096,
+              temperature: 0.2,
+              response_format: { type: 'json_object' },
+            }),
+          });
+          if (retryResp.ok) {
+            const retryResult = await retryResp.json();
+            const retryText = retryResult.choices?.[0]?.message?.content || retryResult.choices?.[0]?.message?.reasoning_content;
+            if (retryText) {
+              console.log('[QA] Retry succeeded — got response');
+              // Continue with retryText below (reassign qaText)
+              // We can't reassign const, so we handle inline
+              return parseAndReturnQA(retryText);
+            }
+          }
+        } catch (retryErr) {
+          console.warn(`[QA] Retry also failed: ${retryErr.message}`);
         }
-        let depth = 0;
-        let endIdx = -1;
-        for (let i = startIdx; i < qaText.length; i++) {
-          if (qaText[i] === '{') depth++;
-          if (qaText[i] === '}') depth--;
-          if (depth === 0) { endIdx = i; break; }
-        }
-        if (endIdx === -1) {
-          console.warn('[QA] Unbalanced braces in QA response');
-          return { approved: false, reason: 'Malformed QA response', suggestions: 'Retry', failure_type: 'none' };
-        }
-        jsonStr = qaText.substring(startIdx, endIdx + 1);
+        console.warn('[QA] No response from QA model after retry');
+        return { approved: false, reason: 'No response from QA model', suggestions: 'Retry', failure_type: 'none' };
       }
-
-      qaJson = JSON.parse(jsonStr);
-    } catch (e) {
-      console.warn(`[QA] QA JSON parse error: ${e.message}`);
-      return { approved: false, reason: `QA parse error: ${e.message}`, suggestions: 'Retry', failure_type: 'none' };
     }
 
-    // Normalize and validate
-    const approved = qaJson.approved === true;
-    const reason = qaJson.reason || (approved ? 'Approved' : 'Rejected without reason');
-    const suggestions = qaJson.suggestions || '';
-    const failure_type = qaJson.failure_type || 'none';
-
-    console.log(`[QA] Decision: ${approved ? 'APPROVED' : 'REJECTED'}`);
-    console.log(`[QA] Reason: ${reason}`);
-    if (!approved) {
-      console.log(`[QA] Failure type: ${failure_type}`);
-      console.log(`[QA] Suggestions: ${suggestions}`);
-    }
-
-    return { approved, reason, suggestions, failure_type };
+    // Use shared parser (handles truncated JSON, extracts fields)
+    const effectiveText = qaText || result.choices?.[0]?.message?.reasoning_content;
+    return parseAndReturnQA(effectiveText);
   } catch (e) {
     if (e.name === 'AbortError') {
       console.warn('[QA] QA review timed out after 60s');
