@@ -45,8 +45,19 @@ console.log(`Token present: ${!!GITHUB_TOKEN}`);
 
 // OpenRouter configuration
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const CODE_MODEL = 'anthropic/claude-opus-4.6';
-const FACT_CHECK_MODEL = 'moonshotai/kimi-k2.5';
+
+// BA-008.9: Configurable model IDs via environment variables with hardcoded fallback defaults
+const FIX_MODEL = process.env.FIX_MODEL || 'anthropic/claude-opus-4.6';
+const QA_MODEL = process.env.QA_MODEL || 'openai/gpt-5.2-codex';
+const RCA_MODEL = process.env.RCA_MODEL || 'anthropic/claude-opus-4.6';
+const FACT_CHECK_MODEL = process.env.FACT_CHECK_MODEL || 'moonshotai/kimi-k2.5';
+
+// Legacy alias: CODE_MODEL used throughout the file, now reads from FIX_MODEL
+const CODE_MODEL = FIX_MODEL;
+
+// BA-008.9: Inner loop configuration
+const MAX_INNER_ITERATIONS = 3;
+const MAX_LOOP_TIME_MS = 15 * 60 * 1000; // 15 minutes wall-clock timeout for entire inner loop
 
 // Paths
 const DATA_EVENTS_PATH = 'Data/Events';
@@ -497,7 +508,7 @@ JSON ONLY - no other text.`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), RCA_TIMEOUT_MS);
 
-    console.log(`[RCA] Calling OpenRouter API (model: ${CODE_MODEL}, max_tokens: ${RCA_MAX_TOKENS}, temperature: ${RCA_TEMPERATURE})...`);
+    console.log(`[RCA] Calling OpenRouter API (model: ${RCA_MODEL}, max_tokens: ${RCA_MAX_TOKENS}, temperature: ${RCA_TEMPERATURE})...`);
     console.log(`[RCA] RCA prompt length: ${rcaPrompt.length} chars`);
 
     const response = await fetch(OPENROUTER_URL, {
@@ -509,7 +520,7 @@ JSON ONLY - no other text.`;
         'X-Title': 'Sorting History RCA',
       },
       body: JSON.stringify({
-        model: CODE_MODEL,
+        model: RCA_MODEL,
         messages: [{ role: 'user', content: rcaPrompt }],
         max_tokens: RCA_MAX_TOKENS,
         temperature: RCA_TEMPERATURE,
@@ -968,8 +979,548 @@ async function applyContentFixSmart(issue) {
   return { success: false, filePath: null };
 }
 
+// ============================================================================
+// BA-008.9: Inner Loop Functions
+// ============================================================================
+
+/**
+ * BA-008.9: Check if the working tree has any changes (non-empty diff).
+ * Returns { empty: boolean, diff: string }
+ */
+function checkEmptyDiff() {
+  try {
+    const diff = execSync('git diff', { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    const untrackedDiff = execSync('git ls-files --others --exclude-standard', { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    const combinedDiff = diff + untrackedDiff;
+    return { empty: combinedDiff.trim().length === 0, diff: diff };
+  } catch (e) {
+    console.warn(`[INNER-LOOP] git diff failed: ${e.message}`);
+    return { empty: true, diff: '' };
+  }
+}
+
+/**
+ * BA-008.9: Structural checks on the diff.
+ * Counts lines added vs removed. Flags feature deletion if removed > 3x added.
+ * Returns { linesAdded: number, linesRemoved: number, featureDeletion: boolean, summary: string }
+ */
+function structuralChecks(diff) {
+  const lines = diff.split('\n');
+  let linesAdded = 0;
+  let linesRemoved = 0;
+
+  for (const line of lines) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      linesAdded++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      linesRemoved++;
+    }
+  }
+
+  const featureDeletion = linesRemoved > 0 && linesAdded > 0
+    ? linesRemoved > 3 * linesAdded
+    : linesRemoved > 10 && linesAdded === 0;
+
+  const summary = `Lines added: ${linesAdded}, Lines removed: ${linesRemoved}, Ratio: ${linesAdded > 0 ? (linesRemoved / linesAdded).toFixed(1) : 'inf'}:1${featureDeletion ? ' [LIKELY FEATURE DELETION]' : ''}`;
+
+  console.log(`[STRUCTURAL] ${summary}`);
+
+  return { linesAdded, linesRemoved, featureDeletion, summary };
+}
+
+/**
+ * BA-008.9: QA Review using a different model family (adversarial reviewer).
+ * Receives the diff, RCA, bug report, structural check output, and previous attempts.
+ * Returns { approved: boolean, reason: string, suggestions: string, failure_type: string }
+ */
+async function performQAReview(diff, rcaResult, issue, behaviorInfo, structuralResult, previousAttempts, bannedApproaches) {
+  console.log('\n--- QA Review (BA-008.9) ---');
+  console.log(`[QA] Model: ${QA_MODEL}`);
+  console.log(`[QA] Diff size: ${diff.length} chars`);
+
+  // Build banned approaches section
+  const bannedSection = bannedApproaches && bannedApproaches.length > 0
+    ? `\n## Banned Approaches (already failed in previous pipeline runs)\n${bannedApproaches.map((a, i) => `${i + 1}. ${a}`).join('\n')}\n`
+    : '';
+
+  // Build previous attempts section
+  const previousSection = previousAttempts && previousAttempts.length > 0
+    ? '\n## Previous Attempts This Run (DO NOT REPEAT)\n' + previousAttempts.map(a =>
+        `### Attempt ${a.iteration}\n**Rejected because:** ${a.reason}\n**Suggestions:** ${a.suggestions || 'None'}\n**Diff:**\n\`\`\`diff\n${a.diff.substring(0, 3000)}\n\`\`\``
+      ).join('\n\n') + '\n'
+    : '';
+
+  const qaPrompt = `You are a senior iOS developer reviewing an AI-generated bug fix. Your job is to REJECT fixes that are wrong, incomplete, or lazy. You are an adversarial reviewer — assume the fix is bad until proven otherwise.
+
+## Bug Report
+**Title:** ${issue.title}
+**Expected behavior:** ${behaviorInfo?.expected || 'Not specified'}
+**Actual behavior:** ${behaviorInfo?.actual || (issue.body ? issue.body.substring(0, 500) : 'Not specified')}
+
+## Root Cause Analysis
+**Root Cause:** ${rcaResult?.root_cause || 'Not available'}
+**Fix Strategy:** ${rcaResult?.fix_strategy || 'Not available'}
+
+## Generated Diff
+\`\`\`diff
+${diff}
+\`\`\`
+
+## Structural Analysis
+- Lines added: ${structuralResult.linesAdded}
+- Lines removed: ${structuralResult.linesRemoved}
+- Ratio (removed:added): ${structuralResult.linesAdded > 0 ? (structuralResult.linesRemoved / structuralResult.linesAdded).toFixed(1) : 'infinity'}:1
+${structuralResult.featureDeletion ? '- **WARNING: LIKELY FEATURE DELETION DETECTED** (removed >> added)\n' : ''}
+${bannedSection}${previousSection}
+## Review Criteria (check ALL of these)
+
+1. **Does the diff address the root cause?** The RCA says the root cause is: "${rcaResult?.root_cause || 'unknown'}". Does the code change actually fix this mechanism, or does it work around symptoms?
+
+2. **Does the diff delete or disable functionality?** If the diff removes code (especially event handlers like .onAppear, .onTapGesture, .onChange, or conditional logic) without replacing it with equivalent or better functionality, this is FEATURE DELETION. REJECT.
+   - CONCRETE EXAMPLE: Removing \`.onAppear { showGameModeHelp = true }\` without adding an alternative trigger is deleting the help-bubble feature. REJECT.
+   - CONCRETE EXAMPLE: Wrapping existing code in \`if false { ... }\` or commenting it out is disabling, not fixing. REJECT.
+   - CONCRETE EXAMPLE: Adding a print statement or renaming a variable is NOT a fix. REJECT.
+
+3. **Is this a no-op or trivial change?** Adding a comment, renaming a variable without changing behavior, or adding a print statement is NOT a fix. REJECT.
+
+4. **Does the diff repeat a banned approach?** Check the banned approaches list above. If the diff uses any of those strategies (even with minor variations), REJECT.
+
+5. **Does the diff introduce obvious regressions?** Removing error handling, breaking API contracts, changing public function signatures, or modifying unrelated code. REJECT.
+
+6. **If structural analysis shows removed >> added (3:1+ ratio), is the deletion justified?** Most legitimate fixes ADD or MODIFY code, not delete it. A high deletion ratio almost always indicates feature removal, not a fix.
+
+Respond with ONLY this JSON (no other text):
+{
+  "approved": true or false,
+  "reason": "1-2 sentence explanation of your decision",
+  "suggestions": "If rejected, what should the next attempt do differently. Be specific.",
+  "failure_type": "feature_deletion" or "noop" or "approach_repetition" or "regression" or "wrong_approach" or "none"
+}
+
+JSON ONLY - no other text.`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+    console.log(`[QA] QA prompt length: ${qaPrompt.length} chars`);
+
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sortinghistory.com',
+        'X-Title': 'Sorting History QA Review',
+      },
+      body: JSON.stringify({
+        model: QA_MODEL,
+        messages: [{ role: 'user', content: qaPrompt }],
+        max_tokens: 1500,
+        temperature: 0.2,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    console.log(`[QA] OpenRouter response status: ${response.status} ${response.statusText}`);
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.warn(`[QA] QA review API call failed: ${response.status} - ${errorBody}`);
+      // On API failure, default to rejection to be safe
+      return { approved: false, reason: `QA API call failed: ${response.status}`, suggestions: 'Retry', failure_type: 'none' };
+    }
+
+    const result = await response.json();
+    const qaText = result.choices?.[0]?.message?.content;
+
+    if (!qaText) {
+      console.warn('[QA] No response content from QA model');
+      return { approved: false, reason: 'No response from QA model', suggestions: 'Retry', failure_type: 'none' };
+    }
+
+    console.log(`[QA] Raw QA response:\n${qaText}`);
+
+    // Parse QA JSON response
+    let qaJson;
+    try {
+      const fenceMatch = qaText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+      let jsonStr;
+
+      if (fenceMatch) {
+        jsonStr = fenceMatch[1];
+      } else {
+        const startIdx = qaText.indexOf('{');
+        if (startIdx === -1) {
+          console.warn('[QA] No JSON object found in QA response');
+          return { approved: false, reason: 'Could not parse QA response', suggestions: 'Retry', failure_type: 'none' };
+        }
+        let depth = 0;
+        let endIdx = -1;
+        for (let i = startIdx; i < qaText.length; i++) {
+          if (qaText[i] === '{') depth++;
+          if (qaText[i] === '}') depth--;
+          if (depth === 0) { endIdx = i; break; }
+        }
+        if (endIdx === -1) {
+          console.warn('[QA] Unbalanced braces in QA response');
+          return { approved: false, reason: 'Malformed QA response', suggestions: 'Retry', failure_type: 'none' };
+        }
+        jsonStr = qaText.substring(startIdx, endIdx + 1);
+      }
+
+      qaJson = JSON.parse(jsonStr);
+    } catch (e) {
+      console.warn(`[QA] QA JSON parse error: ${e.message}`);
+      return { approved: false, reason: `QA parse error: ${e.message}`, suggestions: 'Retry', failure_type: 'none' };
+    }
+
+    // Normalize and validate
+    const approved = qaJson.approved === true;
+    const reason = qaJson.reason || (approved ? 'Approved' : 'Rejected without reason');
+    const suggestions = qaJson.suggestions || '';
+    const failure_type = qaJson.failure_type || 'none';
+
+    console.log(`[QA] Decision: ${approved ? 'APPROVED' : 'REJECTED'}`);
+    console.log(`[QA] Reason: ${reason}`);
+    if (!approved) {
+      console.log(`[QA] Failure type: ${failure_type}`);
+      console.log(`[QA] Suggestions: ${suggestions}`);
+    }
+
+    return { approved, reason, suggestions, failure_type };
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      console.warn('[QA] QA review timed out after 60s');
+    } else {
+      console.warn(`[QA] QA review error: ${e.message}`);
+    }
+    return { approved: false, reason: `QA error: ${e.message}`, suggestions: 'Retry', failure_type: 'none' };
+  }
+}
+
+/**
+ * BA-008.9: Revert all working tree changes (tracked and untracked).
+ * Uses git checkout -- . && git clean -fd
+ */
+function revertWorkingTree() {
+  try {
+    execSync('git checkout -- .', { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    execSync('git clean -fd', { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    console.log('[INNER-LOOP] Working tree reverted (checkout + clean)');
+  } catch (e) {
+    console.error(`[INNER-LOOP] Revert failed: ${e.message}`);
+  }
+}
+
+/**
+ * BA-008.9: Generate a fix using the AI model.
+ * Extracted from the old applyCodeFix flow to enable iteration.
+ *
+ * @param {string} prompt - The full prompt to send
+ * @param {number} iteration - Current iteration number (for logging)
+ * @returns {Object|null} Parsed fix data or null on failure
+ */
+async function generateFix(prompt, iteration) {
+  console.log(`\n--- Generate Fix (Iteration ${iteration}) ---`);
+  console.log(`[GEN] Model: ${FIX_MODEL}`);
+  console.log(`[GEN] Prompt length: ${prompt.length} chars`);
+
+  try {
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sortinghistory.com',
+        'X-Title': `Sorting History Bug Fix (Iteration ${iteration})`,
+      },
+      body: JSON.stringify({
+        model: FIX_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 8000,
+        temperature: CODE_GEN_TEMPERATURE,
+      }),
+    });
+
+    console.log(`[GEN] OpenRouter response status: ${response.status} ${response.statusText}`);
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`[GEN] OpenRouter error: ${errorBody}`);
+      return null;
+    }
+
+    const result = await response.json();
+    const fixText = result.choices?.[0]?.message?.content;
+
+    if (!fixText) {
+      console.error('[GEN] No response from model');
+      return null;
+    }
+
+    console.log(`[GEN] Fix text length: ${fixText.length} chars`);
+
+    const fixData = parseCodeFixResponse(fixText);
+
+    if (!fixData || !fixData.modifications || fixData.modifications.length === 0) {
+      console.error('[GEN] Could not parse fix from model response');
+      return null;
+    }
+
+    console.log(`[GEN] Parsed ${fixData.modifications.length} modification(s)`);
+    return fixData;
+  } catch (e) {
+    console.error(`[GEN] Fix generation failed: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * BA-008.9: The iterative fix loop.
+ * Generates a fix, applies it, checks empty diff, runs structural checks,
+ * compiles, and sends for QA review. Iterates up to MAX_INNER_ITERATIONS times.
+ *
+ * @param {Object} issue - GitHub issue object
+ * @param {Object} suggestedFix - Extracted suggested fix (may be null)
+ * @param {Object} relevantFiles - Map of filePath -> content
+ * @param {Object|null} rcaResult - RCA analysis result
+ * @param {Object|null} behaviorInfo - Expected/actual behavior info
+ * @returns {Object} { success: boolean, fixData?, modifiedFiles?, qaIterations?, approvedIteration?, failedApproaches? }
+ */
+async function iterativeFixLoop(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo) {
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`BA-008.9: Iterative Fix Loop (max ${MAX_INNER_ITERATIONS} iterations)`);
+  console.log(`${'='.repeat(50)}\n`);
+
+  const loopStartTime = Date.now();
+  const failedApproaches = [];
+  const previousAttempts = []; // { iteration, diff, reason, suggestions }
+
+  // Collect banned approaches from outer retry context
+  const bannedApproaches = [];
+  if (IS_RETRY && PREVIOUS_FIX_SUMMARY) {
+    bannedApproaches.push(PREVIOUS_FIX_SUMMARY);
+  }
+  if (IS_RETRY && REJECTION_REASON) {
+    bannedApproaches.push(`Previous attempt rejected: ${REJECTION_REASON}`);
+  }
+  // Also include any inner_loop_failures from the dispatch payload
+  const innerLoopFailuresEnv = process.env.INNER_LOOP_FAILURES;
+  if (innerLoopFailuresEnv) {
+    try {
+      const pastFailures = JSON.parse(innerLoopFailuresEnv);
+      if (Array.isArray(pastFailures)) {
+        for (const f of pastFailures) {
+          bannedApproaches.push(`Previous run iteration ${f.iteration}: ${f.strategy} — rejected: ${f.rejection_reason}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[INNER-LOOP] Could not parse INNER_LOOP_FAILURES: ${e.message}`);
+    }
+  }
+
+  for (let iteration = 1; iteration <= MAX_INNER_ITERATIONS; iteration++) {
+    // Step 0: Check wall-clock timeout
+    const elapsed = Date.now() - loopStartTime;
+    if (elapsed > MAX_LOOP_TIME_MS) {
+      console.log(`[INNER-LOOP] Wall-clock timeout after ${Math.round(elapsed / 1000)}s — exiting loop`);
+      break;
+    }
+
+    console.log(`\n--- Inner Loop Iteration ${iteration}/${MAX_INNER_ITERATIONS} (elapsed: ${Math.round(elapsed / 1000)}s) ---`);
+
+    // Step 1: Build prompt (with previous attempt context for iteration 2+)
+    let prompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
+
+    // BA-008.4: Apply hard cap if prompt exceeds limit
+    if (prompt.length > HARD_CAP_CHARS) {
+      console.log(`[DIAG] Prompt exceeds hard cap (${prompt.length} > ${HARD_CAP_CHARS}). Trimming context files...`);
+      const rcaAffectedFiles = rcaResult ? rcaResult.affected_files : [];
+      const contextSize = Object.values(relevantFiles).reduce((sum, c) => sum + c.length, 0);
+      applyHardCap(relevantFiles, rcaAffectedFiles, contextSize);
+      prompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
+    }
+
+    // Append previous attempt context for iteration 2+
+    if (previousAttempts.length > 0) {
+      prompt += '\n\n## PREVIOUS ATTEMPTS (DO NOT REPEAT)\n\nYour previous approach(es) were rejected. Generate a FUNDAMENTALLY DIFFERENT approach.\n';
+      for (const attempt of previousAttempts) {
+        prompt += `\n### Attempt ${attempt.iteration}\n`;
+        prompt += `**Diff:**\n\`\`\`diff\n${attempt.diff.substring(0, 3000)}\n\`\`\`\n`;
+        if (attempt.compileError) {
+          prompt += `**Compilation Error:**\n\`\`\`\n${attempt.compileError.substring(0, 1500)}\n\`\`\`\n`;
+        }
+        if (attempt.reason) {
+          prompt += `**QA Rejection:** ${attempt.reason}\n`;
+        }
+        if (attempt.suggestions) {
+          prompt += `**QA Suggestions:** ${attempt.suggestions}\n`;
+        }
+      }
+    }
+
+    // Append outer retry context if applicable
+    if (IS_RETRY && REJECTION_REASON) {
+      prompt += `\n\n## IMPORTANT: Previous Pipeline Run Was Rejected (Attempt ${ATTEMPT_NUMBER - 1} failed)\n\n`;
+      prompt += `**Rejection Reason:** ${REJECTION_REASON}\n`;
+      prompt += `**What the previous fix attempted:**\n${PREVIOUS_FIX_SUMMARY || '(Not available)'}\n`;
+      prompt += `\n**You MUST try a FUNDAMENTALLY DIFFERENT approach.** Do not repeat the same strategy.\n`;
+    }
+
+    const estimatedTokens = Math.round(prompt.length / 4);
+    console.log(`[DIAG] Iteration ${iteration} prompt: ${prompt.length} characters (est ~${estimatedTokens} tokens)`);
+
+    // Step 1: Generate fix
+    const fixData = await generateFix(prompt, iteration);
+    if (!fixData) {
+      const failureRecord = {
+        iteration,
+        strategy: 'Fix generation returned no parseable modifications',
+        rejection_reason: 'No parseable fix generated',
+        diff: '',
+      };
+      failedApproaches.push(failureRecord);
+      previousAttempts.push({ iteration, diff: '', reason: 'No parseable fix generated', suggestions: 'Produce valid JSON with modifications array' });
+      console.log(`[INNER-LOOP] Iteration ${iteration}: Fix generation failed, continuing...`);
+      continue;
+    }
+
+    // Step 2: Apply modifications
+    let appliedCount = 0;
+    const modifiedFiles = [];
+    for (let i = 0; i < fixData.modifications.length; i++) {
+      const mod = fixData.modifications[i];
+      console.log(`[INNER-LOOP] Applying modification ${i + 1}/${fixData.modifications.length}: ${mod.action} on ${mod.file}`);
+      if (await applyModification(mod, i + 1, fixData.modifications.length)) {
+        appliedCount++;
+        if (mod.file && !modifiedFiles.includes(mod.file)) {
+          modifiedFiles.push(mod.file);
+        }
+      }
+    }
+
+    // Step 3: Check empty diff
+    const diffResult = checkEmptyDiff();
+    if (diffResult.empty) {
+      const failureRecord = {
+        iteration,
+        strategy: fixData.summary || 'Unknown strategy',
+        rejection_reason: 'No modifications applied — all search/replace patterns failed to match',
+        diff: '',
+      };
+      failedApproaches.push(failureRecord);
+      previousAttempts.push({ iteration, diff: '', reason: 'No modifications applied — all search/replace patterns failed to match', suggestions: 'Use exact text from the file for search strings. Check indentation carefully.' });
+      console.log(`[INNER-LOOP] Iteration ${iteration}: Empty diff — no modifications applied, continuing...`);
+      revertWorkingTree();
+      continue;
+    }
+
+    console.log(`[INNER-LOOP] Diff captured (${diffResult.diff.length} chars)`);
+
+    // Step 4: Structural checks
+    const structuralResult = structuralChecks(diffResult.diff);
+
+    // Step 5: Compile with xcodebuild
+    console.log(`[INNER-LOOP] Iteration ${iteration}: Compiling...`);
+    const buildResult = validateBuild();
+    if (!buildResult.success) {
+      const failureRecord = {
+        iteration,
+        strategy: fixData.summary || 'Unknown strategy',
+        rejection_reason: `Compilation failed: ${buildResult.error?.substring(0, 300) || 'unknown error'}`,
+        diff: diffResult.diff.substring(0, 2000),
+      };
+      failedApproaches.push(failureRecord);
+      previousAttempts.push({
+        iteration,
+        diff: diffResult.diff,
+        compileError: buildResult.error,
+        reason: `Compilation failed`,
+        suggestions: `Fix these compilation errors: ${buildResult.error?.substring(0, 500) || 'unknown'}`,
+      });
+      console.log(`[INNER-LOOP] Iteration ${iteration}: Compilation FAILED, reverting...`);
+      revertWorkingTree();
+      continue;
+    }
+    console.log(`[INNER-LOOP] Iteration ${iteration}: Compilation PASSED`);
+
+    // Step 6: QA Review
+    console.log(`[INNER-LOOP] Iteration ${iteration}: Sending to QA reviewer...`);
+    const qaResult = await performQAReview(
+      diffResult.diff,
+      rcaResult,
+      issue,
+      behaviorInfo,
+      structuralResult,
+      previousAttempts,
+      bannedApproaches
+    );
+
+    if (!qaResult.approved) {
+      const failureRecord = {
+        iteration,
+        strategy: fixData.summary || 'Unknown strategy',
+        rejection_reason: qaResult.reason,
+        diff: diffResult.diff.substring(0, 2000),
+      };
+      failedApproaches.push(failureRecord);
+      previousAttempts.push({
+        iteration,
+        diff: diffResult.diff,
+        reason: qaResult.reason,
+        suggestions: qaResult.suggestions,
+      });
+      console.log(`[INNER-LOOP] Iteration ${iteration}: QA REJECTED (${qaResult.failure_type}), reverting...`);
+      revertWorkingTree();
+      continue;
+    }
+
+    // Step 7: Both compile and QA passed!
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`[INNER-LOOP] FIX APPROVED on iteration ${iteration}/${MAX_INNER_ITERATIONS}`);
+    console.log(`[INNER-LOOP] QA reason: ${qaResult.reason}`);
+    console.log(`${'='.repeat(50)}\n`);
+
+    return {
+      success: true,
+      fixData,
+      modifiedFiles,
+      qaIterations: iteration,
+      approvedIteration: iteration,
+      totalAttempts: iteration,
+      qaApprovalReason: qaResult.reason,
+      failedApproaches,
+    };
+  }
+
+  // All iterations exhausted
+  const elapsed = Date.now() - loopStartTime;
+  console.log(`\n${'='.repeat(50)}`);
+  console.log(`[INNER-LOOP] ALL ${MAX_INNER_ITERATIONS} ITERATIONS EXHAUSTED (${Math.round(elapsed / 1000)}s)`);
+  console.log(`[INNER-LOOP] Failed approaches:`);
+  for (const approach of failedApproaches) {
+    console.log(`  - Iteration ${approach.iteration}: ${approach.rejection_reason}`);
+  }
+  console.log(`${'='.repeat(50)}\n`);
+
+  return {
+    success: false,
+    failedApproaches,
+    qaIterations: MAX_INNER_ITERATIONS,
+    totalAttempts: MAX_INNER_ITERATIONS,
+  };
+}
+
+// ============================================================================
+// End BA-008.9: Inner Loop Functions
+// ============================================================================
+
 /**
  * Apply a code fix using Claude
+ * BA-008.9: Refactored to use iterativeFixLoop() instead of single-shot generation.
  */
 async function applyCodeFix(suggestedFix, issue) {
   console.log('Applying code fix...');
@@ -977,6 +1528,7 @@ async function applyCodeFix(suggestedFix, issue) {
   console.log(`[DEBUG] OPENROUTER_API_KEY present: ${OPENROUTER_API_KEY ? 'YES (length: ' + OPENROUTER_API_KEY.length + ')' : 'NO'}`);
 
   // If we have a direct fix from analysis, try it first
+  // Note: This path bypasses the iterative loop but still validates the build.
   if (suggestedFix && suggestedFix.file && suggestedFix.searchText && suggestedFix.replaceText) {
     const filePath = suggestedFix.file;
 
@@ -987,23 +1539,33 @@ async function applyCodeFix(suggestedFix, issue) {
         content = content.replace(suggestedFix.searchText, suggestedFix.replaceText);
         fs.writeFileSync(filePath, content);
 
-        console.log(`Applied fix to ${filePath}`);
-        await updateVersionString();
-        setOutput('applied', 'true');
-        setOutput('summary', suggestedFix.description || `Fixed code in ${path.basename(filePath)}`);
-        return true;
+        console.log(`Applied direct fix to ${filePath}, validating build...`);
+        const buildResult = validateBuild();
+        if (!buildResult.success) {
+          console.log('Direct fix failed build validation, reverting and falling through to iterative loop...');
+          revertWorkingTree();
+          // Fall through to the iterative loop below
+        } else {
+          await updateVersionString();
+          setOutput('applied', 'true');
+          setOutput('summary', suggestedFix.description || `Fixed code in ${path.basename(filePath)}`);
+          return true;
+        }
       }
     }
   }
 
-  // If no direct fix or it failed, use Claude to generate a fix
+  // If no direct fix or it failed, use AI to generate a fix via iterative loop
   if (!OPENROUTER_API_KEY) {
     console.error('OPENROUTER_API_KEY not set - cannot generate code fix');
     setOutput('applied', 'false');
     return false;
   }
 
-  console.log('Generating code fix with Claude...');
+  console.log('Generating code fix via iterative loop (BA-008.9)...');
+  console.log(`[DEBUG] Fix model: ${FIX_MODEL}`);
+  console.log(`[DEBUG] QA model: ${QA_MODEL}`);
+  console.log(`[DEBUG] RCA model: ${RCA_MODEL}`);
 
   try {
     // Gather context (pass suggestedFix so its file paths are included)
@@ -1025,11 +1587,8 @@ async function applyCodeFix(suggestedFix, issue) {
     if (behaviorInfo.actual) console.log(`[RCA] Actual behavior: ${behaviorInfo.actual.substring(0, 100)}...`);
     if (behaviorInfo.warning) console.log(`[RCA] ${behaviorInfo.warning}`);
 
-    // BA-008.4: Perform Root Cause Analysis (Call 1)
+    // BA-008.4: Perform Root Cause Analysis ONCE (not per iteration)
     const rcaResult = await performRCA(issue, suggestedFix, relevantFiles, behaviorInfo);
-
-    // BA-008.4: Apply hard cap and trim if needed (using RCA affected files for prioritization)
-    const rcaAffectedFiles = rcaResult ? rcaResult.affected_files : [];
 
     // Output fix_confidence for workflow consumption
     if (rcaResult) {
@@ -1049,102 +1608,37 @@ async function applyCodeFix(suggestedFix, issue) {
       setOutput('rca_mechanism', '');
     }
 
-    // Build prompt (with optional RCA injection)
-    const prompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
+    // BA-008.9: Run the iterative fix loop (compile + QA inside the loop)
+    const loopResult = await iterativeFixLoop(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
 
-    // BA-008.4: Diagnostic logging for total prompt size
-    const estimatedTokens = Math.round(prompt.length / 4);
-    console.log(`[DIAG] Total prompt: ${prompt.length} characters (est ~${estimatedTokens} tokens)`);
-
-    // BA-008.4: Apply hard cap if prompt exceeds limit
-    if (prompt.length > HARD_CAP_CHARS) {
-      console.log(`[DIAG] Prompt exceeds hard cap (${prompt.length} > ${HARD_CAP_CHARS}). Trimming context files...`);
-      // Recalculate: trim relevantFiles and rebuild prompt
-      const contextSize = Object.values(relevantFiles).reduce((sum, c) => sum + c.length, 0);
-      applyHardCap(relevantFiles, rcaAffectedFiles, contextSize);
-      // Rebuild prompt after trimming — use same arguments
-      var finalPrompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
-      const finalTokens = Math.round(finalPrompt.length / 4);
-      console.log(`[DIAG] Post-trim prompt: ${finalPrompt.length} characters (est ~${finalTokens} tokens)`);
-    } else {
-      var finalPrompt = prompt;
+    // BA-008.9: Output inner_loop_failures for outer retry consumption
+    if (loopResult.failedApproaches && loopResult.failedApproaches.length > 0) {
+      setOutput('inner_loop_failures', JSON.stringify(loopResult.failedApproaches));
     }
 
-    // Call Claude via OpenRouter (Call 2 — Code Generation)
-    console.log(`[DEBUG] Calling OpenRouter API (code generation)...`);
-    console.log(`[DEBUG] Model: ${CODE_MODEL}`);
-    console.log(`[DEBUG] Prompt length: ${finalPrompt.length} chars`);
-    console.log(`[DEBUG] Temperature: ${CODE_GEN_TEMPERATURE}`);
-
-    const response = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://sortinghistory.com',
-        'X-Title': 'Sorting History Bug Fix',
-      },
-      body: JSON.stringify({
-        model: CODE_MODEL,
-        messages: [{ role: 'user', content: finalPrompt }],
-        max_tokens: 8000,
-        temperature: CODE_GEN_TEMPERATURE,
-      }),
-    });
-
-    console.log(`[DEBUG] OpenRouter response status: ${response.status} ${response.statusText}`);
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`[DEBUG] OpenRouter error response body: ${errorBody}`);
-      throw new Error(`OpenRouter error: ${response.status} - ${errorBody}`);
+    // BA-008.9: Output QA iteration info for PR body
+    if (loopResult.qaIterations) {
+      setOutput('qa_iterations', String(loopResult.qaIterations));
+    }
+    if (loopResult.approvedIteration) {
+      setOutput('qa_approved_iteration', String(loopResult.approvedIteration));
     }
 
-    const result = await response.json();
-    console.log(`[DEBUG] OpenRouter response received, choices: ${result.choices?.length || 0}`);
-
-    const fixText = result.choices?.[0]?.message?.content;
-    console.log(`[DEBUG] Fix text length: ${fixText?.length || 0} chars`);
-
-    if (!fixText) {
-      throw new Error('No response from Claude');
-    }
-
-    // Parse and apply the fix
-    const fixData = parseCodeFixResponse(fixText);
-
-    if (!fixData || !fixData.modifications || fixData.modifications.length === 0) {
-      console.error('Could not parse fix from Claude response');
-      setOutput('applied', 'false');
-      return false;
-    }
-
-    // Apply each modification
-    let appliedCount = 0;
-    const modifiedFiles = [];
-    for (let i = 0; i < fixData.modifications.length; i++) {
-      const mod = fixData.modifications[i];
-      console.log(`[DIAG] Applying modification ${i + 1}/${fixData.modifications.length}: ${mod.action} on ${mod.file}`);
-      if (await applyModification(mod, i + 1, fixData.modifications.length)) {
-        appliedCount++;
-        if (mod.file && !modifiedFiles.includes(mod.file)) {
-          modifiedFiles.push(mod.file);
-        }
-      }
-    }
-
-    if (appliedCount > 0) {
+    if (loopResult.success) {
+      // BA-008.9: Version bump OUTSIDE the loop — runs exactly once after approval
       await updateVersionString();
       setOutput('applied', 'true');
-      setOutput('summary', fixData.summary || `Applied ${appliedCount} code change(s)`);
-      setOutput('modified_files', modifiedFiles.join(', '));
-      if (fixData.testInstructions) {
-        setOutput('test_instructions', fixData.testInstructions);
+      setOutput('summary', loopResult.fixData.summary || `Applied code fix (QA approved on iteration ${loopResult.approvedIteration})`);
+      setOutput('modified_files', (loopResult.modifiedFiles || []).join(', '));
+      if (loopResult.fixData.testInstructions) {
+        setOutput('test_instructions', loopResult.fixData.testInstructions);
       }
       return true;
     }
 
+    // All iterations failed
     setOutput('applied', 'false');
+    setOutput('summary', `Fix generation failed after ${loopResult.totalAttempts} iterations — all approaches rejected by QA or failed compilation`);
     return false;
   } catch (e) {
     console.error('Code fix generation failed:', e.message);
@@ -1527,26 +2021,9 @@ Respond in this exact JSON format:
 
 JSON ONLY - no other text.`;
 
-  // Story 1.2: Append rejection context for retry attempts
-  if (IS_RETRY && REJECTION_REASON) {
-    console.log(`[RETRY] Appending rejection context (attempt ${ATTEMPT_NUMBER}, reason: ${REJECTION_REASON.substring(0, 80)}...)`);
-    prompt += `
-
-## IMPORTANT: Previous Fix Was Rejected (Attempt ${ATTEMPT_NUMBER - 1} failed)
-
-The previous automated fix attempt was reviewed and **rejected** by a human reviewer.
-
-**Rejection Reason:** ${REJECTION_REASON}
-
-**What the previous fix attempted:**
-${PREVIOUS_FIX_SUMMARY || '(Not available)'}
-
-**You MUST try a FUNDAMENTALLY DIFFERENT approach.** Do not repeat the same strategy.
-- If the previous fix changed file A, consider if the real fix is in file B
-- If the previous fix added code, consider if the fix is removing or modifying existing code
-- If the previous fix addressed symptoms, look for the root cause
-- Think about WHY the reviewer rejected it and address their specific concern`;
-  }
+  // BA-008.9: Retry/previous-attempt context is now appended by iterativeFixLoop(),
+  // not here. The base prompt stays clean; the loop adds PREVIOUS ATTEMPTS and
+  // outer retry context as needed per iteration.
 
   return prompt;
 }
@@ -2139,122 +2616,9 @@ function validateBuild() {
   }
 }
 
-/**
- * QG-002: Retry a failed fix by feeding the build error back to Claude.
- *
- * Reverts the broken attempt, re-gathers context (files now clean),
- * builds a retry prompt that includes the compilation error, calls
- * Claude again, applies the revised fix, and validates the build.
- *
- * Returns { success: true } if the retry fix compiles, otherwise
- * { success: false, retryError: string? } after reverting everything.
- *
- * Called at most ONCE per fix attempt (no recursion, no loops).
- */
-async function retryFixWithError(issue, originalFix, buildError) {
-  console.log('\n--- Retry Fix with Error Context (QG-002) ---');
-
-  if (!OPENROUTER_API_KEY) {
-    console.error('OPENROUTER_API_KEY not set - cannot retry');
-    return { success: false };
-  }
-
-  // Revert the failed attempt so context files are back to their original state
-  execSync('git checkout -- .');
-  console.log('Reverted failed fix attempt');
-
-  // Re-gather context (files now back to original state)
-  const relevantFiles = await gatherRelevantContext(issue, originalFix);
-
-  const retryPrompt = buildCodeFixPrompt(issue, originalFix, relevantFiles, null, null) + `
-
-## IMPORTANT: Previous Fix Attempt Failed Compilation
-
-\`\`\`
-${buildError}
-\`\`\`
-
-Please revise the fix to address both the original bug AND this compilation error.
-Do not repeat the same mistake. Double-check your code compiles before responding.`;
-
-  try {
-    console.log(`[DEBUG] Calling OpenRouter API for retry...`);
-    console.log(`[DEBUG] Model: ${CODE_MODEL}`);
-    console.log(`[DEBUG] Retry prompt length: ${retryPrompt.length} chars`);
-
-    const response = await fetch(OPENROUTER_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://sortinghistory.com',
-        'X-Title': 'Sorting History Bug Fix (Retry)',
-      },
-      body: JSON.stringify({
-        model: CODE_MODEL,
-        messages: [{ role: 'user', content: retryPrompt }],
-        max_tokens: 8000,
-      }),
-    });
-
-    console.log(`[DEBUG] Retry response status: ${response.status} ${response.statusText}`);
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`[DEBUG] Retry OpenRouter error: ${errorBody}`);
-      return { success: false };
-    }
-
-    const result = await response.json();
-    const fixText = result.choices?.[0]?.message?.content;
-
-    if (!fixText) {
-      console.error('No response from Claude on retry');
-      return { success: false };
-    }
-
-    console.log(`[DEBUG] Retry fix text length: ${fixText.length} chars`);
-
-    const fixData = parseCodeFixResponse(fixText);
-    if (!fixData?.modifications?.length) {
-      console.error('Could not parse retry fix from Claude response');
-      return { success: false };
-    }
-
-    // Apply each modification from the retry
-    let appliedCount = 0;
-    for (let i = 0; i < fixData.modifications.length; i++) {
-      const mod = fixData.modifications[i];
-      console.log(`[DIAG] Retry: Applying modification ${i + 1}/${fixData.modifications.length}: ${mod.action} on ${mod.file}`);
-      if (await applyModification(mod, i + 1, fixData.modifications.length)) appliedCount++;
-    }
-
-    if (appliedCount === 0) {
-      console.error('Retry: No modifications could be applied');
-      return { success: false };
-    }
-
-    console.log(`Retry: Applied ${appliedCount} modification(s), validating build...`);
-
-    // Validate retry fix compiles
-    const retryBuild = validateBuild();
-    if (!retryBuild.success) {
-      console.log('Retry build validation also FAILED - reverting everything');
-      execSync('git checkout -- .');
-      return { success: false, retryError: retryBuild.error };
-    }
-
-    console.log('Retry build validation: PASSED');
-    await updateVersionString();
-    setOutput('retry_used', 'true');
-    setOutput('summary', (fixData.summary || 'Code fix applied') + ' (retry succeeded)');
-    return { success: true };
-  } catch (e) {
-    console.error('Retry failed:', e.message);
-    execSync('git checkout -- .');
-    return { success: false };
-  }
-}
+// QG-002 retryFixWithError() — REMOVED (BA-008.9)
+// The iterative inner loop in iterativeFixLoop() now handles all compile failures
+// and QA rejections. The standalone retry function is superseded.
 
 /**
  * Main function
@@ -2334,36 +2698,18 @@ async function main() {
       // All non-content bugs (code, ux, other) route to Claude Opus 4.5
       // for intelligent fix generation
       console.log(`[DEBUG] Entering code fix path (FIX_TYPE=${FIX_TYPE})...`);
-      console.log(`Fix type: ${FIX_TYPE} - routing to Claude Opus 4.5`);
+      console.log(`Fix type: ${FIX_TYPE} - routing to iterative fix loop (model: ${FIX_MODEL})`);
       success = await applyCodeFix(suggestedFix, issue);
     }
     console.log(`[DEBUG] Fix path completed. Success: ${success}`);
 
-    // QG-001: Pre-commit build validation for non-content fixes
-    if (success && FIX_TYPE !== 'content') {
-      const buildResult = validateBuild();
-      if (!buildResult.success) {
-        // QG-002: Retry with error context (max 1 retry)
-        console.log('Build validation failed - attempting retry with error context...');
-        const retryResult = await retryFixWithError(issue, suggestedFix, buildResult.error);
-
-        if (!retryResult.success) {
-          // Both original and retry failed - give up
-          console.log('Retry also failed -- reverting all file changes');
-          execSync('git checkout -- .');
-          setOutput('applied', 'false');
-          setOutput('build_failed', 'true');
-          setOutput('build_error', buildResult.error.substring(0, 500));
-          if (retryResult.retryError) {
-            setOutput('retry_error', retryResult.retryError.substring(0, 500));
-          }
-          setOutput('summary', 'Fix failed compilation validation (retry also failed)');
-          success = false;
-        }
-        // If retryResult.success === true, outputs were already set by retryFixWithError()
-      }
-    } else if (success && FIX_TYPE === 'content') {
-      console.log('Content fix -- skipping build validation (QG-001)');
+    // BA-008.9: Build validation for code/ux fixes is now handled INSIDE iterativeFixLoop().
+    // The inner loop compiles + QA reviews before returning success.
+    // Content fixes skip build validation entirely.
+    if (success && FIX_TYPE === 'content') {
+      console.log('Content fix -- skipping build validation (content fixes are JSON-only)');
+    } else if (success && FIX_TYPE !== 'content') {
+      console.log('Code/UX fix -- build validation already passed inside inner loop (BA-008.9)');
     }
 
     if (success) {

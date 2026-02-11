@@ -54,6 +54,18 @@ jobs:
           echo "$FIX_SUMMARY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+          # BA-008.9: Extract inner_loop_failures from PR body (hidden comment)
+          INNER_FAILURES=$(echo "$PR_BODY" | grep -o 'INNER_LOOP_FAILURES: .*' | sed 's/INNER_LOOP_FAILURES: //' | sed 's/ -->//' | head -1)
+          if [ -n "$INNER_FAILURES" ]; then
+            echo "Found inner loop failures from previous run"
+            echo "inner_loop_failures<<ILFEOF" >> $GITHUB_OUTPUT
+            echo "$INNER_FAILURES" >> $GITHUB_OUTPUT
+            echo "ILFEOF" >> $GITHUB_OUTPUT
+          else
+            echo "No inner loop failures found in PR body"
+            echo "inner_loop_failures=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Close PR with Rejection Comment
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
@@ -210,17 +222,19 @@ jobs:
           ATTEMPT: ${{ steps.count.outputs.attempt }}
           FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
           MAX_ATTEMPTS: ${{ steps.config.outputs.max_attempts }}
+          INNER_LOOP_FAILURES: ${{ steps.extract.outputs.inner_loop_failures }}
         run: |
 
           NEXT_ATTEMPT=$((ATTEMPT + 1))
           echo "Attempt $ATTEMPT < $MAX_ATTEMPTS — dispatching retry (attempt $NEXT_ATTEMPT)..."
 
-          # Build JSON safely using jq (handles special characters in user content)
+          # BA-008.9: Build JSON safely using jq, now including inner_loop_failures
           jq -n \
             --arg issue_num "$ISSUE_NUM" \
             --arg attempt "$NEXT_ATTEMPT" \
             --arg fix_summary "$FIX_SUMMARY" \
             --arg rejection_reason "$REJECTION_REASON" \
+            --arg inner_loop_failures "$INNER_LOOP_FAILURES" \
             '{
               event_type: "approve",
               client_payload: {
@@ -228,7 +242,8 @@ jobs:
                 retry: true,
                 attempt: ($attempt | tonumber),
                 previous_fix_summary: $fix_summary,
-                rejection_reason: $rejection_reason
+                rejection_reason: $rejection_reason,
+                inner_loop_failures: $inner_loop_failures
               }
             }' > /tmp/retry-payload.json
 

@@ -18,6 +18,7 @@ jobs:
   # First job: Create branch and apply fix
   create-fix:
     runs-on: macos-14
+    timeout-minutes: 45
     outputs:
       fix_type: ${{ steps.analyze.outputs.fix_type }}
       branch_name: ${{ steps.branch.outputs.name }}
@@ -37,6 +38,9 @@ jobs:
       fix_strategy: ${{ steps.fix.outputs.fix_strategy }}
       rca_root_cause: ${{ steps.fix.outputs.rca_root_cause }}
       rca_mechanism: ${{ steps.fix.outputs.rca_mechanism }}
+      qa_iterations: ${{ steps.fix.outputs.qa_iterations }}
+      qa_approved_iteration: ${{ steps.fix.outputs.qa_approved_iteration }}
+      inner_loop_failures: ${{ steps.fix.outputs.inner_loop_failures }}
 
     steps:
       - name: Checkout bug automation scripts
@@ -155,6 +159,11 @@ jobs:
           ATTEMPT: ${{ github.event.client_payload.attempt || '' }}
           PREVIOUS_FIX_SUMMARY: ${{ github.event.client_payload.previous_fix_summary || '' }}
           REJECTION_REASON: ${{ github.event.client_payload.rejection_reason || '' }}
+          INNER_LOOP_FAILURES: ${{ github.event.client_payload.inner_loop_failures || '' }}
+          FIX_MODEL: ${{ vars.FIX_MODEL || 'anthropic/claude-opus-4.6' }}
+          QA_MODEL: ${{ vars.QA_MODEL || 'openai/gpt-5.2-codex' }}
+          RCA_MODEL: ${{ vars.RCA_MODEL || 'anthropic/claude-opus-4.6' }}
+          FACT_CHECK_MODEL: ${{ vars.FACT_CHECK_MODEL || 'moonshotai/kimi-k2.5' }}
         run: |
           # Run the fix application script (scripts are in the public repo root)
           node ../Scripts/apply-fix.js
@@ -166,7 +175,7 @@ jobs:
         run: |
           cat > /tmp/comment-body.json << 'JSONEOF'
           {
-            "body": "## Build Validation Failed (QG-001)\n\nBoth the initial fix and retry (QG-002) failed compilation. No changes were committed.\n\nManual intervention required."
+            "body": "## Fix Generation Failed\n\nThe iterative fix loop (BA-008.9) could not produce a fix that passes both compilation and QA review after multiple attempts.\n\nManual intervention required."
           }
           JSONEOF
           gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/comments --input /tmp/comment-body.json
@@ -627,6 +636,16 @@ jobs:
           **Mechanism:** $RCA_MECHANISM"
           fi
 
+          # BA-008.9: Append QA iteration info
+          QA_ITERS="${{ needs.create-fix.outputs.qa_iterations }}"
+          QA_APPROVED="${{ needs.create-fix.outputs.qa_approved_iteration }}"
+          if [ -n "$QA_APPROVED" ] && [ "$QA_APPROVED" != "" ]; then
+            PR_BODY="$PR_BODY
+
+          ### QA Review
+          **QA iterations:** ${QA_ITERS:-1}, approved on iteration ${QA_APPROVED}"
+          fi
+
           if [ -n "$BUILD_URL" ]; then
             PR_BODY="$PR_BODY
 
@@ -646,6 +665,14 @@ jobs:
           $TEST_INSTRUCTIONS"
           fi
 
+          # BA-008.9: Embed inner_loop_failures in PR body for outer retry consumption
+          INNER_FAILURES="${{ needs.create-fix.outputs.inner_loop_failures }}"
+          INNER_FAILURES_SECTION=""
+          if [ -n "$INNER_FAILURES" ] && [ "$INNER_FAILURES" != "" ]; then
+            INNER_FAILURES_SECTION="
+          <!-- INNER_LOOP_FAILURES: $INNER_FAILURES -->"
+          fi
+
           PR_BODY="$PR_BODY
 
           ### Rejection Instructions
@@ -659,7 +686,7 @@ jobs:
 
           ---
           *This PR was automatically created by the bug fix system.*
-          *All fixes require manual review and merge.*"
+          *All fixes require manual review and merge.*${INNER_FAILURES_SECTION}"
 
           # Determine attempt number for title
           ATTEMPT="${{ github.event.client_payload.attempt || '1' }}"
