@@ -60,17 +60,52 @@ jobs:
         run: |
           echo "Closing PR #$PR_NUM..."
 
-          # Build comment via printf to avoid shell injection from REJECTION_REASON
-          {
-            echo "## Fix Rejected"
-            echo ""
-            printf "**Reason:** %s\n" "$REJECTION_REASON"
-            echo ""
-            echo "Automated pipeline fix did not resolve the bug. This PR has been closed automatically."
-            echo ""
-            echo "---"
-            echo "*Closed by fix-rejection workflow.*"
-          } > /tmp/reject-comment.md
+          # The attempt count is determined in a later step, but we need
+          # to know it now for the dynamic comment. Count rejections inline.
+          ISSUE_NUM_FROM_PR=$(gh pr view "$PR_NUM" --repo "$PRIVATE_REPO" --json body -q .body | grep -o 'Fixes #[0-9]*' | head -1 | grep -o '[0-9]*' || true)
+
+          # Count previous rejections to determine current attempt
+          if [ -n "$ISSUE_NUM_FROM_PR" ]; then
+            PREV_REJECTIONS=$(gh api "repos/$PRIVATE_REPO/issues/$ISSUE_NUM_FROM_PR/comments" \
+              --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt"))] | length' 2>/dev/null || echo "0")
+          else
+            PREV_REJECTIONS="0"
+          fi
+          CURRENT_ATTEMPT=$((PREV_REJECTIONS + 1))
+          MAX_ATTEMPTS=$(gh variable get MAX_FIX_ATTEMPTS --repo RaufGlasgow/sortinghistory-bugs 2>/dev/null || echo "2")
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ "$CURRENT_ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+            # Retrying — not at max attempts yet
+            {
+              echo "## Fix Rejected — Retry in Progress"
+              echo ""
+              printf "**Reason:** %s\n" "$REJECTION_REASON"
+              echo "**Attempt ${CURRENT_ATTEMPT} of ${MAX_ATTEMPTS} failed.**"
+              echo ""
+              echo "A new fix attempt is being generated with a different approach. A new PR will appear on the linked issue in approximately 10 minutes."
+              echo ""
+              echo "[View retry workflow](${RUN_URL})"
+              echo ""
+              echo "---"
+              echo "*Closed by fix-rejection workflow.*"
+            } > /tmp/reject-comment.md
+          else
+            # At max attempts — escalating
+            {
+              echo "## Fix Rejected — Escalated for Manual Fix"
+              echo ""
+              printf "**Reason:** %s\n" "$REJECTION_REASON"
+              echo "**All ${MAX_ATTEMPTS} automated attempts have failed.**"
+              echo ""
+              echo "The issue has been labeled \`needs-manual-fix\`. A developer needs to investigate and fix this bug manually."
+              echo ""
+              echo "No further automated fix attempts will be made unless the issue is re-approved."
+              echo ""
+              echo "---"
+              echo "*Closed by fix-rejection workflow.*"
+            } > /tmp/reject-comment.md
+          fi
 
           gh pr comment "$PR_NUM" --repo "$PRIVATE_REPO" -F /tmp/reject-comment.md
           gh pr close "$PR_NUM" --repo "$PRIVATE_REPO"
@@ -90,11 +125,21 @@ jobs:
 
           echo "Pipeline labels removed from issue #$ISSUE_NUM"
 
+      - name: Get Max Fix Attempts
+        id: config
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          MAX_ATTEMPTS=$(gh variable get MAX_FIX_ATTEMPTS --repo RaufGlasgow/sortinghistory-bugs 2>/dev/null || echo "2")
+          echo "max_attempts=$MAX_ATTEMPTS" >> $GITHUB_OUTPUT
+          echo "Max fix attempts configured: $MAX_ATTEMPTS"
+
       - name: Count Previous Rejections
         id: count
         if: steps.extract.outputs.issue_found == 'true'
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          MAX_ATTEMPTS: ${{ steps.config.outputs.max_attempts }}
         run: |
           ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
 
@@ -108,6 +153,15 @@ jobs:
           echo "attempt=$ATTEMPT" >> $GITHUB_OUTPUT
           echo "rejection_count=$REJECTION_COUNT" >> $GITHUB_OUTPUT
 
+          # Determine retry vs escalate using configurable max
+          if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+            echo "should_retry=true" >> $GITHUB_OUTPUT
+            echo "Decision: RETRY (attempt $ATTEMPT < max $MAX_ATTEMPTS)"
+          else
+            echo "should_retry=false" >> $GITHUB_OUTPUT
+            echo "Decision: ESCALATE (attempt $ATTEMPT >= max $MAX_ATTEMPTS)"
+          fi
+
       - name: Post Failure Context on Issue
         if: steps.extract.outputs.issue_found == 'true'
         env:
@@ -115,11 +169,22 @@ jobs:
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
           FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
+          MAX_ATTEMPTS: ${{ steps.config.outputs.max_attempts }}
         run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Determine accurate next steps based on whether retry or escalation
+          if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+            NEXT_STEPS="A retry is already in progress. A new PR will appear on this issue in ~10 minutes.
+
+          [View retry workflow](${RUN_URL})"
+          else
+            NEXT_STEPS="All automated attempts failed. This issue needs manual investigation. Label: \`needs-manual-fix\`"
+          fi
 
           # Build comment body via printf to safely handle user-provided content
           {
-            echo "## Fix Rejected (Attempt $ATTEMPT/2)"
+            echo "## Fix Rejected (Attempt $ATTEMPT/$MAX_ATTEMPTS)"
             echo ""
             echo "**PR:** #$PR_NUM (closed)"
             printf "**Rejection reason:** %s\n" "$REJECTION_REASON"
@@ -128,7 +193,7 @@ jobs:
             echo "$FIX_SUMMARY"
             echo ""
             echo "### Next steps"
-            echo "Re-approve the issue to trigger a new fix attempt, or assign to a developer for manual resolution."
+            echo "$NEXT_STEPS"
             echo ""
             echo "---"
             echo "*Posted by fix-rejection workflow.*"
@@ -138,16 +203,17 @@ jobs:
           echo "Failure context posted on issue #$ISSUE_NUM"
 
       - name: Dispatch Retry (if under max attempts)
-        if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.attempt == '1'
+        if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.should_retry == 'true'
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
           FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
+          MAX_ATTEMPTS: ${{ steps.config.outputs.max_attempts }}
         run: |
 
           NEXT_ATTEMPT=$((ATTEMPT + 1))
-          echo "Attempt $ATTEMPT < 2 — dispatching retry (attempt $NEXT_ATTEMPT)..."
+          echo "Attempt $ATTEMPT < $MAX_ATTEMPTS — dispatching retry (attempt $NEXT_ATTEMPT)..."
 
           # Build JSON safely using jq (handles special characters in user content)
           jq -n \
@@ -171,13 +237,14 @@ jobs:
           echo "Retry dispatch sent for issue #$ISSUE_NUM (attempt $NEXT_ATTEMPT)"
 
       - name: Escalate to Manual Fix (max attempts reached)
-        if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.attempt != '1'
+        if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.should_retry == 'false'
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
         run: |
-          echo "Attempt $ATTEMPT >= 2 — retries exhausted, escalating to manual fix"
+          MAX_ATTEMPTS="${{ steps.config.outputs.max_attempts }}"
+          echo "Attempt $ATTEMPT >= $MAX_ATTEMPTS — retries exhausted, escalating to manual fix"
 
           # Add fix-failed + needs-manual-fix labels (only on escalation, not on retry)
           gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \

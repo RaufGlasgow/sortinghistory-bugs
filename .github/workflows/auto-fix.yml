@@ -396,8 +396,26 @@ jobs:
             xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
           fi
 
-          # Wait for app to fully load and render target screen
-          sleep 12
+          # Poll for app process readiness instead of fixed sleep
+          MAX_WAIT=30
+          WAITED=0
+          echo "Waiting for app to launch..."
+          while [ $WAITED -lt $MAX_WAIT ]; do
+            if xcrun simctl spawn "$DEVICE_ID" launchctl list 2>/dev/null | grep -q "$BUNDLE_ID"; then
+              echo "App process detected after ${WAITED}s"
+              break
+            fi
+            sleep 2
+            WAITED=$((WAITED + 2))
+          done
+
+          if [ $WAITED -ge $MAX_WAIT ]; then
+            echo "WARNING: App not detected after ${MAX_WAIT}s, proceeding anyway"
+          fi
+
+          # Additional settle time after process detection for view hierarchy to render
+          sleep 5
+          echo "Taking screenshot after $((WAITED + 5))s total wait"
 
           # Light mode screenshot
           xcrun simctl io "$DEVICE_ID" screenshot screenshot-light.png
@@ -425,9 +443,11 @@ jobs:
           PRIVATE_REPO_TOKEN: ${{ secrets.Private_repo_Pat }}
           ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
           PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
-          FIX_SUMMARY: ${{ needs.create-fix.outputs.fix_summary }}
-          FIX_TYPE: ${{ needs.create-fix.outputs.fix_type }}
-        run: node automation/Scripts/visual-review.js screenshot-light.png screenshot-dark.png
+        run: |
+          # Pass needs.* outputs via inline export — step-level env: with needs.* silently breaks Actions
+          export FIX_SUMMARY='${{ needs.create-fix.outputs.fix_summary }}'
+          export FIX_TYPE='${{ needs.create-fix.outputs.fix_type }}'
+          node automation/Scripts/visual-review.js screenshot-light.png screenshot-dark.png
 
       - name: Upload Build Log
         if: always() && steps.build.outcome != 'skipped'
@@ -595,15 +615,32 @@ jobs:
 
           PR_BODY="$PR_BODY
 
+          ### Rejection Instructions
+          If this fix doesn't work, post a comment **on this PR** with:
+          \`\`\`
+          /reject Describe what's still broken
+          \`\`\`
+          **What happens after rejection:**
+          - Attempt 1: Pipeline automatically retries with a different approach. New PR in ~10 minutes.
+          - Final attempt: Pipeline escalates — adds \`needs-manual-fix\` label to the issue.
+
           ---
           *This PR was automatically created by the bug fix system.*
           *All fixes require manual review and merge.*"
+
+          # Determine attempt number for title
+          ATTEMPT="${{ github.event.client_payload.attempt || '1' }}"
+          if [ "$ATTEMPT" -gt 1 ] 2>/dev/null; then
+            PR_TITLE="fix(issue ${{ env.ISSUE_NUM }}, attempt ${ATTEMPT}): $ISSUE_TITLE"
+          else
+            PR_TITLE="fix(issue ${{ env.ISSUE_NUM }}): $ISSUE_TITLE"
+          fi
 
           gh pr create \
             --repo RaufGlasgow/Sorting-History \
             --head "fix/bug-${{ env.ISSUE_NUM }}" \
             --base main \
-            --title "fix: #${{ env.ISSUE_NUM }} - $ISSUE_TITLE" \
+            --title "$PR_TITLE" \
             --body "$PR_BODY"
 
           # Get PR number and URL
@@ -738,36 +775,32 @@ jobs:
             gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
 
           elif [ "$BUILD_OUTCOME" != "success" ]; then
-            BODY=$(cat <<'COMMENT_EOF'
-          ## :x: Tests: Skipped (Build Failed)
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            BODY="## :x: Tests: Skipped (Build Failed)
 
           The project failed to compile, so tests could not run.
-          Check the build log in the [sortinghistory-bugs workflow artifacts](https://github.com/RaufGlasgow/sortinghistory-bugs/actions) for details.
-          COMMENT_EOF
-          )
+          Check the build log in the [workflow run artifacts]($RUN_URL) for details."
             gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
 
           else
-            BODY=$(cat <<'COMMENT_EOF'
-          ## :warning: Tests: Need Review
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            BODY="## :warning: Tests: Need Review
 
           Some tests failed. This may indicate a real regression or flaky tests.
           Review the output below and decide whether to merge.
 
           <details><summary>View test failure details</summary>
 
-          Check the test log artifact in the [sortinghistory-bugs workflow run](https://github.com/RaufGlasgow/sortinghistory-bugs/actions) for full output.
+          Check the test log artifact in the [workflow run]($RUN_URL) for full output.
 
           </details>
 
-          *Full logs available as workflow artifacts in the [sortinghistory-bugs](https://github.com/RaufGlasgow/sortinghistory-bugs) repo.*
-          COMMENT_EOF
-          )
+          *Full logs available as workflow artifacts in the [workflow run]($RUN_URL).*"
             gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
           fi
 
       - name: Post Visual Review Comment
-        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_type == 'ux'
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.test-fix.outputs.screenshot_light_url != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
@@ -829,19 +862,96 @@ jobs:
           )
           gh pr comment --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --body "$BODY"
 
-      - name: Update Issue with PR Link
+      - name: Minimize Stale Fix PR Comments
+        if: always() && steps.create-pr.outputs.pr_url != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          # Fetch existing comments that contain old status cards
+          COMMENTS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/comments \
+            --jq '.[] | select(.body | test("## Fix PR")) | .node_id')
+
+          # Minimize each old comment as outdated
+          for NODE_ID in $COMMENTS; do
+            gh api graphql -f query='
+              mutation {
+                minimizeComment(input: {subjectId: "'"$NODE_ID"'", classifier: OUTDATED}) {
+                  minimizedComment { isMinimized }
+                }
+              }
+            ' || true
+          done
+
+      - name: Post Fix PR Status Card on Issue
         if: always() && steps.create-pr.outputs.pr_url != ''
         env:
           GH_TOKEN: ${{ secrets.Private_repo_Pat }}
         run: |
-          gh issue comment --repo RaufGlasgow/Sorting-History ${{ env.ISSUE_NUM }} \
-            --body "## Fix PR Created
+          PR_NUM="${{ steps.create-pr.outputs.pr_number }}"
+          PR_URL="${{ steps.create-pr.outputs.pr_url }}"
+          BRANCH="fix/bug-${{ env.ISSUE_NUM }}"
+          ATTEMPT="${{ github.event.client_payload.attempt || '1' }}"
+          MAX_ATTEMPTS=$(gh variable get MAX_FIX_ATTEMPTS --repo RaufGlasgow/sortinghistory-bugs 2>/dev/null || echo "2")
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-          A pull request has been created to fix this issue.
+          {
+            echo "## Fix PR Ready for Review: PR #${PR_NUM}"
+            echo ""
+            echo "**Status:** Awaiting your review"
+            echo "**Branch:** \`${BRANCH}\`"
+            echo "**Attempt:** ${ATTEMPT} of ${MAX_ATTEMPTS}"
+            echo ""
+            echo "### Next Steps"
+            echo "1. Review the changes in [PR #${PR_NUM}](${PR_URL})"
+            echo "2. If the fix looks correct, merge the PR"
+            echo "3. If the fix is wrong, post a comment **on the PR** (not here) with:"
+            echo '   ```'
+            echo "   /reject Reason why the fix doesn't work"
+            echo '   ```'
+            echo ""
+            echo "> **Important:** The \`/reject\` command must be posted on the PR, not on this issue."
+            echo ""
+            echo "[View workflow run](${RUN_URL})"
+          } > /tmp/status-card.md
 
-          **PR:** ${{ steps.create-pr.outputs.pr_url }}
+          gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" -F /tmp/status-card.md
 
-          Please review and merge when ready."
+      - name: Diff Size Guard
+        if: always() && steps.create-pr.outputs.pr_number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          PRIVATE_REPO="RaufGlasgow/Sorting-History"
+
+          # Check diff size
+          DIFF_LINES=$(gh pr diff "$PR_NUMBER" --repo "$PRIVATE_REPO" | wc -l | tr -d ' ')
+          DIFF_FILES=$(gh pr files "$PR_NUMBER" --repo "$PRIVATE_REPO" | wc -l | tr -d ' ')
+
+          echo "Diff: $DIFF_LINES lines, $DIFF_FILES files"
+
+          if [ "$DIFF_LINES" -gt 500 ] || [ "$DIFF_FILES" -gt 5 ]; then
+            echo "WARNING: Large diff detected ($DIFF_LINES lines, $DIFF_FILES files)"
+
+            # Ensure label exists
+            gh label create "large-diff" --repo "$PRIVATE_REPO" --color "D93F0B" --description "Automated fix with unusually large diff" 2>/dev/null || true
+
+            gh pr edit "$PR_NUMBER" --repo "$PRIVATE_REPO" --add-label "large-diff"
+
+            # Build warning message with actual values
+            WARNING_MSG="## Large Diff Warning
+
+          This automated fix modifies **${DIFF_LINES} lines** across **${DIFF_FILES} files**. Automated fixes should be small and focused — a large diff may indicate the fix is incorrect or overly broad.
+
+          Please review this PR with extra scrutiny.
+
+          ---
+          *Flagged by automated diff size guard.*"
+
+            gh pr comment "$PR_NUMBER" --repo "$PRIVATE_REPO" --body "$WARNING_MSG"
+          fi
 
       - name: Update Issue Labels
         if: always()

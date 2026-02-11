@@ -152,6 +152,85 @@ function extractSuggestedFix(comments) {
 }
 
 /**
+ * BA-008.2 P1-8: Validate pre-analysis from issue comments before injecting
+ * into the code fix prompt. Filters out low-quality analysis that contains
+ * hedge language or references non-existent files.
+ */
+function validatePreAnalysis(analysis, gameCodePath) {
+  if (!analysis) {
+    return { valid: false, reason: 'No analysis provided' };
+  }
+
+  const analysisStr = JSON.stringify(analysis);
+
+  if (analysisStr.trim().length === 0) {
+    return { valid: false, reason: 'Empty analysis' };
+  }
+
+  const hedgePatterns = [
+    /or similar file/i,
+    /something like/i,
+    /probably in/i,
+    /might be in/i,
+    /could be in/i,
+    /I think the file is/i,
+    /I'm not sure/i,
+  ];
+
+  for (const pattern of hedgePatterns) {
+    if (pattern.test(analysisStr)) {
+      const matched = analysisStr.match(pattern);
+      return { valid: false, reason: `Contains hedge language: "${matched[0]}"` };
+    }
+  }
+
+  const filePathPattern = /(?:^|\s)([\w\/]+\.swift)(?:\s|$|,|:|")/gm;
+  let match;
+  while ((match = filePathPattern.exec(analysisStr)) !== null) {
+    const filePath = match[1];
+    const fullPath = path.join(gameCodePath, filePath);
+    if (!fs.existsSync(fullPath)) {
+      const basename = path.basename(filePath);
+      const found = findFileInDirs(gameCodePath, basename);
+      if (!found) {
+        return { valid: false, reason: `References non-existent file: ${filePath}` };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+function findFileInDirs(rootDir, targetBasename) {
+  const searchDirs = ['Views', 'ViewModels', 'Models', 'Features', 'Core', 'Network', 'Data'];
+  for (const dir of searchDirs) {
+    const fullDir = path.join(rootDir, dir);
+    if (!fs.existsSync(fullDir)) continue;
+    const result = findFileRecursiveInDir(fullDir, targetBasename);
+    if (result) return result;
+  }
+  return null;
+}
+
+function findFileRecursiveInDir(dir, targetBasename) {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = findFileRecursiveInDir(fullPath, targetBasename);
+        if (found) return found;
+      } else if (entry.name === targetBasename) {
+        return fullPath;
+      }
+    }
+  } catch (e) {
+    // Directory not readable, skip
+  }
+  return null;
+}
+
+/**
  * Validate a content JSON file after modification. (AC2)
  * Checks: parseable JSON, top-level structure, required fields on every event.
  * Returns { valid: true } or { valid: false, errors: [...] }
@@ -522,7 +601,7 @@ async function applyCodeFix(suggestedFix, issue) {
       body: JSON.stringify({
         model: CODE_MODEL,
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 4000,
+        max_tokens: 8000,
       }),
     });
 
@@ -1528,7 +1607,7 @@ Do not repeat the same mistake. Double-check your code compiles before respondin
       body: JSON.stringify({
         model: CODE_MODEL,
         messages: [{ role: 'user', content: retryPrompt }],
-        max_tokens: 4000,
+        max_tokens: 8000,
       }),
     });
 
@@ -1621,10 +1700,21 @@ async function main() {
     const { issue, comments } = await fetchIssueWithComments();
 
     // Extract suggested fix from analysis
-    const suggestedFix = extractSuggestedFix(comments);
+    let suggestedFix = extractSuggestedFix(comments);
 
     if (suggestedFix) {
       console.log('Found suggested fix:', JSON.stringify(suggestedFix, null, 2));
+
+      // BA-008.2 P1-8: Validate pre-analysis before using it
+      // Script runs with working-directory: game-code, so cwd IS the game code root
+      const gameCodePath = process.cwd();
+      const validation = validatePreAnalysis(suggestedFix, gameCodePath);
+      if (!validation.valid) {
+        console.log(`[WARN] Pre-analysis excluded: ${validation.reason}`);
+        suggestedFix = null;
+      } else {
+        console.log('[INFO] Pre-analysis validated, injecting into prompt');
+      }
     } else {
       console.log('No structured fix data found, will attempt smart detection');
     }
