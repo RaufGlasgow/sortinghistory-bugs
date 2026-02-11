@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "views": {
+    "Views/GameSetupView.swift": {
+      "embeds": [
+        "Views/GameSetupSections.swift",
+        "Views/GameSetupComponents.swift"
+      ],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager -- shared across all setup sections",
+        "@EnvironmentObject coordinator: AppCoordinator -- navigation coordinator",
+        "@State showGameModeHelp / showScoringModeHelp / showGameLengthHelp / showCategoriesHelp: Bool -- four separate help tooltip states, each bound to a child section via @Binding",
+        "@State hasShownGameModeHint / hasShownScoringModeHint / hasShownGameLengthHint / hasShownCategoriesHint: Bool -- per-session guards so each tooltip fires at most once",
+        "@AppStorage(\"showSetupHints\") showSetupHints: Bool -- persisted toggle controlling whether auto-show hints are enabled",
+        "Each section child (GameModeSection, ScoringModeSection, GameLengthSection, CategoriesSection) receives @Binding showHelp and hasShownHint, and sets showHelp=true in .onAppear if showSetupHints && !hasShownHint",
+        ".alert(isPresented:) modifiers on GameSetupView parent are bound to the four showXxxHelp @State vars"
+      ],
+      "runtimeNotes": [
+        "All child sections are inside a ScrollView VStack -- they ALL fire .onAppear simultaneously on first render, not when scrolled into view",
+        "Multiple .alert(isPresented:) bindings on the same view -- if multiple sections set their showHelp=true in the same frame, only the LAST-set binding displays. Earlier alerts are silently swallowed.",
+        "DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) in each section's .onAppear means all four fire ~300ms after render, creating a race condition for alert display",
+        "BUG-001 (help bubble) root cause: all .onAppear fire simultaneously, all set showHelp=true within same frame window, only one alert actually shows"
+      ]
+    },
+    "Views/GameSetupSections.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "GameModeSection: @ObservedObject gameManager, @Binding showHelp, @Binding hasShownHint, showSetupHints (let)",
+        "ScoringModeSection: same pattern as GameModeSection",
+        "GameLengthSection: same pattern as GameModeSection",
+        "CategoriesSection: @ObservedObject gameManager, @Binding selectedCategories, @Binding showHelp, @Binding hasShownHint, @Binding showingSaveDialog, @Binding showingSavedSets, showSetupHints (let)",
+        "PlayerModeSection: @ObservedObject gameManager only",
+        "TeamSetupSection: @ObservedObject gameManager, @Binding teamCount, @Binding teamNames, focusedTeamIndex, onTeamTap closure",
+        "YearBasedScoringSection: @ObservedObject gameManager only"
+      ],
+      "runtimeNotes": [
+        "Contains 8 section structs: GameModeSection, ScoringModeSection, YearBasedScoringSection, GameLengthSection, CategoriesSection, PlayerModeSection, TeamSetupSection, TeamNamesSection",
+        "Four sections (GameMode, ScoringMode, GameLength, Categories) have .onAppear that auto-triggers help tooltips -- these all fire simultaneously because they share a parent ScrollView"
+      ]
+    },
+    "Views/GameSetupComponents.swift": {
+      "embeds": [],
+      "viewModel": null,
+      "stateFlow": [
+        "Stateless UI components: CategoryToggle, PresetButton, GameModeCard, ScoringModeCard, GameLengthCard, etc.",
+        "SaveCategorySetDialog and SavedCategorySetsView use @Binding for state"
+      ],
+      "runtimeNotes": [
+        "Pure presentation components -- no .onAppear or complex state logic",
+        "ModernCategoryCard shows lock icon based on category.isLocked -- EntitlementManager integration pending"
+      ]
+    },
+    "Views/ModernSortingGameView.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager -- primary game state",
+        "@EnvironmentObject coordinator: AppCoordinator -- navigation",
+        "@State selectedPosition: Int? -- tracks where user wants to place event",
+        "@State showingResult: Bool -- controls result overlay visibility",
+        "@State draggedOffset: CGSize -- drag-and-drop offset tracking",
+        "@AppStorage(\"showSetupHints\") showSetupHints -- controls scroll hint display in FlowingTimelineView"
+      ],
+      "runtimeNotes": [
+        "Contains multiple nested struct views: GameTopBar, ModernCurrentEventCard, FlowingTimelineView, PhoneTimelineCard, CompactTimelineCard, TimelinePlacementButton, ModernTimelineCard, ResultView",
+        "FlowingTimelineView has its own .onAppear scroll hint logic with @AppStorage",
+        "Uses GeometryReader for responsive layout -- isPhone = geometry.size.width < 500",
+        "Team mode turn indicator varies between multiplayer and local play"
+      ]
+    },
+    "Views/ResultsView.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/ResultsViewModel.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager -- reads final game state",
+        "@EnvironmentObject coordinator: AppCoordinator -- for navigation (new game / main menu)",
+        "@State showConfetti: Bool -- triggers confetti animation on appear",
+        "@State editingTeamIndex / editingTeamName -- inline team name editing"
+      ],
+      "runtimeNotes": [
+        "Contains sub-views: SoloResultsCard, TeamResultsSection, TeamScoreRow, StatBox, ConfettiView",
+        "On 'New Game' button: resets multiplayer state, clears game flags, navigates to setup",
+        "On 'Main Menu' button: same cleanup plus resets playerMode to .solo",
+        "showConfetti triggers on .onAppear of header text -- happens once per results screen"
+      ]
+    },
+    "Views/SettingsView.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager -- sound, dark mode, game state",
+        "@EnvironmentObject coordinator: AppCoordinator -- navigation back to main menu",
+        "@AppStorage(\"showSetupHints\") showSetupHints -- toggle for auto-show hints",
+        "@State showingLanguageSelection: Bool -- language picker sheet",
+        "SubscriptionSettingsSection (embedded, defined in same file) uses @EnvironmentObject gameManager"
+      ],
+      "runtimeNotes": [
+        "Contains sub-views: SettingsSection, SettingsToggle, InfoRow, FeatureList, SubscriptionSettingsSection",
+        "SubscriptionSettingsSection currently has placeholder EntitlementManager access (returns .adSupported hardcoded)",
+        "Version string displayed at InfoRow(title: \"Version\", value: \"1.1.0-alpha.XXX\") -- this is updated by pipeline",
+        "Bug fix pipeline modifies this file for version bumps -- search/replace on the version value string"
+      ]
+    },
+    "Views/ModernMainMenuView.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager -- checks hasSavedGame, sets playerMode, isMultiplayer",
+        "@EnvironmentObject coordinator: AppCoordinator -- navigation to setup, settings, multiplayer lobby, timeline history",
+        "@State animateTitle / animateButtons: Bool -- entrance animations"
+      ],
+      "runtimeNotes": [
+        "Contains sub-views: MenuButtonModern, SmallMenuButton, GeometricBackgroundView",
+        "animateTitle triggers a repeatForever rotation on .onAppear",
+        "animateButtons triggers a delayed fade-in on .onAppear",
+        "Resume Game button only appears when gameManager.hasSavedGame is true",
+        "Scroll is disabled on non-phone devices: .scrollDisabled(!ScreenSize.isPhone(geometry))"
+      ]
+    },
+    "Views/SortingHistoryGameView.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager",
+        "@EnvironmentObject coordinator: AppCoordinator",
+        "@State selectedPosition / showingResult / lastPlacementCorrect / isEditingTeamName / editingTeamName"
+      ],
+      "runtimeNotes": [
+        "Legacy game view -- ModernSortingGameView is the active version used in production",
+        "Still in codebase but may not be reachable from current navigation flow"
+      ]
+    },
+    "Views/Paywall/PaywallView.swift": {
+      "embeds": [
+        "Views/Paywall/PeriodSelectorView.swift",
+        "Views/Paywall/SubscriptionComparisonView.swift"
+      ],
+      "viewModel": null,
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager",
+        "@StateObject viewModel: PaywallViewModel -- initialized with StoreServiceProtocol and EntitlementManager",
+        "triggeringCategory: HistoryCategory? -- optional context for which locked category triggered paywall",
+        "onPurchaseComplete: (() -> Void)? -- callback on successful purchase"
+      ],
+      "runtimeNotes": [
+        "EntitlementManager is injected via init, not EnvironmentObject",
+        "PaywallViewModel handles all StoreKit purchase flow and EntitlementManager updates"
+      ]
+    },
+    "Views/MultiplayerLobbyView.swift": {
+      "embeds": [],
+      "viewModel": "ViewModels/GameManager.swift",
+      "stateFlow": [
+        "@EnvironmentObject gameManager: GameManager",
+        "@EnvironmentObject coordinator: AppCoordinator"
+      ],
+      "runtimeNotes": [
+        "Multiplayer peer discovery and lobby management",
+        "Uses gameManager.multipeerManager for network session control"
+      ]
+    }
+  },
+  "services": {
+    "Core/Services/Monetization/EntitlementManager.swift": {
+      "consumers": [
+        "Views/Paywall/PaywallView.swift",
+        "Views/SettingsView.swift"
+      ],
+      "notes": [
+        "Uses @Published for all state properties -- standard ObservableObject pattern",
+        "@MainActor class -- all mutations must happen on main thread",
+        "Conforms to SubscriptionStatusProviding protocol for view dependency injection",
+        "canAccess(category:) delegates to CategoryAccessHelper using currentTier and temporaryUnlocks",
+        "loadCachedEntitlements() restores state from UserDefaults on init -- cached tier may be stale until validateEntitlements() runs",
+        "processTransaction() handles real-time StoreKit 2 updates -- compares incoming tier to currentTier",
+        "SettingsView currently has PLACEHOLDER EntitlementManager access (hardcoded .adSupported)"
+      ]
+    },
+    "ViewModels/GameManager.swift": {
+      "consumers": [
+        "Views/GameSetupView.swift",
+        "Views/GameSetupSections.swift",
+        "Views/ModernSortingGameView.swift",
+        "Views/ResultsView.swift",
+        "Views/SettingsView.swift",
+        "Views/ModernMainMenuView.swift",
+        "Views/SortingHistoryGameView.swift",
+        "Views/MultiplayerLobbyView.swift",
+        "Views/Paywall/PaywallView.swift"
+      ],
+      "notes": [
+        "Central ObservableObject for game state -- injected as @EnvironmentObject in nearly every view",
+        "Owns: gameMode, playerMode, gameLength, scoringMode, selectedCategories, currentEvent, timeline, teams, soloPlayer, isDarkMode, isSoundEnabled, etc.",
+        "Has weak var coordinator: AppCoordinator? for navigation",
+        "Multiplayer support via multipeerManager and syncManager",
+        "userTier: UserTier property for category lock UI (ASR-001.2)"
+      ]
+    },
+    "Models/App/AppCoordinator.swift": {
+      "consumers": [
+        "Views/GameSetupView.swift",
+        "Views/ModernSortingGameView.swift",
+        "Views/ResultsView.swift",
+        "Views/SettingsView.swift",
+        "Views/ModernMainMenuView.swift",
+        "Views/MultiplayerLobbyView.swift"
+      ],
+      "notes": [
+        "Single source of truth for navigation -- injected as @EnvironmentObject",
+        "Methods: showMainMenu(), showSetup(), showSettings(), startSortingGame(), startGuessYearGame(), showMultiplayerLobby(), showTimelineHistory()"
+      ]
+    }
+  },
+  "swiftui_behaviors": {
+    "onAppear_in_ScrollView": "All child views inside a ScrollView fire .onAppear simultaneously when the ScrollView first renders, NOT when each child scrolls into view. This means if 4 sections each trigger an action in .onAppear, all 4 actions execute at the same time on first render.",
+    "alert_collision": "If multiple .alert(isPresented:) modifiers are attached to the same view and multiple bindings are set to true in the same frame (or within a short window), only the LAST one set actually displays. Earlier alerts are silently swallowed by SwiftUI. This is a known SwiftUI limitation.",
+    "state_vs_appstorage": "@State resets when the view is recreated (e.g., navigating away and back). @AppStorage persists to UserDefaults and survives view recreation. Use @AppStorage for settings that should persist across sessions, @State for ephemeral UI state.",
+    "binding_propagation": "@Binding changes in child views immediately propagate to the parent. If a parent has .alert(isPresented: $binding) and a child sets binding = true in .onAppear, the alert fires on the parent view. Combined with onAppear_in_ScrollView, this creates race conditions when multiple children set different bindings.",
+    "environmentobject_crash": "If a view uses @EnvironmentObject but the object is not provided by an ancestor via .environmentObject(), the app crashes at runtime with no compile-time warning. This is a common source of crashes when views are presented in sheets or navigation destinations without re-injecting environment objects.",
+    "geometryreader_sizing": "GeometryReader proposes the full available size to its child, but the child's frame determines the GeometryReader's own size. Wrapping content in GeometryReader can cause unexpected layout behavior if the content doesn't explicitly set its frame.",
+    "published_existential_limitation": "@Published does not work correctly with existential types (any Protocol). The property wrapper cannot detect changes through the existential wrapper. Workaround: use willSet { objectWillChange.send() } instead of @Published for existential-typed properties."
+  }
+}

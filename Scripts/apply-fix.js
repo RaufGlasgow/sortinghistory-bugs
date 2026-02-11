@@ -52,8 +52,23 @@ const FACT_CHECK_MODEL = 'moonshotai/kimi-k2.5';
 const DATA_EVENTS_PATH = 'Data/Events';
 const SETTINGS_VIEW_PATH = 'Views/SettingsView.swift';
 
+// BA-008.3: Architecture context registry path (relative to script location)
+const ARCHITECTURE_REGISTRY_PATH = path.join(__dirname, 'context', 'architecture-registry.json');
+
+// BA-008.3: Module-level storage for architecture context (populated by gatherRelevantContext,
+// consumed by buildCodeFixPrompt). Graceful default: empty notes and behaviors.
+let _architectureNotes = [];
+let _relevantBehaviors = {};
+
 // Required fields for content event validation (AC2)
 const REQUIRED_EVENT_FIELDS = ['title', 'year', 'description'];
+
+// BA-008.4: RCA configuration
+const RCA_TIMEOUT_MS = 60000;     // 60 seconds timeout for RCA call
+const RCA_MAX_TOKENS = 2000;
+const RCA_TEMPERATURE = 0.3;
+const CODE_GEN_TEMPERATURE = 0;   // Deterministic output for code generation
+const HARD_CAP_CHARS = 150000;    // 150K character hard cap on total prompt
 
 // Context gathering limits (QG-005 / BA-007.8)
 const PRIMARY_FILE_LIMIT = 20000;    // Primary fix target
@@ -76,6 +91,140 @@ function readFileWithLimit(filePath, limit) {
   const lastNewline = truncated.lastIndexOf('\n');
   const cleanTruncated = lastNewline > 0 ? truncated.substring(0, lastNewline) : truncated;
   return cleanTruncated + `\n\n// ... [TRUNCATED — showing ${cleanTruncated.length} of ${fullContent.length} chars] ...`;
+}
+
+/**
+ * BA-008.3: Load the architecture context registry.
+ * Returns the parsed registry object, or null if the file is missing or malformed.
+ * Graceful fallback: never throws — logs a warning and returns null.
+ */
+function loadArchitectureRegistry() {
+  try {
+    if (!fs.existsSync(ARCHITECTURE_REGISTRY_PATH)) {
+      console.log('[ARCH] Architecture registry not found at ' + ARCHITECTURE_REGISTRY_PATH + ' — skipping');
+      return null;
+    }
+    const raw = fs.readFileSync(ARCHITECTURE_REGISTRY_PATH, 'utf8');
+    const registry = JSON.parse(raw);
+    if (!registry.views || !registry.services || !registry.swiftui_behaviors) {
+      console.warn('[ARCH] Registry loaded but missing required sections (views/services/swiftui_behaviors) — skipping');
+      return null;
+    }
+    console.log(`[ARCH] Architecture registry loaded: ${Object.keys(registry.views).length} views, ${Object.keys(registry.services).length} services, ${Object.keys(registry.swiftui_behaviors).length} behaviors`);
+    return registry;
+  } catch (e) {
+    console.warn(`[ARCH] Failed to load architecture registry: ${e.message} — falling back to default behavior`);
+    return null;
+  }
+}
+
+/**
+ * BA-008.3: Given the set of files already gathered, look up each in the
+ * architecture registry and return additional files that should be force-included
+ * (embeds, viewModel, consumers). Also returns architecture notes (stateFlow,
+ * runtimeNotes) and relevant swiftui_behaviors for prompt injection.
+ *
+ * @param {Object} registry - The loaded architecture registry
+ * @param {Object} contextFiles - Map of filePath -> content already gathered
+ * @returns {{ additionalFiles: string[], archNotes: string[], relevantBehaviors: Object }}
+ */
+function getArchitectureContext(registry, contextFiles) {
+  const additionalFiles = [];
+  const archNotes = [];
+  const relevantBehaviorKeys = new Set();
+
+  const allContextPaths = Object.keys(contextFiles);
+
+  for (const filePath of allContextPaths) {
+    // Check views section
+    const viewEntry = registry.views[filePath];
+    if (viewEntry) {
+      // Force-include embeds
+      if (viewEntry.embeds && Array.isArray(viewEntry.embeds)) {
+        for (const embed of viewEntry.embeds) {
+          if (!contextFiles[embed] && !additionalFiles.includes(embed)) {
+            additionalFiles.push(embed);
+          }
+        }
+      }
+      // Force-include viewModel
+      if (viewEntry.viewModel && !contextFiles[viewEntry.viewModel] && !additionalFiles.includes(viewEntry.viewModel)) {
+        additionalFiles.push(viewEntry.viewModel);
+      }
+      // Collect stateFlow notes
+      if (viewEntry.stateFlow && Array.isArray(viewEntry.stateFlow)) {
+        archNotes.push(`### ${filePath} — State Flow`);
+        for (const note of viewEntry.stateFlow) {
+          archNotes.push(`- ${note}`);
+        }
+      }
+      // Collect runtimeNotes
+      if (viewEntry.runtimeNotes && Array.isArray(viewEntry.runtimeNotes)) {
+        archNotes.push(`### ${filePath} — Runtime Notes`);
+        for (const note of viewEntry.runtimeNotes) {
+          archNotes.push(`- ${note}`);
+        }
+      }
+    }
+
+    // Check services section
+    const serviceEntry = registry.services[filePath];
+    if (serviceEntry) {
+      // Force-include consumers
+      if (serviceEntry.consumers && Array.isArray(serviceEntry.consumers)) {
+        for (const consumer of serviceEntry.consumers) {
+          if (!contextFiles[consumer] && !additionalFiles.includes(consumer)) {
+            additionalFiles.push(consumer);
+          }
+        }
+      }
+      // Collect service notes
+      if (serviceEntry.notes && Array.isArray(serviceEntry.notes)) {
+        archNotes.push(`### ${filePath} — Service Notes`);
+        for (const note of serviceEntry.notes) {
+          archNotes.push(`- ${note}`);
+        }
+      }
+    }
+  }
+
+  // Determine which swiftui_behaviors are relevant based on file content keywords
+  // Map behavior keys to content patterns that indicate relevance
+  const behaviorPatterns = {
+    'onAppear_in_ScrollView': ['.onAppear', 'ScrollView'],
+    'alert_collision': ['.alert(isPresented', 'isPresented'],
+    'state_vs_appstorage': ['@AppStorage', '@State'],
+    'binding_propagation': ['@Binding', '.alert(isPresented'],
+    'environmentobject_crash': ['@EnvironmentObject', '.sheet(', '.fullScreenCover('],
+    'geometryreader_sizing': ['GeometryReader', 'geometry.size'],
+    'published_existential_limitation': ['@Published', 'any ', 'willSet']
+  };
+
+  // Scan all context file contents for matching patterns
+  const allContent = Object.values(contextFiles).join('\n');
+  for (const [behaviorKey, patterns] of Object.entries(behaviorPatterns)) {
+    if (patterns.some(p => allContent.includes(p))) {
+      relevantBehaviorKeys.add(behaviorKey);
+    }
+  }
+
+  // Also check arch notes text for behavior relevance (e.g., runtimeNotes mentioning .onAppear)
+  const archNotesText = archNotes.join('\n');
+  for (const [behaviorKey, patterns] of Object.entries(behaviorPatterns)) {
+    if (patterns.some(p => archNotesText.includes(p))) {
+      relevantBehaviorKeys.add(behaviorKey);
+    }
+  }
+
+  // Build the relevant behaviors subset
+  const relevantBehaviors = {};
+  for (const key of relevantBehaviorKeys) {
+    if (registry.swiftui_behaviors[key]) {
+      relevantBehaviors[key] = registry.swiftui_behaviors[key];
+    }
+  }
+
+  return { additionalFiles, archNotes, relevantBehaviors };
 }
 
 // QG-001: Build validation timeout (3 minutes)
@@ -228,6 +377,294 @@ function findFileRecursiveInDir(dir, targetBasename) {
     // Directory not readable, skip
   }
   return null;
+}
+
+/**
+ * BA-008.4: Extract expected and actual behavior from the issue body.
+ * Looks for markdown fields like "**Expected behavior:**" and "**Actual behavior:**".
+ * Returns { expected: string|null, actual: string|null, warning: string|null }
+ */
+function extractExpectedActualBehavior(issueBody) {
+  if (!issueBody) {
+    return {
+      expected: null,
+      actual: null,
+      warning: 'WARNING: No expected behavior specified. The fix may address symptoms without achieving the desired outcome.'
+    };
+  }
+
+  // Match "**Expected behavior:**" followed by content until the next "**" header or end
+  const expectedMatch = issueBody.match(/\*\*Expected behavior[:\s]*\*\*\s*([\s\S]*?)(?=\n\*\*|\n##|$)/i);
+  const actualMatch = issueBody.match(/\*\*Actual behavior[:\s]*\*\*\s*([\s\S]*?)(?=\n\*\*|\n##|$)/i);
+
+  const expected = expectedMatch ? expectedMatch[1].trim() : null;
+  const actual = actualMatch ? actualMatch[1].trim() : null;
+
+  let warning = null;
+  if (!expected && !actual) {
+    warning = 'WARNING: No expected behavior specified. The fix may address symptoms without achieving the desired outcome.';
+  } else if (!expected) {
+    warning = 'WARNING: No expected behavior specified. The fix may address symptoms without achieving the desired outcome.';
+  }
+
+  return { expected, actual, warning };
+}
+
+/**
+ * BA-008.4: Perform Root Cause Analysis via a separate API call.
+ * Returns the parsed RCA object on success, or null on failure (with fallback warning).
+ *
+ * RCA is only performed for code/ux fix types, NOT content fixes.
+ *
+ * @param {Object} issue - The GitHub issue object
+ * @param {Object} suggestedFix - The extracted suggested fix (may be null)
+ * @param {Object} relevantFiles - Map of filePath -> content
+ * @param {Object} behaviorInfo - { expected, actual, warning } from extractExpectedActualBehavior
+ * @returns {Object|null} Parsed RCA JSON or null on failure
+ */
+async function performRCA(issue, suggestedFix, relevantFiles, behaviorInfo) {
+  console.log('\n--- Root Cause Analysis (BA-008.4) ---');
+
+  // Build context section for RCA
+  let contextSection = '';
+  for (const [file, content] of Object.entries(relevantFiles)) {
+    const isPrimary = suggestedFix?.file === file || (issue.body && issue.body.includes(file));
+    const marker = isPrimary ? ' (PRIMARY FIX TARGET)' : '';
+    contextSection += `\n### ${file}${marker}\n\`\`\`swift\n${content}\n\`\`\`\n`;
+  }
+
+  // Build behavior section
+  let behaviorSection = '';
+  if (behaviorInfo.expected || behaviorInfo.actual) {
+    behaviorSection = '\n## Reported Behavior\n';
+    if (behaviorInfo.expected) {
+      behaviorSection += `**Expected:** ${behaviorInfo.expected}\n`;
+    }
+    if (behaviorInfo.actual) {
+      behaviorSection += `**Actual:** ${behaviorInfo.actual}\n`;
+    }
+  }
+  if (behaviorInfo.warning) {
+    behaviorSection += `\n${behaviorInfo.warning}\n`;
+  }
+
+  // Build architecture context for RCA
+  let architectureSection = '';
+  if (_architectureNotes.length > 0 || Object.keys(_relevantBehaviors).length > 0) {
+    architectureSection = '\n## Architecture Context\n\n';
+    if (_architectureNotes.length > 0) {
+      architectureSection += _architectureNotes.join('\n') + '\n\n';
+    }
+    if (Object.keys(_relevantBehaviors).length > 0) {
+      architectureSection += '### SwiftUI Runtime Behaviors (relevant to this bug)\n\n';
+      for (const [key, description] of Object.entries(_relevantBehaviors)) {
+        architectureSection += `**${key}:** ${description}\n\n`;
+      }
+    }
+  }
+
+  const rcaPrompt = `You are a senior iOS developer performing root cause analysis on a bug in the Sorting History app - a history timeline game built with SwiftUI.
+
+## Bug Report
+
+**Title:** ${issue.title}
+
+**Description:**
+${issue.body}
+${behaviorSection}
+${suggestedFix ? `## Previous Analysis Suggestion\n${JSON.stringify(suggestedFix, null, 2)}` : ''}
+
+## Relevant Code Context
+${contextSection}
+${architectureSection}
+## Your Task
+
+Analyze the root cause of this bug. Do NOT generate any code. Instead, provide a structured analysis.
+
+You MUST respond with ONLY this JSON format (no other text):
+{
+  "root_cause": "1-2 sentence description of the root cause",
+  "mechanism": "How the bug manifests at runtime — what triggers it and what goes wrong",
+  "affected_files": ["list of file paths that need changes, with brief reason for each"],
+  "fix_strategy": "Plain English description of the approach to fix this bug. No code.",
+  "confidence": "high" or "medium" or "low",
+  "alternative_strategies": ["2-3 other approaches that could also work"]
+}
+
+JSON ONLY - no other text.`;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), RCA_TIMEOUT_MS);
+
+    console.log(`[RCA] Calling OpenRouter API (model: ${CODE_MODEL}, max_tokens: ${RCA_MAX_TOKENS}, temperature: ${RCA_TEMPERATURE})...`);
+    console.log(`[RCA] RCA prompt length: ${rcaPrompt.length} chars`);
+
+    const response = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://sortinghistory.com',
+        'X-Title': 'Sorting History RCA',
+      },
+      body: JSON.stringify({
+        model: CODE_MODEL,
+        messages: [{ role: 'user', content: rcaPrompt }],
+        max_tokens: RCA_MAX_TOKENS,
+        temperature: RCA_TEMPERATURE,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    console.log(`[RCA] OpenRouter response status: ${response.status} ${response.statusText}`);
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.warn(`[RCA] RCA call failed: OpenRouter error ${response.status} - ${errorBody}. Falling back to single-call approach.`);
+      return null;
+    }
+
+    const result = await response.json();
+    const rcaText = result.choices?.[0]?.message?.content;
+
+    if (!rcaText) {
+      console.warn('[RCA] RCA call failed: No response content from model. Falling back to single-call approach.');
+      return null;
+    }
+
+    console.log(`[RCA] RCA response length: ${rcaText.length} chars`);
+    console.log(`[RCA] Raw RCA response:\n${rcaText}`);
+
+    // Parse the RCA JSON response
+    let rcaJson;
+    try {
+      // Try code fence extraction first
+      const fenceMatch = rcaText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+      let jsonStr;
+
+      if (fenceMatch) {
+        jsonStr = fenceMatch[1];
+      } else {
+        // Balanced brace extraction
+        const startIdx = rcaText.indexOf('{');
+        if (startIdx === -1) {
+          console.warn('[RCA] RCA call failed: No JSON object found in response. Falling back to single-call approach.');
+          return null;
+        }
+        let depth = 0;
+        let endIdx = -1;
+        for (let i = startIdx; i < rcaText.length; i++) {
+          if (rcaText[i] === '{') depth++;
+          if (rcaText[i] === '}') depth--;
+          if (depth === 0) { endIdx = i; break; }
+        }
+        if (endIdx === -1) {
+          console.warn('[RCA] RCA call failed: Unbalanced braces in response. Falling back to single-call approach.');
+          return null;
+        }
+        jsonStr = rcaText.substring(startIdx, endIdx + 1);
+      }
+
+      rcaJson = JSON.parse(jsonStr);
+    } catch (e) {
+      console.warn(`[RCA] RCA call failed: JSON parse error - ${e.message}. Falling back to single-call approach.`);
+      return null;
+    }
+
+    // Validate required fields
+    const requiredFields = ['root_cause', 'mechanism', 'affected_files', 'fix_strategy', 'confidence', 'alternative_strategies'];
+    const missingFields = requiredFields.filter(f => rcaJson[f] === undefined);
+    if (missingFields.length > 0) {
+      console.warn(`[RCA] RCA call failed: Missing required fields: ${missingFields.join(', ')}. Falling back to single-call approach.`);
+      return null;
+    }
+
+    // Normalize confidence to expected values
+    if (!['high', 'medium', 'low'].includes(rcaJson.confidence)) {
+      console.warn(`[RCA] Unexpected confidence value "${rcaJson.confidence}", defaulting to "medium"`);
+      rcaJson.confidence = 'medium';
+    }
+
+    console.log(`[RCA] Root cause: ${rcaJson.root_cause}`);
+    console.log(`[RCA] Confidence: ${rcaJson.confidence}`);
+    console.log(`[RCA] Affected files: ${rcaJson.affected_files.join(', ')}`);
+    console.log(`[RCA] Fix strategy: ${rcaJson.fix_strategy}`);
+    console.log('[RCA] RCA completed successfully');
+
+    return rcaJson;
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      console.warn(`[RCA] RCA call failed: Timeout after ${RCA_TIMEOUT_MS}ms. Falling back to single-call approach.`);
+    } else {
+      console.warn(`[RCA] RCA call failed: ${e.message}. Falling back to single-call approach.`);
+    }
+    return null;
+  }
+}
+
+/**
+ * BA-008.4: Apply the hard cap on total prompt size.
+ * If the prompt exceeds HARD_CAP_CHARS, trim secondary files first (those NOT
+ * in the RCA affected_files list), then truncate the longest remaining files.
+ *
+ * @param {Object} relevantFiles - Map of filePath -> content (mutated in place)
+ * @param {string[]} rcaAffectedFiles - Files identified by RCA as needing changes (protected from first-pass trimming)
+ * @param {number} currentPromptLength - Current total prompt length in characters
+ * @returns {number} New total prompt length after trimming
+ */
+function applyHardCap(relevantFiles, rcaAffectedFiles, currentPromptLength) {
+  if (currentPromptLength <= HARD_CAP_CHARS) {
+    return currentPromptLength;
+  }
+
+  console.log(`[DIAG] Prompt exceeds hard cap (${currentPromptLength} > ${HARD_CAP_CHARS} chars). Trimming...`);
+
+  const protectedSet = new Set(rcaAffectedFiles || []);
+
+  // Pass 1: Remove secondary files (not in RCA affected_files)
+  const secondaryFiles = Object.keys(relevantFiles).filter(f => !protectedSet.has(f));
+  // Sort by size descending so we remove the largest non-essential files first
+  secondaryFiles.sort((a, b) => relevantFiles[b].length - relevantFiles[a].length);
+
+  let totalLen = currentPromptLength;
+  for (const file of secondaryFiles) {
+    if (totalLen <= HARD_CAP_CHARS) break;
+    const removed = relevantFiles[file].length;
+    delete relevantFiles[file];
+    totalLen -= removed;
+    console.log(`[DIAG] Hard cap: removed secondary file ${file} (${removed} chars)`);
+  }
+
+  if (totalLen <= HARD_CAP_CHARS) {
+    console.log(`[DIAG] Hard cap resolved after removing secondary files. New size: ${totalLen} chars`);
+    return totalLen;
+  }
+
+  // Pass 2: Truncate longest remaining files
+  let remaining = Object.entries(relevantFiles);
+  remaining.sort((a, b) => b[1].length - a[1].length);
+
+  for (const [file, content] of remaining) {
+    if (totalLen <= HARD_CAP_CHARS) break;
+    const overage = totalLen - HARD_CAP_CHARS;
+    const newLimit = Math.max(content.length - overage, 2000); // Keep at least 2000 chars
+    if (newLimit < content.length) {
+      const truncated = content.substring(0, newLimit);
+      const lastNewline = truncated.lastIndexOf('\n');
+      const cleanTruncated = lastNewline > 0 ? truncated.substring(0, lastNewline) : truncated;
+      const truncatedContent = cleanTruncated + `\n\n// ... [HARD CAP TRUNCATED — showing ${cleanTruncated.length} of ${content.length} chars] ...`;
+      const saved = content.length - truncatedContent.length;
+      relevantFiles[file] = truncatedContent;
+      totalLen -= saved;
+      console.log(`[DIAG] Hard cap: truncated ${file} by ${saved} chars`);
+    }
+  }
+
+  console.log(`[DIAG] Hard cap final size: ${totalLen} chars`);
+  return totalLen;
 }
 
 /**
@@ -582,13 +1019,62 @@ async function applyCodeFix(suggestedFix, issue) {
       console.error('[DEBUG] WARNING: No relevant files gathered! This may cause poor fix generation.');
     }
 
-    // Build prompt
-    const prompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles);
+    // BA-008.4: Extract expected/actual behavior from issue body
+    const behaviorInfo = extractExpectedActualBehavior(issue.body);
+    if (behaviorInfo.expected) console.log(`[RCA] Expected behavior: ${behaviorInfo.expected.substring(0, 100)}...`);
+    if (behaviorInfo.actual) console.log(`[RCA] Actual behavior: ${behaviorInfo.actual.substring(0, 100)}...`);
+    if (behaviorInfo.warning) console.log(`[RCA] ${behaviorInfo.warning}`);
 
-    // Call Claude via OpenRouter
-    console.log(`[DEBUG] Calling OpenRouter API...`);
+    // BA-008.4: Perform Root Cause Analysis (Call 1)
+    const rcaResult = await performRCA(issue, suggestedFix, relevantFiles, behaviorInfo);
+
+    // BA-008.4: Apply hard cap and trim if needed (using RCA affected files for prioritization)
+    const rcaAffectedFiles = rcaResult ? rcaResult.affected_files : [];
+
+    // Output fix_confidence for workflow consumption
+    if (rcaResult) {
+      setOutput('fix_confidence', rcaResult.confidence);
+    } else {
+      setOutput('fix_confidence', 'medium'); // Default when RCA unavailable
+    }
+
+    // BA-008.5: Output RCA fields for PR body (fix strategy, root cause, mechanism)
+    if (rcaResult) {
+      setOutput('fix_strategy', rcaResult.fix_strategy || '');
+      setOutput('rca_root_cause', rcaResult.root_cause || '');
+      setOutput('rca_mechanism', rcaResult.mechanism || '');
+    } else {
+      setOutput('fix_strategy', '');
+      setOutput('rca_root_cause', '');
+      setOutput('rca_mechanism', '');
+    }
+
+    // Build prompt (with optional RCA injection)
+    const prompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
+
+    // BA-008.4: Diagnostic logging for total prompt size
+    const estimatedTokens = Math.round(prompt.length / 4);
+    console.log(`[DIAG] Total prompt: ${prompt.length} characters (est ~${estimatedTokens} tokens)`);
+
+    // BA-008.4: Apply hard cap if prompt exceeds limit
+    if (prompt.length > HARD_CAP_CHARS) {
+      console.log(`[DIAG] Prompt exceeds hard cap (${prompt.length} > ${HARD_CAP_CHARS}). Trimming context files...`);
+      // Recalculate: trim relevantFiles and rebuild prompt
+      const contextSize = Object.values(relevantFiles).reduce((sum, c) => sum + c.length, 0);
+      applyHardCap(relevantFiles, rcaAffectedFiles, contextSize);
+      // Rebuild prompt after trimming — use same arguments
+      var finalPrompt = buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo);
+      const finalTokens = Math.round(finalPrompt.length / 4);
+      console.log(`[DIAG] Post-trim prompt: ${finalPrompt.length} characters (est ~${finalTokens} tokens)`);
+    } else {
+      var finalPrompt = prompt;
+    }
+
+    // Call Claude via OpenRouter (Call 2 — Code Generation)
+    console.log(`[DEBUG] Calling OpenRouter API (code generation)...`);
     console.log(`[DEBUG] Model: ${CODE_MODEL}`);
-    console.log(`[DEBUG] Prompt length: ${prompt.length} chars`);
+    console.log(`[DEBUG] Prompt length: ${finalPrompt.length} chars`);
+    console.log(`[DEBUG] Temperature: ${CODE_GEN_TEMPERATURE}`);
 
     const response = await fetch(OPENROUTER_URL, {
       method: 'POST',
@@ -600,8 +1086,9 @@ async function applyCodeFix(suggestedFix, issue) {
       },
       body: JSON.stringify({
         model: CODE_MODEL,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: 'user', content: finalPrompt }],
         max_tokens: 8000,
+        temperature: CODE_GEN_TEMPERATURE,
       }),
     });
 
@@ -863,14 +1350,59 @@ async function gatherRelevantContext(issue, suggestedFix) {
     filesSkipped++;
   }
 
+  // BA-008.3: Architecture registry — force-include related files and gather arch notes
+  const registry = loadArchitectureRegistry();
+  if (registry) {
+    const archContext = getArchitectureContext(registry, context);
+
+    // Force-include additional files identified by the registry (embeds, viewModel, consumers)
+    for (const additionalFile of archContext.additionalFiles) {
+      if (totalContextSize >= TOTAL_CONTEXT_LIMIT) {
+        console.log(`[ARCH] Context budget exhausted (${totalContextSize} chars), skipping remaining registry files`);
+        filesSkipped++;
+        break;
+      }
+      if (fs.existsSync(additionalFile) && !context[additionalFile]) {
+        const content = readFileWithLimit(additionalFile, SECONDARY_FILE_LIMIT);
+        context[additionalFile] = content;
+        totalContextSize += content.length;
+        console.log(`[ARCH] Force-included from registry: ${additionalFile} (${content.length} chars)`);
+      } else if (!fs.existsSync(additionalFile)) {
+        console.warn(`[ARCH] Registry references ${additionalFile} but file not found — skipping (graceful)`);
+      }
+    }
+
+    // Store architecture notes and behaviors for prompt injection
+    _architectureNotes = archContext.archNotes;
+    _relevantBehaviors = archContext.relevantBehaviors;
+
+    if (archContext.archNotes.length > 0) {
+      console.log(`[ARCH] Collected ${archContext.archNotes.length} architecture note lines for prompt`);
+    }
+    if (Object.keys(archContext.relevantBehaviors).length > 0) {
+      console.log(`[ARCH] Matched ${Object.keys(archContext.relevantBehaviors).length} SwiftUI behavior(s): ${Object.keys(archContext.relevantBehaviors).join(', ')}`);
+    }
+  } else {
+    // Reset to defaults when registry is unavailable
+    _architectureNotes = [];
+    _relevantBehaviors = {};
+  }
+
   console.log(`Total context: ${totalContextSize} chars across ${Object.keys(context).length} files${filesSkipped > 0 ? ` (${filesSkipped} skipped due to budget)` : ''}`);
   return context;
 }
 
 /**
  * Build prompt for Claude code fix generation
+ * BA-008.4: Extended to accept RCA result and behavior info for injection
+ *
+ * @param {Object} issue - GitHub issue object
+ * @param {Object} suggestedFix - Extracted suggested fix (may be null)
+ * @param {Object} relevantFiles - Map of filePath -> content
+ * @param {Object|null} rcaResult - RCA analysis result (null if RCA was skipped/failed)
+ * @param {Object|null} behaviorInfo - { expected, actual, warning } (null if not extracted)
  */
-function buildCodeFixPrompt(issue, suggestedFix, relevantFiles) {
+function buildCodeFixPrompt(issue, suggestedFix, relevantFiles, rcaResult, behaviorInfo) {
   let contextSection = '';
   for (const [file, content] of Object.entries(relevantFiles)) {
     const isPrimary = suggestedFix?.file === file || (issue.body && issue.body.includes(file));
@@ -893,6 +1425,60 @@ Common SwiftUI fixes for UX bugs:
 - Modals: .sheet(), .fullScreenCover()\n\n`;
   }
 
+  // BA-008.3: Build architecture context section from registry data
+  let architectureSection = '';
+  if (_architectureNotes.length > 0 || Object.keys(_relevantBehaviors).length > 0) {
+    architectureSection = '\n## Architecture Context\n\n';
+    if (_architectureNotes.length > 0) {
+      architectureSection += _architectureNotes.join('\n') + '\n\n';
+    }
+    if (Object.keys(_relevantBehaviors).length > 0) {
+      architectureSection += '### SwiftUI Runtime Behaviors (relevant to this bug)\n\n';
+      for (const [key, description] of Object.entries(_relevantBehaviors)) {
+        architectureSection += `**${key}:** ${description}\n\n`;
+      }
+    }
+  }
+
+  // BA-008.4: Build RCA section if available
+  let rcaSection = '';
+  if (rcaResult) {
+    rcaSection = `\n## Root Cause Analysis
+
+**Root Cause:** ${rcaResult.root_cause}
+
+**Mechanism:** ${rcaResult.mechanism}
+
+**Affected Files:** ${rcaResult.affected_files.join(', ')}
+
+**Fix Strategy:** ${rcaResult.fix_strategy}
+
+**Confidence:** ${rcaResult.confidence}
+
+**Alternative Strategies:**
+${rcaResult.alternative_strategies.map(s => `- ${s}`).join('\n')}
+
+IMPORTANT: Follow the fix strategy above. The root cause analysis was performed by a separate reasoning step — trust it unless the code context clearly contradicts it.\n`;
+  }
+
+  // BA-008.4: Build behavior section if available
+  let behaviorSection = '';
+  if (behaviorInfo) {
+    if (behaviorInfo.expected || behaviorInfo.actual) {
+      behaviorSection = '\n## Expected vs Actual Behavior\n';
+      if (behaviorInfo.expected) {
+        behaviorSection += `**Expected:** ${behaviorInfo.expected}\n`;
+      }
+      if (behaviorInfo.actual) {
+        behaviorSection += `**Actual:** ${behaviorInfo.actual}\n`;
+      }
+      behaviorSection += '\n';
+    }
+    if (behaviorInfo.warning) {
+      behaviorSection += `${behaviorInfo.warning}\n\n`;
+    }
+  }
+
   let prompt = `You are a senior iOS developer fixing a bug in the Sorting History app - a history timeline game built with SwiftUI.
 
 ## Bug Report
@@ -903,10 +1489,10 @@ Common SwiftUI fixes for UX bugs:
 ${issue.body}
 
 ${suggestedFix ? `## Previous Analysis Suggestion\n${JSON.stringify(suggestedFix, null, 2)}` : ''}
-
+${rcaSection}${behaviorSection}
 ## Relevant Code Context
 ${contextSection}
-${uxContextSection}
+${uxContextSection}${architectureSection}
 ## Your Task
 
 Generate the EXACT code changes needed to fix this bug. For each file that needs modification:
@@ -1580,7 +2166,7 @@ async function retryFixWithError(issue, originalFix, buildError) {
   // Re-gather context (files now back to original state)
   const relevantFiles = await gatherRelevantContext(issue, originalFix);
 
-  const retryPrompt = buildCodeFixPrompt(issue, originalFix, relevantFiles) + `
+  const retryPrompt = buildCodeFixPrompt(issue, originalFix, relevantFiles, null, null) + `
 
 ## IMPORTANT: Previous Fix Attempt Failed Compilation
 

@@ -33,6 +33,10 @@ jobs:
       fact_check_concern: ${{ steps.fix.outputs.fact_check_concern }}
       build_failed: ${{ steps.fix.outputs.build_failed }}
       build_error: ${{ steps.fix.outputs.build_error }}
+      fix_confidence: ${{ steps.fix.outputs.fix_confidence }}
+      fix_strategy: ${{ steps.fix.outputs.fix_strategy }}
+      rca_root_cause: ${{ steps.fix.outputs.rca_root_cause }}
+      rca_mechanism: ${{ steps.fix.outputs.rca_mechanism }}
 
     steps:
       - name: Checkout bug automation scripts
@@ -583,6 +587,22 @@ jobs:
           TESTINST_EOF
           TEST_INSTRUCTIONS=$(cat /tmp/test_instructions.txt)
 
+          # BA-008.5: Read RCA fields via quoted heredocs (safe from backtick substitution)
+          cat > /tmp/fix_strategy.txt <<'STRATEGY_EOF'
+          ${{ needs.create-fix.outputs.fix_strategy }}
+          STRATEGY_EOF
+          FIX_STRATEGY=$(cat /tmp/fix_strategy.txt)
+
+          cat > /tmp/rca_root_cause.txt <<'RCACAUSE_EOF'
+          ${{ needs.create-fix.outputs.rca_root_cause }}
+          RCACAUSE_EOF
+          RCA_ROOT_CAUSE=$(cat /tmp/rca_root_cause.txt)
+
+          cat > /tmp/rca_mechanism.txt <<'RCAMECH_EOF'
+          ${{ needs.create-fix.outputs.rca_mechanism }}
+          RCAMECH_EOF
+          RCA_MECHANISM=$(cat /tmp/rca_mechanism.txt)
+
           BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
 
           PR_BODY="## Automated Bug Fix
@@ -593,6 +613,19 @@ jobs:
 
           ### Changes Made
           $FIX_SUMMARY"
+
+          # BA-008.5: Append Fix Strategy and RCA sections (only if RCA succeeded)
+          if [ -n "$FIX_STRATEGY" ]; then
+            PR_BODY="$PR_BODY
+
+          ### Fix Strategy
+          <!-- STRATEGY: $FIX_STRATEGY -->
+          $FIX_STRATEGY
+
+          ### Root Cause Analysis
+          **Root Cause:** $RCA_ROOT_CAUSE
+          **Mechanism:** $RCA_MECHANISM"
+          fi
 
           if [ -n "$BUILD_URL" ]; then
             PR_BODY="$PR_BODY
@@ -688,6 +721,16 @@ jobs:
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
           echo "UX fix PR #$PR_NUMBER - adding ux-fix label"
           gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "ux-fix"
+
+      - name: Add Low Confidence Label
+        if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.fix_confidence == 'low'
+        env:
+          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          echo "Low confidence fix — adding low-confidence-fix label to PR #$PR_NUMBER"
+          gh label create "low-confidence-fix" --repo RaufGlasgow/Sorting-History --color "FBCA04" --description "Automated fix with low confidence RCA" 2>/dev/null || true
+          gh pr edit --repo RaufGlasgow/Sorting-History "$PR_NUMBER" --add-label "low-confidence-fix"
 
       - name: Handle Validation Failure
         if: always() && steps.create-pr.outputs.pr_number != '' && needs.create-fix.outputs.validation_failed == 'true'
