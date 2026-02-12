@@ -1,0 +1,65 @@
+name: SDK Content Pipeline
+
+on:
+  repository_dispatch:
+    types: [sdk-content-verify, sdk-resume]
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sdk-content-pipeline
+  cancel-in-progress: false
+
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  DISPATCH_TYPE: ${{ github.event.action || 'manual' }}
+  WORKFLOW_TYPE: ${{ github.event.client_payload.workflow_type || 'content_verification' }}
+  WORKFLOW_ID: ${{ github.event.client_payload.workflow_id || '' }}
+
+jobs:
+  sdk-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout public repo (automation scripts + SDK)
+        uses: actions/checkout@v4
+
+      - name: Checkout private repo (game content)
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          path: game-repo
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: Scripts/sdk
+        run: npm ci
+
+      - name: TypeScript type-check
+        working-directory: Scripts/sdk
+        run: npx tsc --noEmit
+
+      - name: Build TypeScript
+        working-directory: Scripts/sdk
+        run: npm run build
+
+      - name: Dry-run proof (orchestrator status probe)
+        working-directory: Scripts/sdk
+        run: node dist/orchestrator.js status test-probe
+
+      - name: Commit state files
+        run: |
+          git config user.name "sdk-bot"
+          git config user.email "sdk-bot@users.noreply.github.com"
+          git add state/ || true
+          git diff --cached --quiet && echo "No state changes to commit" || (git commit -m "state: update workflow state" && git push)
