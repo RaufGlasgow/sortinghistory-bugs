@@ -61,13 +61,17 @@ export async function runProof(): Promise<void> {
     "Do not wrap the JSON in markdown code blocks. Output raw JSON only.",
   ].join(" ");
 
-  // Spawn the Haiku subagent
+  // Resolve repo root (two levels up from Scripts/sdk/)
+  const repoRoot = new URL("../../", import.meta.url).pathname;
+
+  // Spawn the Haiku subagent with cwd at repo root so game-repo/ is accessible
   const result: SubagentResult = await spawnSubagent({
     model: MODELS.VERIFIER,
     tools: [...VERIFIER_TOOLS],
     prompt,
     systemPrompt,
-    maxTurns: 5,
+    cwd: repoRoot,
+    maxTurns: 15,
   });
 
   console.log("");
