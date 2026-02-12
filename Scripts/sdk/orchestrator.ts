@@ -6,6 +6,7 @@ import {
 } from "./lib/state.js";
 import { saveSession, getSession, removeSession } from "./lib/session.js";
 import { buildHooksConfig } from "./lib/hooks.js";
+import { runProof } from "./workflows/proof.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -121,8 +122,13 @@ async function main(): Promise<void> {
       await getStatus(payload);
       break;
     }
+    case "proof": {
+      // Story 1.3: Haiku read-only proof — spawns a subagent to read a game event file
+      await runProof();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof`);
       process.exit(1);
   }
 }

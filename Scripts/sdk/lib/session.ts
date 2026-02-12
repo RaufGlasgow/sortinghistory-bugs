@@ -23,17 +23,33 @@ function loadRegistry(): SessionRegistry {
   return JSON.parse(data) as SessionRegistry;
 }
 
+/** Save registry atomically: write temp file, validate JSON, rename.
+ *  Cleans up the temp file on any failure. */
 function saveRegistry(registry: SessionRegistry): void {
   const dir = path.dirname(PATHS.SESSION_REGISTRY);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
   const data = JSON.stringify(registry, null, 2);
-  // Validate JSON before write
-  JSON.parse(data);
   const tempPath = `${PATHS.SESSION_REGISTRY}.tmp`;
-  fs.writeFileSync(tempPath, data, "utf-8");
-  fs.renameSync(tempPath, PATHS.SESSION_REGISTRY);
+  try {
+    // Validate JSON before write
+    JSON.parse(data);
+  } catch (err) {
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+    throw err;
+  }
+  try {
+    fs.writeFileSync(tempPath, data, "utf-8");
+    fs.renameSync(tempPath, PATHS.SESSION_REGISTRY);
+  } catch (err) {
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+    throw err;
+  }
 }
 
 /** Save a session entry when a workflow pauses for human approval */

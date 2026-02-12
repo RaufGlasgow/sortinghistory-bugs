@@ -66,13 +66,30 @@ function ensureDir(dirPath: string): void {
   }
 }
 
-/** Atomic write: write to temp file, validate JSON, rename. Prevents corruption. */
+/** Atomic write: write to temp file, validate JSON, rename. Prevents corruption.
+ *  Cleans up the temp file on any failure (JSON validation or rename). */
 function atomicWrite(filePath: string, data: string): void {
-  // Validate JSON round-trip before touching disk (FR40)
-  JSON.parse(data);
   const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, data, "utf-8");
-  fs.renameSync(tempPath, filePath);
+  try {
+    // Validate JSON round-trip before touching disk (FR40)
+    JSON.parse(data);
+  } catch (err) {
+    // JSON validation failed — clean up temp file if a previous attempt left one
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+    throw err;
+  }
+  try {
+    fs.writeFileSync(tempPath, data, "utf-8");
+    fs.renameSync(tempPath, filePath);
+  } catch (err) {
+    // Write or rename failed — clean up temp file if it exists
+    if (fs.existsSync(tempPath)) {
+      fs.unlinkSync(tempPath);
+    }
+    throw err;
+  }
 }
 
 /** Create a new workflow state file */

@@ -26,15 +26,16 @@ export type WorkflowStatus =
   | "complete"
   | "escalated";
 
-/** File paths — relative to repo root (sortinghistory-bugs/) */
+/** File paths — relative to repo root (sortinghistory-bugs/).
+ *  Override via environment variables for testing or CI where paths may differ. */
 export const PATHS = {
-  STATE_DIR: "state/workflows",
-  DIGEST_DIR: "state/digests",
-  SESSION_REGISTRY: "state/sessions.json",
-  ARCHIVE_DIR: "state/archive",
+  STATE_DIR: process.env.SDK_STATE_DIR ?? "state/workflows",
+  DIGEST_DIR: process.env.SDK_DIGEST_DIR ?? "state/digests",
+  SESSION_REGISTRY: process.env.SDK_SESSION_REGISTRY ?? "state/sessions.json",
+  ARCHIVE_DIR: process.env.SDK_ARCHIVE_DIR ?? "state/archive",
   /** Private game repo checked out by Actions */
-  GAME_REPO: "game-repo",
-} as const;
+  GAME_REPO: process.env.SDK_GAME_REPO ?? "game-repo",
+};
 
 /** Workflow limits from Architecture Section 4.1 */
 export const LIMITS = {
