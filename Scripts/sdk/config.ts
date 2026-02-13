@@ -54,3 +54,22 @@ export const TRIAGE_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 /** Read-write tools for fixer subagents (restricted to Data/ directory via hooks) */
 export const FIXER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as const;
+
+/** Routing constants — repos, labels, dispatch event types (Story 4.2) */
+export const ROUTING = {
+  /** GitHub repos */
+  PRIVATE_REPO: "RaufGlasgow/Sorting-History",
+  PUBLIC_REPO: "RaufGlasgow/sortinghistory-bugs",
+
+  /** Dispatch event types */
+  DISPATCH_CONTENT_VERIFY: "sdk-content-verify",
+  DISPATCH_APPROVE: "approve",
+
+  /** Labels applied by routing */
+  LABEL_ROUTED: "sdk-routed",
+  LABEL_CONTENT_ERROR: "content-error",
+  LABEL_TRANSLATION_ERROR: "translation-error",
+  LABEL_NEEDS_CLAUDE_CODE: "needs-claude-code",
+  LABEL_FEATURE_REQUEST: "feature-request",
+  LABEL_NEEDS_HUMAN_REVIEW: "needs-human-review",
+} as const;
