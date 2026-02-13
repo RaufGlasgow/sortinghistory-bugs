@@ -124,9 +124,9 @@ Each entry records:
   4. `extractJson()` backward compatible — callers without requiredKey get original behavior
 - **Approach differs from ATT-008:** ATT-008 fixed fixture expectations. ATT-009 fixes JSON extraction — wrong JSON object was being parsed, not wrong expectations.
 - **Expected outcome:** extractJson correctly selects triage result JSON even when Haiku includes event data in response. 5/5 fixtures pass.
-- **Commit:** TBD — on branch `fix/triage-fixtures-v2`
-- **CI Run:** TBD
-- **Result:** PENDING
+- **Commit:** `9e79d00` (squash merge of PR #6)
+- **CI Run:** `21985834883` — ALL 3 STEPS GREEN (proof, triage-test 5/5, pause-resume)
+- **Result:** PASS
 
 ---
 
