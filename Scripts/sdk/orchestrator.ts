@@ -12,6 +12,7 @@ import {
   runPausePhase1,
   runResumePhase2,
 } from "./workflows/pause-resume-proof.js";
+import { runTriageTest } from "./workflows/triage-test.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -96,7 +97,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|pause-resume|pause|resume-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test> <payload>");
     process.exit(1);
   }
 
@@ -152,8 +153,13 @@ async function main(): Promise<void> {
       await runResumePhase2(payload);
       break;
     }
+    case "triage-test": {
+      // Story 4.1: Run all 5 triage fixtures and validate classification + severity
+      await runTriageTest();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, pause-resume, pause, resume-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test`);
       process.exit(1);
   }
 }

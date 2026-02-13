@@ -16,6 +16,7 @@
 
 import { MODELS, TRIAGE_TOOLS, PATHS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
+import { extractJson } from "../lib/json-extract.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -47,33 +48,6 @@ const VALID_CLASSIFICATIONS = new Set([
 
 /** Valid severity values */
 const VALID_SEVERITIES = new Set(["P1", "P2", "P3", "P4"]);
-
-/**
- * Extract JSON from a Haiku response that may contain narrative text.
- * Uses the proven pattern from proof.ts (ATT-004):
- * 1. Try regex extraction of ```json...``` code block
- * 2. Fallback: find first { and last } as JSON boundaries
- */
-function extractJson(text: string): string {
-  const jsonText = text.trim();
-
-  // Try 1: Extract ```json ... ``` block from anywhere in response
-  const codeBlockMatch = jsonText.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
-  if (codeBlockMatch?.[1]) {
-    return codeBlockMatch[1].trim();
-  }
-
-  // Try 2: If response doesn't start with {, find first { and last }
-  if (!jsonText.startsWith("{")) {
-    const firstBrace = jsonText.indexOf("{");
-    const lastBrace = jsonText.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      return jsonText.slice(firstBrace, lastBrace + 1);
-    }
-  }
-
-  return jsonText;
-}
 
 /**
  * Validate that the parsed object has all required triage fields.

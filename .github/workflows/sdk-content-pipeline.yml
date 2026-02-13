@@ -58,6 +58,16 @@ jobs:
         run: node dist/orchestrator.js proof
         timeout-minutes: 2
 
+      - name: "Story 4.1: Bug triage test suite"
+        working-directory: Scripts/sdk
+        run: node dist/orchestrator.js triage-test
+        timeout-minutes: 5
+
+      - name: "Story 1.5: Pause/resume proof"
+        working-directory: Scripts/sdk
+        run: node dist/orchestrator.js pause-resume
+        timeout-minutes: 3
+
       - name: Commit state files
         run: |
           git config user.name "sdk-bot"

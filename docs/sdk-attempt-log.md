@@ -67,25 +67,40 @@ Each entry records:
   - JSON parsing succeeded despite Haiku narrative wrapping
 - **Lesson:** Input token cost is dominated by the game data file size, not by turn count or path exploration. The $0.015 cost target was unrealistic for a file this size. Actual per-run cost is ~$0.03 for Haiku reading a 100-event JSON file — this is the baseline cost, not reducible further without changing the file or model. Both Codex findings are now resolved: path via GITHUB_WORKSPACE, Bash removed from proof tools, JSON parsing resilient.
 
-### ATT-005: Story 4.1 — Bug Triager subagent (PLANNED)
+### ATT-005: Story 4.1 — Bug Triager subagent (IMPLEMENTED)
 - **Date:** 2026-02-13
 - **Issue:** New workflow — classify bug reports into 6 categories via Haiku subagent
 - **What was tried:** New `bug-triage.ts` workflow following proven `proof.ts` pattern. New `TRIAGE_TOOLS` (Read, Glob, Grep — no Bash, no Write). System prompt in `prompts/bug-triager.md`. 5 test fixtures. Orchestrator `triage` command. JSON parsing uses same regex + brace fallback proven in ATT-004.
 - **Approach differs from prior attempts:** N/A — this is a new workflow, not a fix. Reuses all lessons from ATT-001 through ATT-004: GITHUB_WORKSPACE for path, no Bash in read-only tools, defensive JSON parsing.
 - **Expected outcome:** 5/5 test reports correctly classified. Each result has valid JSON with classification, severity, reasoning, extracted_context. Cost ~$0.03/run x 5 = ~$0.15 total.
-- **Commit:** TBD
-- **CI Run:** TBD
-- **Result:** PLANNED
+- **Commit:** `0386f9e` (squash merge of feat(SDK-4.1): Bug triager subagent PR #2)
+- **CI Run:** TBD — CI step added in ATT-007
+- **Result:** IMPLEMENTED — awaiting CI
 
-### ATT-006: Story 1.5 -- Session Pause/Resume Proof (PLANNED)
+### ATT-006: Story 1.5 -- Session Pause/Resume Proof (IMPLEMENTED)
 - **Date:** 2026-02-13
 - **Issue:** Prove SDK session persistence across process boundaries -- the critical architecture pattern for human-in-the-loop workflows (verify -> pause -> human approves -> resume -> fix)
 - **What was tried:** New `pause-resume-proof.ts` workflow with two phases. Phase 1: subagent reads USHistory.json with `persistSession: true`, identifies 3rd event as a "finding", state saved as `awaiting_approval`, session ID saved to registry. Phase 2: resume session via `resume: sessionId`, ask agent to recall the finding WITHOUT re-reading files. Modified `subagent.ts` to pass `persistSession` and `resume` through to SDK `Options`. Added `pause-resume`, `pause`, `resume-test` commands to orchestrator.
 - **Approach differs from prior attempts:** N/A -- new capability proof, not a fix. Reuses proven patterns: GITHUB_WORKSPACE for path, PROOF_TOOLS (no Bash), defensive JSON parsing (regex + brace fallback from ATT-004). Uses state.ts and session.ts CRUD from Story 1.4.
 - **Expected outcome:** Phase 2 recalls finding from Phase 1 without re-reading files. Both phases pass, total < 60s, cost < $0.10.
-- **Commit:** `2bfc313` (proof workflow + orchestrator), `46ca102` (subagent params fix)
-- **CI Run:** TBD -- awaiting CI dispatch
-- **Result:** PLANNED -- implementation complete, awaiting CI validation
+- **Commit:** `79fc7c4` (squash merge of feat(SDK-1.5): Session pause/resume proof PR #3)
+- **CI Run:** TBD — CI step added in ATT-007
+- **Result:** IMPLEMENTED — awaiting CI
+
+### ATT-007: CI Integration — triage-test + pause-resume steps + shared extractJson (IMPLEMENTED)
+- **Date:** 2026-02-13
+- **Issue:** Stories 4.1 and 1.5 were merged to main with working code but no CI integration. Three copies of `extractJson()` exist across proof.ts, bug-triage.ts, and pause-resume-proof.ts. No triage test harness exists to validate the 5 fixtures in CI.
+- **What was tried:** 5 changes in one branch:
+  1. Extract shared `extractJson()` into `Scripts/sdk/lib/json-extract.ts`, update all 3 imports, delete duplicates
+  2. Create `triage-test.ts` harness that loops 5 fixtures through `runTriage()`, validates classification + severity
+  3. Add `triage-test` and `pause-resume` CI steps to `sdk-content-pipeline.yml` after the existing `proof` step
+  4. Update ATT-005 and ATT-006 with actual squash merge commit hashes and status
+  5. Write retroactive TS-SDK-002 tech spec for the bug triager as-built
+- **Approach differs from prior attempts:** N/A — CI wiring + tech debt cleanup, not a fix. All underlying workflows already proven (ATT-004 PASS for proof, ATT-005 code merged, ATT-006 code merged).
+- **Expected outcome:** CI runs all 3 steps green: proof (existing), triage-test (5/5 fixtures pass), pause-resume (phase 2 recalls phase 1 finding). Build compiles with zero errors after extractJson consolidation.
+- **Commit:** TBD — on branch `feature/SDK-ci-integration`
+- **CI Run:** TBD — awaiting merge to main and dispatch
+- **Result:** IMPLEMENTED — awaiting CI
 
 ---
 
