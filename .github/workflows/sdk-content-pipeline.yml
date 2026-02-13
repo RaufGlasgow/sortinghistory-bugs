@@ -58,6 +58,11 @@ jobs:
         run: node dist/orchestrator.js proof
         timeout-minutes: 2
 
+      - name: "Story 4.2: Routing logic test"
+        working-directory: Scripts/sdk
+        run: node dist/orchestrator.js routing-test
+        timeout-minutes: 1
+
       - name: "Story 4.1: Bug triage test suite"
         working-directory: Scripts/sdk
         run: node dist/orchestrator.js triage-test

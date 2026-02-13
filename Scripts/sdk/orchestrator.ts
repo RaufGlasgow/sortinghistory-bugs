@@ -13,6 +13,8 @@ import {
   runResumePhase2,
 } from "./workflows/pause-resume-proof.js";
 import { runTriageTest } from "./workflows/triage-test.js";
+import { runRoutingTest } from "./workflows/routing-test.js";
+import { decideRoute, executeRoute, type RoutingInput } from "./lib/routing.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -97,7 +99,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test> <payload>");
     process.exit(1);
   }
 
@@ -154,12 +156,29 @@ async function main(): Promise<void> {
       break;
     }
     case "triage-test": {
-      // Story 4.1: Run all 5 triage fixtures and validate classification + severity
+      // Story 4.1: Run all 7 triage fixtures and validate classification + severity
       await runTriageTest();
       break;
     }
+    case "route": {
+      // Story 4.2: Route a triage result — expects JSON payload with RoutingInput fields
+      if (!payload) {
+        console.error("route requires a JSON payload: {classification, severity, confidence, extracted_context, issue_number, existing_labels?}");
+        process.exit(1);
+      }
+      const routingInput = JSON.parse(payload) as RoutingInput;
+      const action = decideRoute(routingInput);
+      const dryRun = process.env.DRY_RUN === "true";
+      await executeRoute(action, dryRun);
+      break;
+    }
+    case "routing-test": {
+      // Story 4.2: Run all 9 routing fixtures — pure logic test, $0.00 cost
+      await runRoutingTest();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test`);
       process.exit(1);
   }
 }
