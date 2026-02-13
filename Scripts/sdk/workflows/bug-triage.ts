@@ -130,8 +130,8 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     "1. Read the bug report carefully",
     "2. If the report mentions a specific event or date, search the event data files to find matching content",
     "3. If the report describes a UI or gameplay issue, check the architecture registry for relevant files",
-    "4. Classify the report and return your analysis as a JSON object",
-    "5. Output ONLY the JSON object — no markdown, no explanation before or after",
+    "4. Classify the report and return your TRIAGE RESULT as a JSON object with these keys: classification, confidence, severity, reasoning, extracted_context, routing_recommendation",
+    "5. Your final output must be the triage result JSON — NOT the event data you found during investigation",
   ].join("\n");
 
   // Spawn Haiku subagent with read-only triage tools
@@ -172,7 +172,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   // Validation 4: Parse JSON from response (defensive — ATT-004 pattern)
   let parsed: Record<string, unknown>;
   try {
-    const jsonText = extractJson(result.responseText);
+    const jsonText = extractJson(result.responseText, "classification");
     parsed = JSON.parse(jsonText) as Record<string, unknown>;
   } catch (err: unknown) {
     console.error("FAIL: Response is not valid JSON");

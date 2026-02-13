@@ -16,9 +16,55 @@
  *
  * Does NOT parse — returns the extracted JSON string for the caller to parse.
  * This allows callers to use their own type assertions.
+ *
+ * When requiredKey is provided, finds the JSON object that contains that key.
+ * This prevents extracting the wrong JSON when Haiku outputs multiple objects
+ * (e.g., event data during investigation + triage result at the end).
  */
-export function extractJson(text: string): string {
+export function extractJson(text: string, requiredKey?: string): string {
   const jsonText = text.trim();
+
+  // If requiredKey is set, find ALL candidate JSON blocks and return the one with the key
+  if (requiredKey) {
+    const candidates: string[] = [];
+
+    // Collect code blocks
+    const codeBlockRegex = /```(?:json)?\s*\n([\s\S]*?)\n\s*```/g;
+    let match: RegExpExecArray | null;
+    while ((match = codeBlockRegex.exec(jsonText)) !== null) {
+      if (match[1]) candidates.push(match[1].trim());
+    }
+
+    // Collect brace-delimited blocks (find each top-level { ... })
+    let depth = 0;
+    let start = -1;
+    for (let i = 0; i < jsonText.length; i++) {
+      if (jsonText[i] === "{") {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (jsonText[i] === "}") {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          candidates.push(jsonText.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
+
+    // Try each candidate — return first that parses and has the required key
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate);
+        if (typeof parsed === "object" && parsed !== null && requiredKey in parsed) {
+          return candidate;
+        }
+      } catch {
+        // Not valid JSON, skip
+      }
+    }
+  }
+
+  // Original behavior (no requiredKey, or requiredKey not found in any candidate)
 
   // Try 1: Extract ```json ... ``` block from anywhere in response
   const codeBlockMatch = jsonText.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
