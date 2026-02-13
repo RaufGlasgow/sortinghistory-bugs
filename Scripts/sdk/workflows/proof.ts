@@ -105,17 +105,19 @@ export async function runProof(): Promise<void> {
 
   let parsedResponse: ProofResponse;
   try {
-    // The response may contain markdown code block wrapping, strip it
+    // Extract JSON from response — Haiku may add narrative text around it
     let jsonText = result.responseText.trim();
-    // Remove ```json ... ``` wrapper if present
-    if (jsonText.startsWith("```")) {
-      const lines = jsonText.split("\n");
-      // Remove first line (```json) and last line (```)
-      lines.shift();
-      if (lines.length > 0 && lines[lines.length - 1]!.trim() === "```") {
-        lines.pop();
+    // Try 1: Extract ```json ... ``` block from anywhere in response
+    const codeBlockMatch = jsonText.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+    if (codeBlockMatch?.[1]) {
+      jsonText = codeBlockMatch[1].trim();
+    } else if (!jsonText.startsWith("{")) {
+      // Try 2: Find first { and last } as JSON boundaries
+      const firstBrace = jsonText.indexOf("{");
+      const lastBrace = jsonText.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        jsonText = jsonText.slice(firstBrace, lastBrace + 1);
       }
-      jsonText = lines.join("\n");
     }
     parsedResponse = JSON.parse(jsonText) as ProofResponse;
   } catch (err: unknown) {

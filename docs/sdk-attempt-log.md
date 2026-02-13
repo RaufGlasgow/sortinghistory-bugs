@@ -38,18 +38,33 @@ Each entry records:
 - **Evidence:** Proof PASSED. But: 6 turns used (should be 1-2), agent used Glob+Bash to self-correct path, 27.8s, $0.0262, tools used: [Read, Glob, Bash].
 - **Lesson:** `new URL("../../", import.meta.url).pathname` resolves relative to the COMPILED file at `dist/workflows/proof.js`, landing on `Scripts/sdk/` — NOT the repo root. The agent "worked around it" by exploring the filesystem with Bash/Glob, burning 4 extra turns. The fix masked the bug rather than solving it. Cost is 3x what it should be. This approach is fragile — if a future run has tighter turn limits or the agent doesn't explore, it will fail again.
 
-### ATT-003: Fix path via GITHUB_WORKSPACE + split PROOF_TOOLS (PLANNED)
-- **Date:** 2026-02-12 (planned)
+### ATT-003: Fix path via GITHUB_WORKSPACE + split PROOF_TOOLS
+- **Date:** 2026-02-13
 - **Issue:** ATT-002 path still wrong (Scripts/sdk/ instead of repo root) + Bash in read-only verifier
-- **What will be tried:** See tech spec `docs/tech-specs/TS-SDK-001-path-and-bash-fix.md`
-- **Commit:** TBD
+- **What was tried:** See tech spec `docs/tech-specs/TS-SDK-001-path-and-bash-fix.md`
+- **Commit:** `7ad9fef`
+- **CI Run:** `21979141829` (workflow_dispatch), `21977983771` (scheduled)
+- **Result:** PARTIAL — path fix CONFIRMED WORKING, failed on JSON parsing
+- **Evidence:**
+  - Path: 3 turns (vs 6 in ATT-002), 5.9s (vs 27.8s), tools used: Read only (no Glob, no Bash!)
+  - Agent found file on first try, read correct data: "Jamestown Settlement Founded" (1607)
+  - FAILURE: Haiku returned narrative text before the JSON code block. Existing parser only handles responses starting with ``` — didn't handle narrative preamble.
+- **Lesson:** `GITHUB_WORKSPACE` env var chain works correctly in CI. PROOF_TOOLS (no Bash) works — agent doesn't need Bash when path is correct. However, Haiku doesn't reliably output raw JSON even when instructed — parser must be resilient to narrative wrapping. The old code (ATT-002) only passed JSON parsing because 6 turns of interaction nudged Haiku toward compliance.
+
+### ATT-004: Improve JSON extraction from Haiku response
+- **Date:** 2026-02-13
+- **Issue:** ATT-003 Haiku returned narrative text around JSON code block, parser only handled responses starting with ```
+- **What was tried:** Replaced simple startsWith("```") check with:
+  1. Regex extraction of ```json...``` block from anywhere in response
+  2. Fallback: find first `{` and last `}` as JSON boundaries
+- **Commit:** TBD (next push)
 - **CI Run:** TBD
 - **Result:** TBD
-- **Expected outcome:** Proof completes in 1-2 turns, no Bash used, cost ~$0.008, tools used: [Read] only.
+- **Expected outcome:** Same path performance as ATT-003 (3 turns, ~6s, Read only) but JSON parsing succeeds regardless of Haiku's narrative wrapping.
 - **Success criteria:**
-  1. CI proof step passes
-  2. `Tools used:` line shows `[Read]` only (no Glob, no Bash)
-  3. Subagent turn count <= 3 (visible from assistant/user message pairs in log)
+  1. CI proof step passes (all validations)
+  2. Tools: [Read] only
+  3. Turns <= 3
   4. Cost < $0.015
 
 ---
