@@ -73,9 +73,9 @@ Each entry records:
 - **What was tried:** New `bug-triage.ts` workflow following proven `proof.ts` pattern. New `TRIAGE_TOOLS` (Read, Glob, Grep — no Bash, no Write). System prompt in `prompts/bug-triager.md`. 5 test fixtures. Orchestrator `triage` command. JSON parsing uses same regex + brace fallback proven in ATT-004.
 - **Approach differs from prior attempts:** N/A — this is a new workflow, not a fix. Reuses all lessons from ATT-001 through ATT-004: GITHUB_WORKSPACE for path, no Bash in read-only tools, defensive JSON parsing.
 - **Expected outcome:** 5/5 test reports correctly classified. Each result has valid JSON with classification, severity, reasoning, extracted_context. Cost ~$0.03/run x 5 = ~$0.15 total.
-- **Commit:** TBD
-- **CI Run:** TBD
-- **Result:** PLANNED
+- **Commit:** `52b42d5`
+- **CI Run:** TBD (awaiting CI dispatch)
+- **Result:** IMPLEMENTED — awaiting CI validation
 
 ---
 
