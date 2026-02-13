@@ -83,9 +83,9 @@ Each entry records:
 - **What was tried:** New `pause-resume-proof.ts` workflow with two phases. Phase 1: subagent reads USHistory.json with `persistSession: true`, identifies 3rd event as a "finding", state saved as `awaiting_approval`, session ID saved to registry. Phase 2: resume session via `resume: sessionId`, ask agent to recall the finding WITHOUT re-reading files. Modified `subagent.ts` to pass `persistSession` and `resume` through to SDK `Options`. Added `pause-resume`, `pause`, `resume-test` commands to orchestrator.
 - **Approach differs from prior attempts:** N/A -- new capability proof, not a fix. Reuses proven patterns: GITHUB_WORKSPACE for path, PROOF_TOOLS (no Bash), defensive JSON parsing (regex + brace fallback from ATT-004). Uses state.ts and session.ts CRUD from Story 1.4.
 - **Expected outcome:** Phase 2 recalls finding from Phase 1 without re-reading files. Both phases pass, total < 60s, cost < $0.10.
-- **Commit:** TBD
-- **CI Run:** TBD
-- **Result:** PLANNED
+- **Commit:** `2bfc313` (proof workflow + orchestrator), `46ca102` (subagent params fix)
+- **CI Run:** TBD -- awaiting CI dispatch
+- **Result:** PLANNED -- implementation complete, awaiting CI validation
 
 ---
 
