@@ -46,5 +46,8 @@ export const LIMITS = {
 /** Read-only tools for verifier subagents */
 export const VERIFIER_TOOLS = ["Read", "Glob", "Grep", "Bash"] as const;
 
+/** Minimal tools for proof workflow — truly read-only, no Bash */
+export const PROOF_TOOLS = ["Read", "Glob", "Grep"] as const;
+
 /** Read-write tools for fixer subagents (restricted to Data/ directory via hooks) */
 export const FIXER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as const;

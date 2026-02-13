@@ -17,7 +17,7 @@
  * - 1: Failure (any validation failed)
  */
 
-import { MODELS, VERIFIER_TOOLS, PATHS } from "../config.js";
+import { MODELS, PROOF_TOOLS, PATHS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
 
 /** Expected shape of the subagent's JSON response */
@@ -34,7 +34,7 @@ interface ProofResponse {
 export async function runProof(): Promise<void> {
   console.log("=== Story 1.3: Haiku Read-Only Proof ===");
   console.log(`Model: ${MODELS.VERIFIER}`);
-  console.log(`Tools: [${VERIFIER_TOOLS.join(", ")}]`);
+  console.log(`Tools: [${PROOF_TOOLS.join(", ")}]`);
   console.log(`Game repo path: ${PATHS.GAME_REPO}`);
   console.log("");
 
@@ -61,13 +61,17 @@ export async function runProof(): Promise<void> {
     "Do not wrap the JSON in markdown code blocks. Output raw JSON only.",
   ].join(" ");
 
-  // Resolve repo root (two levels up from Scripts/sdk/)
-  const repoRoot = new URL("../../", import.meta.url).pathname;
+  // Resolve repo root: where game-repo/ is checked out.
+  // - CI: GITHUB_WORKSPACE is set automatically by Actions (not affected by working-directory)
+  // - Local: SDK_REPO_ROOT override, or run from repo root so process.cwd() is correct
+  const repoRoot = process.env.GITHUB_WORKSPACE
+    ?? process.env.SDK_REPO_ROOT
+    ?? process.cwd();
 
   // Spawn the Haiku subagent with cwd at repo root so game-repo/ is accessible
   const result: SubagentResult = await spawnSubagent({
     model: MODELS.VERIFIER,
-    tools: [...VERIFIER_TOOLS],
+    tools: [...PROOF_TOOLS],
     prompt,
     systemPrompt,
     cwd: repoRoot,
