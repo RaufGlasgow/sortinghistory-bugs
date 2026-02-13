@@ -36,13 +36,27 @@ export function extractJson(text: string, requiredKey?: string): string {
     }
 
     // Collect brace-delimited blocks (find each top-level { ... })
+    // String-aware: skips braces inside JSON string values to avoid
+    // mismatched depth from text like "value is {something}"
     let depth = 0;
     let start = -1;
+    let inString = false;
     for (let i = 0; i < jsonText.length; i++) {
-      if (jsonText[i] === "{") {
+      const ch = jsonText[i];
+      if (inString) {
+        if (ch === "\\" ) {
+          i++; // skip escaped character
+        } else if (ch === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === "\"" && depth > 0) {
+        inString = true;
+      } else if (ch === "{") {
         if (depth === 0) start = i;
         depth++;
-      } else if (jsonText[i] === "}") {
+      } else if (ch === "}") {
         depth--;
         if (depth === 0 && start !== -1) {
           candidates.push(jsonText.slice(start, i + 1));

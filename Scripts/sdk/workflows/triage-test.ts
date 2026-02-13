@@ -1,14 +1,14 @@
 /**
  * Story 4.1: Triage Test Harness
  *
- * Runs all 5 triage fixtures through the bug triager subagent and validates:
- * - classification matches expected_classification
+ * Runs all triage fixtures through the bug triager subagent and validates:
+ * - classification matches expected_classification (string or one of string[])
  * - severity is within expected_severity_range
  *
  * Logs per-fixture PASS/FAIL with details.
  * Exits 0 if all pass, exits 1 if any fail.
  *
- * Expected total cost: ~$0.15 (5 fixtures x ~$0.03 each)
+ * Expected total cost: ~$0.21 (7 fixtures x ~$0.03 each)
  */
 
 import { TRIAGE_FIXTURES, type TriageFixture } from "../tests/triage-fixtures.js";
@@ -34,7 +34,10 @@ export async function runTriageTest(): Promise<void> {
   for (const fixture of TRIAGE_FIXTURES) {
     console.log("--- Fixture " + fixture.id + " ---");
     console.log("Report: \"" + fixture.report + "\"");
-    console.log("Expected: " + fixture.expected_classification + " (" + fixture.expected_severity_range.join("/") + ")");
+    const expectedClassStr = Array.isArray(fixture.expected_classification)
+      ? fixture.expected_classification.join("/")
+      : fixture.expected_classification;
+    console.log("Expected: " + expectedClassStr + " (" + fixture.expected_severity_range.join("/") + ")");
     console.log("");
 
     const triageResult = await runTriage({
@@ -42,7 +45,9 @@ export async function runTriageTest(): Promise<void> {
       report_id: fixture.id,
     });
 
-    const classificationMatch = triageResult.classification === fixture.expected_classification;
+    const classificationMatch = Array.isArray(fixture.expected_classification)
+      ? fixture.expected_classification.includes(triageResult.classification)
+      : triageResult.classification === fixture.expected_classification;
     const severityMatch = fixture.expected_severity_range.includes(triageResult.severity);
     const passed = classificationMatch && severityMatch;
 
@@ -57,7 +62,7 @@ export async function runTriageTest(): Promise<void> {
     console.log("");
     console.log("[" + fixture.id + "] Classification: " +
       (classificationMatch ? "PASS" : "FAIL") +
-      " (got: " + triageResult.classification + ", expected: " + fixture.expected_classification + ")");
+      " (got: " + triageResult.classification + ", expected: " + expectedClassStr + ")");
     console.log("[" + fixture.id + "] Severity: " +
       (severityMatch ? "PASS" : "FAIL") +
       " (got: " + triageResult.severity + ", expected: " + fixture.expected_severity_range.join("/") + ")");
@@ -74,7 +79,10 @@ export async function runTriageTest(): Promise<void> {
     const status = r.passed ? "PASS" : "FAIL";
     const details: string[] = [];
     if (!r.classificationMatch) {
-      details.push("classification: got " + r.result.classification + " expected " + r.fixture.expected_classification);
+      const expClass = Array.isArray(r.fixture.expected_classification)
+        ? r.fixture.expected_classification.join("/")
+        : r.fixture.expected_classification;
+      details.push("classification: got " + r.result.classification + " expected " + expClass);
     }
     if (!r.severityMatch) {
       details.push("severity: got " + r.result.severity + " expected " + r.fixture.expected_severity_range.join("/"));

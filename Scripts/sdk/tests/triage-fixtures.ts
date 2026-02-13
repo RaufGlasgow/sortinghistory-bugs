@@ -1,14 +1,15 @@
 /**
  * Story 4.1: Bug Triager Test Fixtures
  *
- * 5 test reports with expected classifications and acceptable severity ranges.
+ * 7 test reports with expected classifications and acceptable severity ranges.
  * Used by both local testing and CI validation.
  */
 
 export interface TriageFixture {
   id: string;
   report: string;
-  expected_classification: string;
+  /** Single classification or array of acceptable classifications (for ambiguous reports) */
+  expected_classification: string | string[];
   expected_severity_range: string[];
 }
 
@@ -44,5 +45,22 @@ export const TRIAGE_FIXTURES: TriageFixture[] = [
     report: "Please add a dark mode option",
     expected_classification: "feature_request",
     expected_severity_range: ["P4"],
+  },
+  {
+    id: "test-F",
+    // Intentionally vague — Haiku should lack confidence to classify definitively.
+    // needs_human_review is the primary expectation, but content_error is acceptable
+    // if Haiku decides the vague mention of "dates" is enough signal.
+    report: "Something seems off with some of the dates in the game",
+    expected_classification: ["needs_human_review", "content_error"],
+    expected_severity_range: ["P3", "P4"],
+  },
+  {
+    id: "test-G",
+    // Boundary confusion: could be content_error (date wrong in source) or
+    // translation_error (date wrong only in German). Tests triager reasoning.
+    report: "The date for the fall of the Berlin Wall is wrong in the German version",
+    expected_classification: ["content_error", "translation_error", "needs_human_review"],
+    expected_severity_range: ["P2", "P3"],
   },
 ];
