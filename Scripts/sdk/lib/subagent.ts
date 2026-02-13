@@ -64,6 +64,10 @@ export interface SubagentParams {
   cwd?: string;
   /** Maximum agentic turns (default: 10) */
   maxTurns?: number;
+  /** Persist session to disk for later resumption (default: false) */
+  persistSession?: boolean;
+  /** Session ID to resume from a previous run */
+  resume?: string;
 }
 
 /**
@@ -107,9 +111,10 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
       allowDangerouslySkipPermissions: true,
       maxTurns: params.maxTurns ?? 10,
       cwd: params.cwd,
-      persistSession: false,
+      persistSession: params.persistSession ?? false,
       thinking: { type: "disabled" },
       hooks: params.hooks,
+      resume: params.resume,
     };
 
     if (params.systemPrompt) {
