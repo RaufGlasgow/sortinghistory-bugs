@@ -67,6 +67,16 @@ Each entry records:
   - JSON parsing succeeded despite Haiku narrative wrapping
 - **Lesson:** Input token cost is dominated by the game data file size, not by turn count or path exploration. The $0.015 cost target was unrealistic for a file this size. Actual per-run cost is ~$0.03 for Haiku reading a 100-event JSON file — this is the baseline cost, not reducible further without changing the file or model. Both Codex findings are now resolved: path via GITHUB_WORKSPACE, Bash removed from proof tools, JSON parsing resilient.
 
+### ATT-005: Story 4.1 — Bug Triager subagent (PLANNED)
+- **Date:** 2026-02-13
+- **Issue:** New workflow — classify bug reports into 6 categories via Haiku subagent
+- **What was tried:** New `bug-triage.ts` workflow following proven `proof.ts` pattern. New `TRIAGE_TOOLS` (Read, Glob, Grep — no Bash, no Write). System prompt in `prompts/bug-triager.md`. 5 test fixtures. Orchestrator `triage` command. JSON parsing uses same regex + brace fallback proven in ATT-004.
+- **Approach differs from prior attempts:** N/A — this is a new workflow, not a fix. Reuses all lessons from ATT-001 through ATT-004: GITHUB_WORKSPACE for path, no Bash in read-only tools, defensive JSON parsing.
+- **Expected outcome:** 5/5 test reports correctly classified. Each result has valid JSON with classification, severity, reasoning, extracted_context. Cost ~$0.03/run x 5 = ~$0.15 total.
+- **Commit:** `52b42d5`
+- **CI Run:** TBD (awaiting CI dispatch)
+- **Result:** IMPLEMENTED — awaiting CI validation
+
 ---
 
 ## Codex Review Notes (PR context)

@@ -7,6 +7,7 @@ import {
 import { saveSession, getSession, removeSession } from "./lib/session.js";
 import { buildHooksConfig } from "./lib/hooks.js";
 import { runProof } from "./workflows/proof.js";
+import { runTriage, type TriageInput } from "./workflows/bug-triage.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -91,7 +92,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status> <json-payload|workflow-id>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage> <json-payload|workflow-id>");
     process.exit(1);
   }
 
@@ -127,8 +128,18 @@ async function main(): Promise<void> {
       await runProof();
       break;
     }
+    case "triage": {
+      // Story 4.1: Bug triage — spawns a Haiku subagent to classify a bug report
+      if (!payload) {
+        console.error("triage requires a JSON payload: {report_text, report_id?}");
+        process.exit(1);
+      }
+      const triageInput = JSON.parse(payload) as TriageInput;
+      await runTriage(triageInput);
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage`);
       process.exit(1);
   }
 }
