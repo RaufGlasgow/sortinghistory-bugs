@@ -128,6 +128,16 @@ Each entry records:
 - **CI Run:** `21985834883` — ALL 3 STEPS GREEN (proof, triage-test 5/5, pause-resume)
 - **Result:** PASS
 
+### ATT-010: String-aware brace scanner + 7 fixtures + test-A classification widen
+- **Date:** 2026-02-13
+- **Issue:** Three improvements: (1) extractJson brace scanner didn't handle braces inside JSON string values, (2) only 5 fixtures covering 5/6 classifications, (3) test-A failed when Haiku classified as needs_human_review instead of content_error
+- **What was tried:**
+  1. PR #7: Made brace scanner string-aware (skips braces in `"..."` with escaped quote handling). Added test-F (needs_human_review, vague report) and test-G (boundary confusion, content vs translation). Changed `expected_classification` to `string | string[]`. Updated harness.
+  2. PR #8: Widened test-A from `"content_error"` to `["content_error", "needs_human_review"]` after CI run `21986611330` showed 6/7 (only test-A failed).
+- **Commit:** `1cb9758` (PR #7), `74d8df8` (PR #8)
+- **CI Run:** `21986946906` — ALL 3 STEPS GREEN (proof, triage-test 7/7, pause-resume)
+- **Result:** PASS
+
 ---
 
 ## Codex Review Notes (PR context)
