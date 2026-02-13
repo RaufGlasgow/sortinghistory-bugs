@@ -110,8 +110,22 @@ Each entry records:
   2. test-B: Replaced vague report with specific one naming category, event, and exact error — gives Haiku enough signal to classify `translation_error` with confidence > 0.7
 - **Approach differs from prior attempts:** ATT-007 added the test harness; this fixes the fixture expectations. NOT a code change — the triager itself works correctly.
 - **Expected outcome:** 5/5 triage fixtures pass. Combined with existing proof (PASS) and pause-resume (untested), should get all 3 CI steps green.
-- **Commit:** TBD — on branch `fix/triage-fixtures`
-- **CI Run:** TBD — awaiting merge and dispatch
+- **Commit:** `c35395f` (squash merge of PR #5)
+- **CI Run:** `21985619589` — proof PASS, triage-test FAIL (different failure)
+- **Result:** PARTIAL — fixture expectations fixed BUT Haiku output event data JSON instead of triage result JSON. extractJson grabbed the wrong object. See ATT-009.
+
+### ATT-009: extractJson requiredKey + stronger triage prompt
+- **Date:** 2026-02-13
+- **Issue:** CI run `21985619589` triage-test failed because Haiku investigated event data, output the event JSON in its response, and `extractJson()` grabbed that instead of the triage result JSON. The parsed object had `title`, `year`, `difficulty` — not `classification`, `severity`, `reasoning`.
+- **What was tried:**
+  1. Added `requiredKey` optional param to `extractJson()` — when provided, finds ALL candidate JSON objects (code blocks + brace-delimited) and returns the first that parses and contains the key
+  2. bug-triage.ts now calls `extractJson(text, "classification")` — ensures it picks the triage result, not event data
+  3. Strengthened user prompt: "Your final output must be the triage result JSON — NOT the event data you found during investigation"
+  4. `extractJson()` backward compatible — callers without requiredKey get original behavior
+- **Approach differs from ATT-008:** ATT-008 fixed fixture expectations. ATT-009 fixes JSON extraction — wrong JSON object was being parsed, not wrong expectations.
+- **Expected outcome:** extractJson correctly selects triage result JSON even when Haiku includes event data in response. 5/5 fixtures pass.
+- **Commit:** TBD — on branch `fix/triage-fixtures-v2`
+- **CI Run:** TBD
 - **Result:** PENDING
 
 ---
