@@ -7,7 +7,11 @@ import {
 import { saveSession, getSession, removeSession } from "./lib/session.js";
 import { buildHooksConfig } from "./lib/hooks.js";
 import { runProof } from "./workflows/proof.js";
-import { runTriage, type TriageInput } from "./workflows/bug-triage.js";
+import {
+  runPauseResumeProof,
+  runPausePhase1,
+  runResumePhase2,
+} from "./workflows/pause-resume-proof.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -92,7 +96,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage> <json-payload|workflow-id>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|pause-resume|pause|resume-test> <payload>");
     process.exit(1);
   }
 
@@ -128,18 +132,28 @@ async function main(): Promise<void> {
       await runProof();
       break;
     }
-    case "triage": {
-      // Story 4.1: Bug triage — spawns a Haiku subagent to classify a bug report
+    case "pause-resume": {
+      // Story 1.5: Combined pause/resume proof (both phases sequentially)
+      await runPauseResumeProof();
+      break;
+    }
+    case "pause": {
+      // Story 1.5: Phase 1 only (pause — for testing phases independently)
+      const workflowId = await runPausePhase1();
+      console.log(workflowId);
+      break;
+    }
+    case "resume-test": {
+      // Story 1.5: Phase 2 only (resume — for testing phases independently)
       if (!payload) {
-        console.error("triage requires a JSON payload: {report_text, report_id?}");
+        console.error("resume-test requires a workflow ID as the second argument");
         process.exit(1);
       }
-      const triageInput = JSON.parse(payload) as TriageInput;
-      await runTriage(triageInput);
+      await runResumePhase2(payload);
       break;
     }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, pause-resume, pause, resume-test`);
       process.exit(1);
   }
 }

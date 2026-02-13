@@ -73,9 +73,19 @@ Each entry records:
 - **What was tried:** New `bug-triage.ts` workflow following proven `proof.ts` pattern. New `TRIAGE_TOOLS` (Read, Glob, Grep — no Bash, no Write). System prompt in `prompts/bug-triager.md`. 5 test fixtures. Orchestrator `triage` command. JSON parsing uses same regex + brace fallback proven in ATT-004.
 - **Approach differs from prior attempts:** N/A — this is a new workflow, not a fix. Reuses all lessons from ATT-001 through ATT-004: GITHUB_WORKSPACE for path, no Bash in read-only tools, defensive JSON parsing.
 - **Expected outcome:** 5/5 test reports correctly classified. Each result has valid JSON with classification, severity, reasoning, extracted_context. Cost ~$0.03/run x 5 = ~$0.15 total.
-- **Commit:** `52b42d5`
-- **CI Run:** TBD (awaiting CI dispatch)
-- **Result:** IMPLEMENTED — awaiting CI validation
+- **Commit:** TBD
+- **CI Run:** TBD
+- **Result:** PLANNED
+
+### ATT-006: Story 1.5 -- Session Pause/Resume Proof (PLANNED)
+- **Date:** 2026-02-13
+- **Issue:** Prove SDK session persistence across process boundaries -- the critical architecture pattern for human-in-the-loop workflows (verify -> pause -> human approves -> resume -> fix)
+- **What was tried:** New `pause-resume-proof.ts` workflow with two phases. Phase 1: subagent reads USHistory.json with `persistSession: true`, identifies 3rd event as a "finding", state saved as `awaiting_approval`, session ID saved to registry. Phase 2: resume session via `resume: sessionId`, ask agent to recall the finding WITHOUT re-reading files. Modified `subagent.ts` to pass `persistSession` and `resume` through to SDK `Options`. Added `pause-resume`, `pause`, `resume-test` commands to orchestrator.
+- **Approach differs from prior attempts:** N/A -- new capability proof, not a fix. Reuses proven patterns: GITHUB_WORKSPACE for path, PROOF_TOOLS (no Bash), defensive JSON parsing (regex + brace fallback from ATT-004). Uses state.ts and session.ts CRUD from Story 1.4.
+- **Expected outcome:** Phase 2 recalls finding from Phase 1 without re-reading files. Both phases pass, total < 60s, cost < $0.10.
+- **Commit:** TBD
+- **CI Run:** TBD
+- **Result:** PLANNED
 
 ---
 

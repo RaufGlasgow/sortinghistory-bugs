@@ -55,7 +55,7 @@ const VALID_SEVERITIES = new Set(["P1", "P2", "P3", "P4"]);
  * 2. Fallback: find first { and last } as JSON boundaries
  */
 function extractJson(text: string): string {
-  const jsonText = text.trim();
+  let jsonText = text.trim();
 
   // Try 1: Extract ```json ... ``` block from anywhere in response
   const codeBlockMatch = jsonText.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
@@ -83,15 +83,15 @@ function validateTriageResult(obj: Record<string, unknown>): string[] {
   const errors: string[] = [];
 
   if (typeof obj.classification !== "string" || !VALID_CLASSIFICATIONS.has(obj.classification)) {
-    errors.push("Invalid classification: \"" + String(obj.classification) + "\". Must be one of: " + Array.from(VALID_CLASSIFICATIONS).join(", "));
+    errors.push(`Invalid classification: "${obj.classification}". Must be one of: ${[...VALID_CLASSIFICATIONS].join(", ")}`);
   }
 
   if (typeof obj.confidence !== "number" || obj.confidence < 0 || obj.confidence > 1) {
-    errors.push("Invalid confidence: " + String(obj.confidence) + ". Must be a number between 0.0 and 1.0");
+    errors.push(`Invalid confidence: ${obj.confidence}. Must be a number between 0.0 and 1.0`);
   }
 
   if (typeof obj.severity !== "string" || !VALID_SEVERITIES.has(obj.severity)) {
-    errors.push("Invalid severity: \"" + String(obj.severity) + "\". Must be one of: " + Array.from(VALID_SEVERITIES).join(", "));
+    errors.push(`Invalid severity: "${obj.severity}". Must be one of: ${[...VALID_SEVERITIES].join(", ")}`);
   }
 
   if (typeof obj.reasoning !== "string" || obj.reasoning.length === 0) {
@@ -112,10 +112,10 @@ function validateTriageResult(obj: Record<string, unknown>): string[] {
 /** Run the bug triage workflow */
 export async function runTriage(input: TriageInput): Promise<TriageResult> {
   const reportId = input.report_id ?? "unknown";
-  console.log("=== Story 4.1: Bug Triage — Report " + reportId + " ===");
-  console.log("Model: " + MODELS.VERIFIER);
-  console.log("Tools: [" + TRIAGE_TOOLS.join(", ") + "]");
-  console.log("Report text: \"" + input.report_text + "\"");
+  console.log(`=== Story 4.1: Bug Triage — Report ${reportId} ===`);
+  console.log(`Model: ${MODELS.VERIFIER}`);
+  console.log(`Tools: [${TRIAGE_TOOLS.join(", ")}]`);
+  console.log(`Report text: "${input.report_text}"`);
   console.log("");
 
   // Resolve repo root — same pattern as proof.ts (ATT-003)
@@ -130,34 +130,34 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   try {
     systemPrompt = fs.readFileSync(promptPath, "utf-8");
   } catch (err: unknown) {
-    console.error("FAIL: Could not read system prompt at " + promptPath);
-    console.error("Error: " + (err instanceof Error ? err.message : String(err)));
+    console.error(`FAIL: Could not read system prompt at ${promptPath}`);
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
   // Build user prompt with report text and context paths
-  const gameDataPath = PATHS.GAME_REPO + "/Data/Events/";
+  const gameDataPath = `${PATHS.GAME_REPO}/Data/Events/`;
   const archRegistryPath = "Scripts/context/architecture-registry.json";
 
   const userPrompt = [
-    "Classify the following bug report for the SortingHistory iOS game.",
-    "",
-    "## Bug Report",
-    "Report ID: " + reportId,
-    "\"" + input.report_text + "\"",
-    "",
-    "## Available Context",
-    "- Game event data files are at: " + gameDataPath,
-    "  (Search these files if the report mentions specific historical events, dates, or categories)",
-    "- Architecture registry is at: " + archRegistryPath,
-    "  (Reference this for UI/gameplay bugs to identify relevant Swift source files)",
-    "",
-    "## Instructions",
-    "1. Read the bug report carefully",
-    "2. If the report mentions a specific event or date, search the event data files to find matching content",
-    "3. If the report describes a UI or gameplay issue, check the architecture registry for relevant files",
-    "4. Classify the report and return your analysis as a JSON object",
-    "5. Output ONLY the JSON object — no markdown, no explanation before or after",
+    `Classify the following bug report for the SortingHistory iOS game.`,
+    ``,
+    `## Bug Report`,
+    `Report ID: ${reportId}`,
+    `"${input.report_text}"`,
+    ``,
+    `## Available Context`,
+    `- Game event data files are at: ${gameDataPath}`,
+    `  (Search these files if the report mentions specific historical events, dates, or categories)`,
+    `- Architecture registry is at: ${archRegistryPath}`,
+    `  (Reference this for UI/gameplay bugs to identify relevant Swift source files)`,
+    ``,
+    `## Instructions`,
+    `1. Read the bug report carefully`,
+    `2. If the report mentions a specific event or date, search the event data files to find matching content`,
+    `3. If the report describes a UI or gameplay issue, check the architecture registry for relevant files`,
+    `4. Classify the report and return your analysis as a JSON object`,
+    `5. Output ONLY the JSON object — no markdown, no explanation before or after`,
   ].join("\n");
 
   // Spawn Haiku subagent with read-only triage tools
@@ -171,12 +171,12 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   });
 
   console.log("");
-  console.log("=== Triage Results — Report " + reportId + " ===");
+  console.log(`=== Triage Results — Report ${reportId} ===`);
 
   // Validation 1: Subagent completed successfully
   if (!result.success) {
     console.error("FAIL: Subagent did not complete successfully");
-    console.error("Error: " + result.error);
+    console.error(`Error: ${result.error}`);
     process.exit(1);
   }
   console.log("PASS: Subagent completed successfully");
@@ -184,7 +184,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   // Validation 2: No write tools used (read-only enforcement)
   if (result.usedWriteTools) {
     console.error("FAIL: Subagent used write/edit tools (read-only violation)");
-    console.error("Tools used: " + result.toolsUsed.join(", "));
+    console.error(`Tools used: ${result.toolsUsed.join(", ")}`);
     process.exit(1);
   }
   console.log("PASS: No write/edit tools used (read-only confirmed)");
@@ -202,8 +202,8 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     parsed = JSON.parse(jsonText) as Record<string, unknown>;
   } catch (err: unknown) {
     console.error("FAIL: Response is not valid JSON");
-    console.error("Raw response: " + result.responseText);
-    console.error("Parse error: " + (err instanceof Error ? err.message : String(err)));
+    console.error(`Raw response: ${result.responseText}`);
+    console.error(`Parse error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
   console.log("PASS: Response is valid JSON");
@@ -212,10 +212,10 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   const validationErrors = validateTriageResult(parsed);
   if (validationErrors.length > 0) {
     console.error("FAIL: Triage result validation failed:");
-    for (const ve of validationErrors) {
-      console.error("  - " + ve);
+    for (const err of validationErrors) {
+      console.error(`  - ${err}`);
     }
-    console.error("Parsed result: " + JSON.stringify(parsed, null, 2));
+    console.error(`Parsed result: ${JSON.stringify(parsed, null, 2)}`);
     process.exit(1);
   }
   console.log("PASS: All required fields present and valid");
@@ -231,35 +231,35 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
 
   // Log the result
   console.log("");
-  console.log("Classification: " + triageResult.classification);
-  console.log("Confidence: " + triageResult.confidence);
-  console.log("Severity: " + triageResult.severity);
-  console.log("Reasoning: " + triageResult.reasoning);
-  console.log("Routing: " + triageResult.routing_recommendation);
+  console.log(`Classification: ${triageResult.classification}`);
+  console.log(`Confidence: ${triageResult.confidence}`);
+  console.log(`Severity: ${triageResult.severity}`);
+  console.log(`Reasoning: ${triageResult.reasoning}`);
+  console.log(`Routing: ${triageResult.routing_recommendation}`);
   if (Object.keys(triageResult.extracted_context).length > 0) {
-    console.log("Context: " + JSON.stringify(triageResult.extracted_context, null, 2));
+    console.log(`Context: ${JSON.stringify(triageResult.extracted_context, null, 2)}`);
   }
 
   // Log metrics
   console.log("");
   console.log("=== Metrics ===");
-  console.log("Model: " + (result.model ?? MODELS.VERIFIER));
-  console.log("Session ID: " + result.sessionId);
-  console.log("Input tokens: " + result.inputTokens);
-  console.log("Output tokens: " + result.outputTokens);
-  console.log("Duration: " + result.durationMs + "ms");
-  console.log("Cost: $" + result.costUsd.toFixed(4));
-  console.log("Tools used: [" + result.toolsUsed.join(", ") + "]");
+  console.log(`Model: ${result.model ?? MODELS.VERIFIER}`);
+  console.log(`Session ID: ${result.sessionId}`);
+  console.log(`Input tokens: ${result.inputTokens}`);
+  console.log(`Output tokens: ${result.outputTokens}`);
+  console.log(`Duration: ${result.durationMs}ms`);
+  console.log(`Cost: $${result.costUsd.toFixed(4)}`);
+  console.log(`Tools used: [${result.toolsUsed.join(", ")}]`);
 
   if (Object.keys(result.modelUsage).length > 0) {
     console.log("Per-model usage:");
     for (const [model, usage] of Object.entries(result.modelUsage)) {
-      console.log("  " + model + ": in=" + usage.inputTokens + " out=" + usage.outputTokens + " cost=$" + usage.costUSD.toFixed(4));
+      console.log(`  ${model}: in=${usage.inputTokens} out=${usage.outputTokens} cost=$${usage.costUSD.toFixed(4)}`);
     }
   }
 
   console.log("");
-  console.log("=== Triage COMPLETE — Report " + reportId + ": " + triageResult.classification + " (" + triageResult.severity + ") ===");
+  console.log(`=== Triage COMPLETE — Report ${reportId}: ${triageResult.classification} (${triageResult.severity}) ===`);
 
   return triageResult;
 }
