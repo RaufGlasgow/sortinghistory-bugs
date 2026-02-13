@@ -29,6 +29,7 @@ export interface WorkflowState {
   fix_results: unknown[];
   pr_number: number | null;
   error: string | null;
+  issue_number: number | null;
 }
 
 /** Generate a workflow ID: {prefix}-{date}-{sequence} with true sequential numbering */
@@ -97,6 +98,7 @@ export async function createWorkflowState(
   type: WorkflowType,
   trigger: "scheduled" | "dispatch" | "manual",
   category?: string,
+  issueNumber?: number,
 ): Promise<WorkflowState> {
   const state: WorkflowState = {
     workflow_id: generateWorkflowId(type),
@@ -115,6 +117,7 @@ export async function createWorkflowState(
     fix_results: [],
     pr_number: null,
     error: null,
+    issue_number: issueNumber ?? null,
   };
 
   ensureDir(PATHS.STATE_DIR);
@@ -174,4 +177,13 @@ export async function listWorkflowStates(
   }
 
   return states;
+}
+
+/** Find the most recent workflow state for a given issue number. Returns null if none found. */
+export async function findWorkflowByIssue(issueNumber: number): Promise<WorkflowState | null> {
+  const allStates = await listWorkflowStates();
+  const matching = allStates
+    .filter(s => s.issue_number === issueNumber)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  return matching[0] ?? null;
 }

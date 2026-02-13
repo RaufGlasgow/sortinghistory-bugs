@@ -3,6 +3,7 @@ import {
   createWorkflowState,
   updateWorkflowState,
   loadWorkflowState,
+  findWorkflowByIssue,
 } from "./lib/state.js";
 import { saveSession, getSession, removeSession } from "./lib/session.js";
 import { buildHooksConfig } from "./lib/hooks.js";
@@ -14,6 +15,7 @@ import {
 } from "./workflows/pause-resume-proof.js";
 import { runTriageTest } from "./workflows/triage-test.js";
 import { runRoutingTest } from "./workflows/routing-test.js";
+import { runResumeByIssueTest } from "./workflows/resume-test.js";
 import { decideRoute, executeRoute, type RoutingInput } from "./lib/routing.js";
 
 /** Parameters for starting a new workflow */
@@ -25,7 +27,8 @@ interface WorkflowParams {
 
 /** Parameters for resuming after human approval/rejection */
 interface ResumeParams {
-  workflowId: string;
+  workflowId?: string;
+  issueNumber?: number;
   action: "approve" | "reject";
   approvedItems?: string[];
   rejectionReason?: string;
@@ -48,27 +51,45 @@ async function runWorkflow(params: WorkflowParams): Promise<void> {
 
 /** Resume a paused workflow after human approval/rejection. */
 async function resumeWorkflow(params: ResumeParams): Promise<void> {
-  const session = await getSession(params.workflowId);
+  let workflowId = params.workflowId;
+
+  // Resolve workflowId from issueNumber if not provided directly
+  if (!workflowId && params.issueNumber) {
+    const foundState = await findWorkflowByIssue(params.issueNumber);
+    if (!foundState) {
+      console.error(`[orchestrator] No workflow found for issue #${params.issueNumber}`);
+      process.exit(1);
+    }
+    workflowId = foundState.workflow_id;
+    console.log(`[orchestrator] Resolved issue #${params.issueNumber} -> ${workflowId}`);
+  }
+
+  if (!workflowId) {
+    console.error("[orchestrator] resume requires workflowId or issueNumber");
+    process.exit(1);
+  }
+
+  const session = await getSession(workflowId);
   if (!session) {
-    console.error(`[orchestrator] No paused session found for ${params.workflowId}`);
+    console.error(`[orchestrator] No paused session found for ${workflowId}`);
     process.exit(1);
   }
 
-  const state = await loadWorkflowState(params.workflowId);
+  const state = await loadWorkflowState(workflowId);
   if (!state) {
-    console.error(`[orchestrator] No state file found for ${params.workflowId}`);
+    console.error(`[orchestrator] No state file found for ${workflowId}`);
     process.exit(1);
   }
 
-  console.log(`[orchestrator] Resuming ${params.workflowId} with action=${params.action}`);
+  console.log(`[orchestrator] Resuming ${workflowId} with action=${params.action}`);
 
   if (params.action === "reject") {
-    await updateWorkflowState(params.workflowId, {
+    await updateWorkflowState(workflowId, {
       status: "complete",
       rejected_findings: state.findings,
     });
-    await removeSession(params.workflowId);
-    console.log(`[orchestrator] Workflow ${params.workflowId} rejected and closed`);
+    await removeSession(workflowId);
+    console.log(`[orchestrator] Workflow ${workflowId} rejected and closed`);
     return;
   }
 
@@ -99,7 +120,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test> <payload>");
     process.exit(1);
   }
 
@@ -115,7 +136,7 @@ async function main(): Promise<void> {
     }
     case "resume": {
       if (!payload) {
-        console.error("resume requires a JSON payload: {workflowId, action, approvedItems?}");
+        console.error("resume requires a JSON payload: {workflowId?, issueNumber?, action, approvedItems?}");
         process.exit(1);
       }
       const params = JSON.parse(payload) as ResumeParams;
@@ -177,8 +198,13 @@ async function main(): Promise<void> {
       await runRoutingTest();
       break;
     }
+    case "resume-by-issue-test": {
+      // Story 4.3: Resume-by-issue lookup test — pure logic, $0.00 cost
+      await runResumeByIssueTest();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test`);
       process.exit(1);
   }
 }
