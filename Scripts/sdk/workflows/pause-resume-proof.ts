@@ -22,6 +22,7 @@
 
 import { MODELS, PROOF_TOOLS, PATHS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
+import { extractJson } from "../lib/json-extract.js";
 import {
   createWorkflowState,
   updateWorkflowState,
@@ -42,31 +43,6 @@ interface FindingResponse {
 interface RecallResponse {
   recalled_title: string;
   recalled_year: number;
-}
-
-/**
- * Extract JSON from a Haiku response that may contain narrative text.
- * Uses the same proven approach from ATT-004:
- *   1. Try regex extraction of ```json ... ``` code block
- *   2. Fallback: find first { and last } as JSON boundaries
- */
-function extractJson<T>(responseText: string): T {
-  let jsonText = responseText.trim();
-
-  // Try 1: Extract ```json ... ``` block from anywhere in response
-  const codeBlockMatch = jsonText.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
-  if (codeBlockMatch?.[1]) {
-    jsonText = codeBlockMatch[1].trim();
-  } else if (!jsonText.startsWith("{")) {
-    // Try 2: Find first { and last } as JSON boundaries
-    const firstBrace = jsonText.indexOf("{");
-    const lastBrace = jsonText.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      jsonText = jsonText.slice(firstBrace, lastBrace + 1);
-    }
-  }
-
-  return JSON.parse(jsonText) as T;
 }
 
 /**
@@ -135,7 +111,7 @@ export async function runPausePhase1(): Promise<string> {
 
   let finding: FindingResponse["finding"];
   try {
-    const parsed = extractJson<FindingResponse>(result.responseText);
+    const parsed = JSON.parse(extractJson(result.responseText)) as FindingResponse;
     finding = parsed.finding;
     if (!finding || typeof finding.event_title !== "string" || typeof finding.year !== "number") {
       throw new Error(`Invalid finding structure: ${JSON.stringify(parsed)}`);
@@ -249,7 +225,7 @@ export async function runResumePhase2(workflowId: string): Promise<void> {
   let recalledTitle: string;
   let recalledYear: number;
   try {
-    const parsed = extractJson<RecallResponse>(result.responseText);
+    const parsed = JSON.parse(extractJson(result.responseText)) as RecallResponse;
     recalledTitle = parsed.recalled_title;
     recalledYear = parsed.recalled_year;
     if (typeof recalledTitle !== "string" || typeof recalledYear !== "number") {

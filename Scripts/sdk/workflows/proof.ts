@@ -19,6 +19,7 @@
 
 import { MODELS, PROOF_TOOLS, PATHS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
+import { extractJson } from "../lib/json-extract.js";
 
 /** Expected shape of the subagent's JSON response */
 interface ProofResponse {
@@ -106,19 +107,7 @@ export async function runProof(): Promise<void> {
   let parsedResponse: ProofResponse;
   try {
     // Extract JSON from response — Haiku may add narrative text around it
-    let jsonText = result.responseText.trim();
-    // Try 1: Extract ```json ... ``` block from anywhere in response
-    const codeBlockMatch = jsonText.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
-    if (codeBlockMatch?.[1]) {
-      jsonText = codeBlockMatch[1].trim();
-    } else if (!jsonText.startsWith("{")) {
-      // Try 2: Find first { and last } as JSON boundaries
-      const firstBrace = jsonText.indexOf("{");
-      const lastBrace = jsonText.lastIndexOf("}");
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        jsonText = jsonText.slice(firstBrace, lastBrace + 1);
-      }
-    }
+    const jsonText = extractJson(result.responseText);
     parsedResponse = JSON.parse(jsonText) as ProofResponse;
   } catch (err: unknown) {
     console.error("FAIL: Response is not valid JSON");
