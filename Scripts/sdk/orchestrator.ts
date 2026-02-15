@@ -17,6 +17,8 @@ import { runTriageTest } from "./workflows/triage-test.js";
 import { runRoutingTest } from "./workflows/routing-test.js";
 import { runResumeByIssueTest } from "./workflows/resume-test.js";
 import { decideRoute, executeRoute, type RoutingInput } from "./lib/routing.js";
+import { runContentVerify, type ContentVerifyInput } from "./workflows/content-verify.js";
+import { runContentVerifyTest } from "./workflows/content-verify-test.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -120,7 +122,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test> <payload>");
     process.exit(1);
   }
 
@@ -203,8 +205,23 @@ async function main(): Promise<void> {
       await runResumeByIssueTest();
       break;
     }
+    case "content-verify": {
+      // Story 2.1: Content verifier — runs automated + AI gates on a category file
+      if (!payload) {
+        console.error("content-verify requires a JSON payload: {filePath, category?}");
+        process.exit(1);
+      }
+      const cvInput = JSON.parse(payload) as ContentVerifyInput;
+      await runContentVerify(cvInput);
+      break;
+    }
+    case "content-verify-test": {
+      // Story 2.1: Content verifier test — runs fixtures and validates error detection
+      await runContentVerifyTest();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test`);
       process.exit(1);
   }
 }

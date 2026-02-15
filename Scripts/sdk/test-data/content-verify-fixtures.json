@@ -1,0 +1,120 @@
+{
+  "category": "US History",
+  "events": [
+    {
+      "title": "Declaration of Independence Signed",
+      "version": 1,
+      "description": "American colonies formally declared independence from Britain establishing new nation founded on principles of liberty and self-governance.",
+      "year": 1776,
+      "month": 7,
+      "day": 4,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null
+    },
+    {
+      "title": "Moon Landing",
+      "version": 1,
+      "description": "American astronauts Neil Armstrong and Buzz Aldrin became first humans to walk on the lunar surface during Apollo 11 mission.",
+      "year": 1969,
+      "month": 7,
+      "day": 20,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null
+    },
+    {
+      "title": "Louisiana Purchase Completed",
+      "version": 1,
+      "description": "United States acquired vast western territory from France doubling the young nation's size under President Thomas Jefferson.",
+      "year": 1803,
+      "month": 4,
+      "day": 30,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null
+    },
+    {
+      "title": "Rosa Parks Refuses to Give Up Seat",
+      "version": 1,
+      "description": "African American civil rights activist Rosa Parks refused to surrender her Montgomery Alabama bus seat sparking historic boycott movement.",
+      "year": 1955,
+      "month": 12,
+      "day": 1,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null
+    },
+    {
+      "title": "Transcontinental Railroad Completed",
+      "version": 1,
+      "description": "Golden spike ceremony at Promontory Summit Utah connected eastern and western American rail networks transforming continental transportation.",
+      "year": 1869,
+      "month": 5,
+      "day": 10,
+      "category": "US History",
+      "difficulty": 3,
+      "imageURL": null
+    },
+    {
+      "title": "Columbus Reaches Americas",
+      "version": 1,
+      "description": "Italian explorer Christopher Columbus sailing for Spain reached Caribbean islands beginning era of European colonization of New World.",
+      "year": 1493,
+      "month": 10,
+      "day": 12,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null,
+      "_planted_error": "WRONG YEAR: Should be 1492 not 1493. Gate: F1 factual accuracy."
+    },
+    {
+      "title": "First Telephone Call Made",
+      "version": 1,
+      "description": "Scottish-born American inventor Alexander Graham Bell successfully transmitted the first clear telephone message to his assistant Thomas Watson in their Boston laboratory workshop establishing a revolutionary new form of long-distance human communication technology.",
+      "year": 1876,
+      "month": 3,
+      "day": 10,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null,
+      "_planted_error": "DESCRIPTION TOO LONG: 36 words, exceeds 23-word maximum. Gate: P2."
+    },
+    {
+      "title": "Constitution Adopted",
+      "version": 1,
+      "description": "Delegates gathered to draft and ratify new framework of government replacing earlier confederation with stronger centralized federal system.",
+      "year": 1787,
+      "month": 9,
+      "day": 17,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null,
+      "_planted_error": "MISSING COUNTRY CONTEXT: No reference to United States, America, American, or any country/nationality. Gate: P4."
+    },
+    {
+      "title": "Signing of the Declaration of Independence",
+      "version": 1,
+      "description": "American colonies formally declared independence from Britain establishing new nation founded on principles of liberty and self-governance forever.",
+      "year": 1776,
+      "month": 8,
+      "day": 2,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null,
+      "_planted_error": "NEAR-DUPLICATE: Same event as good event #1 (Declaration of Independence Signed), same year 1776, >80% word overlap. Gate: D2."
+    },
+    {
+      "title": "Salem Witch Executions",
+      "version": 1,
+      "description": "Accused witches were slowly strangled by hanging ropes while spectators watched their bodies convulse and twitch in prolonged gruesome agony.",
+      "year": 1692,
+      "month": 6,
+      "day": 10,
+      "category": "US History",
+      "difficulty": 3,
+      "imageURL": null,
+      "_planted_error": "AGE-INAPPROPRIATE: Graphic violence description with disturbing execution details. Gate: A1."
+    }
+  ]
+}
