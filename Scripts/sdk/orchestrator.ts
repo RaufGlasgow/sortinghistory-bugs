@@ -21,6 +21,8 @@ import { runContentVerify, type ContentVerifyInput } from "./workflows/content-v
 import { runContentVerifyTest } from "./workflows/content-verify-test.js";
 import { runContentFix, type ContentFixInput } from "./workflows/content-fix.js";
 import { runContentFixTest } from "./workflows/content-fix-test.js";
+import { runContentE2E, type ContentE2EInput, type ApprovalResponse } from "./workflows/content-e2e.js";
+import { runContentE2ETest } from "./workflows/content-e2e-test.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -124,7 +126,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test> <payload>");
     process.exit(1);
   }
 
@@ -237,8 +239,24 @@ async function main(): Promise<void> {
       await runContentFixTest();
       break;
     }
+    case "content-e2e": {
+      // Story 2.3: Content E2E orchestration — full verify -> approve -> fix -> re-verify -> PR pipeline
+      if (!payload) {
+        console.error("content-e2e requires a JSON payload: {filePath, category?, correctionsLogPath, repoRoot?, dryRun?, branch?, baseBranch?}");
+        process.exit(1);
+      }
+      const e2eInput = JSON.parse(payload) as ContentE2EInput & { approval?: ApprovalResponse };
+      const e2eApproval = e2eInput.approval;
+      await runContentE2E(e2eInput, e2eApproval);
+      break;
+    }
+    case "content-e2e-test": {
+      // Story 2.3: Content E2E test — happy path + escalation tests
+      await runContentE2ETest();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test`);
       process.exit(1);
   }
 }
