@@ -313,8 +313,8 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
 
     case "label_and_state":
       await githubLabel(action.repo, action.issue_number, action.labels);
-      await createWorkflowState(action.workflow_type, "dispatch", action.category);
-      console.log("[routing] Created workflow state for " + action.workflow_type);
+      await createWorkflowState(action.workflow_type, "dispatch", action.category, action.issue_number);
+      console.log("[routing] Created workflow state for " + action.workflow_type + " (issue #" + action.issue_number + ")");
       break;
   }
 }

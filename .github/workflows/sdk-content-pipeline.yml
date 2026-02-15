@@ -63,6 +63,11 @@ jobs:
         run: node dist/orchestrator.js routing-test
         timeout-minutes: 1
 
+      - name: "Story 4.3: Resume-by-issue lookup test"
+        working-directory: Scripts/sdk
+        run: node dist/orchestrator.js resume-by-issue-test
+        timeout-minutes: 1
+
       - name: "Story 4.1: Bug triage test suite"
         working-directory: Scripts/sdk
         run: node dist/orchestrator.js triage-test

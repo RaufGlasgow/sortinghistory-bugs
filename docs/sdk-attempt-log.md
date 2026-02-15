@@ -138,6 +138,20 @@ Each entry records:
 - **CI Run:** `21986946906` — ALL 3 STEPS GREEN (proof, triage-test 7/7, pause-resume)
 - **Result:** PASS
 
+### ATT-011: Story 4.3 — Issue-number state lookup + Worker SDK routing
+- **Date:** 2026-02-13
+- **Issue:** Worker dispatches ALL /approve to auto-fix pipeline and ALL /reject close immediately. No SDK routing. State files lack issue_number for resume-by-issue lookup.
+- **What was tried:** Two-repo implementation:
+  1. **SDK (public):** Added `issue_number` field to `WorkflowState`, `findWorkflowByIssue()` scanner, updated `createWorkflowState()` 4th param, `ResumeParams` accepts `issueNumber`, routing executor passes issue_number on `label_and_state`. New `resume-test.ts` with 4 pure-logic tests. CI step added.
+  2. **Worker (private):** Added `isSDKPipelineIssue()` label checker, `dispatchSDKResume()` shared function, `extractRejectionReason()` parser. Refactored `handleApprove()` (routes SDK issues to sdk-resume, others to new `dispatchAutoFix()`). Refactored `handleReject()` (routes SDK issues to sdk-resume without closing/labeling, others to new `handleRejectLegacy()`). `handleFixRejection()` completely untouched.
+- **Approach differs from prior attempts:** N/A — new story, not a fix. Reuses proven patterns from ATT-001 through ATT-010.
+- **Expected outcome:** SDK: routing-test 11/11, resume-by-issue 4/4, TypeScript zero errors. Worker: TypeScript zero errors, all endpoints preserved.
+- **SDK Commit:** `4e8e9c8` on `feature/SDK-4.3-worker-routing` (PR #10)
+- **Worker Commit:** `eaa602b5` on `feature/bug-automation-work`
+- **CI Run:** TBD — awaiting PR merge and CI trigger
+- **Result:** IMPLEMENTED — awaiting CI + QA review
+- **Local test results:** SDK routing-test 11/11 PASS, resume-by-issue-test 4/4 PASS, Worker tsc --noEmit zero errors
+
 ---
 
 ## Codex Review Notes (PR context)
