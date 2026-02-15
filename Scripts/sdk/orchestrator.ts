@@ -19,6 +19,8 @@ import { runResumeByIssueTest } from "./workflows/resume-test.js";
 import { decideRoute, executeRoute, type RoutingInput } from "./lib/routing.js";
 import { runContentVerify, type ContentVerifyInput } from "./workflows/content-verify.js";
 import { runContentVerifyTest } from "./workflows/content-verify-test.js";
+import { runContentFix, type ContentFixInput } from "./workflows/content-fix.js";
+import { runContentFixTest } from "./workflows/content-fix-test.js";
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -122,7 +124,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test> <payload>");
     process.exit(1);
   }
 
@@ -220,8 +222,23 @@ async function main(): Promise<void> {
       await runContentVerifyTest();
       break;
     }
+    case "content-fix": {
+      // Story 2.2: Content fixer — applies fixes to events based on verifier findings
+      if (!payload) {
+        console.error("content-fix requires a JSON payload: {findings, correctionsLogPath, repoRoot?}");
+        process.exit(1);
+      }
+      const cfInput = JSON.parse(payload) as ContentFixInput;
+      await runContentFix(cfInput);
+      break;
+    }
+    case "content-fix-test": {
+      // Story 2.2: Content fixer test — fixes 3 findings, re-verifies, validates logs
+      await runContentFixTest();
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test`);
       process.exit(1);
   }
 }
