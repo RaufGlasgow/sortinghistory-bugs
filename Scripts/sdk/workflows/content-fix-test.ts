@@ -16,6 +16,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 import { runContentFix, type ContentFinding, type ContentFixOutput } from "./content-fix.js";
 import { runContentVerify, type ContentVerificationResult } from "./content-verify.js";
 
@@ -60,10 +61,11 @@ function setupTempEnvironment(): {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "content-fix-test-"));
   console.log("[test] Temp directory: " + tempDir);
 
-  // Resolve the source fixtures path
+  // Resolve the repo root from this file's location (workflows/ -> sdk/ -> Scripts/ -> repo root)
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = process.env.GITHUB_WORKSPACE
     ?? process.env.SDK_REPO_ROOT
-    ?? process.cwd();
+    ?? path.resolve(__dirname, "..", "..", "..", "..");
 
   const sourceFixtures = path.join(repoRoot, "Scripts", "sdk", "test-data", "content-verify-fixtures.json");
 

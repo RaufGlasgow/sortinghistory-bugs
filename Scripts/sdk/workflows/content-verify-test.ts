@@ -12,6 +12,7 @@
  */
 
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { runContentVerify, type ContentVerificationResult } from "./content-verify.js";
 
 /** Planted error definitions — maps event title to expected failure */
@@ -79,10 +80,11 @@ export async function runContentVerifyTest(): Promise<void> {
   console.log("=== Story 2.1: Content Verifier Test Suite ===");
   console.log("");
 
-  // Resolve the fixtures file
+  // Resolve the repo root from this file's location (workflows/ -> sdk/ -> Scripts/ -> repo root)
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = process.env.GITHUB_WORKSPACE
     ?? process.env.SDK_REPO_ROOT
-    ?? process.cwd();
+    ?? path.resolve(__dirname, "..", "..", "..", "..");
 
   const fixturesPath = path.join(repoRoot, "Scripts", "sdk", "test-data", "content-verify-fixtures.json");
 

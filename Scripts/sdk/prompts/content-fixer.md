@@ -51,16 +51,18 @@ You will receive a list of findings from the content verifier. Each finding iden
 1. Read the event file to find the event by title
 2. Rewrite the `description` to describe the historical event factually without graphic violence details
 3. Focus on historical significance, not methods of death/harm
-4. Keep the description between 10-23 words
-5. Increment `version` by 1
-6. Append a correction log entry
+4. Do NOT introduce new specific claims (numbers, dates, names) that were not in the original description — only remove or soften the graphic content
+5. Keep the description between 10-23 words
+6. Increment `version` by 1
+7. Append a correction log entry
 
 ### A2 — Age-Inappropriate (Mature Themes)
 1. Read the event file to find the event by title
 2. Rewrite the `description` to handle the topic with appropriate sensitivity
-3. Keep the description between 10-23 words
-4. Increment `version` by 1
-5. Append a correction log entry
+3. Do NOT introduce new specific claims (numbers, dates, names) that were not in the original description — only soften the inappropriate content
+4. Keep the description between 10-23 words
+5. Increment `version` by 1
+6. Append a correction log entry
 
 ### G0 — Invalid Category String
 1. Read the event file to find the event by title

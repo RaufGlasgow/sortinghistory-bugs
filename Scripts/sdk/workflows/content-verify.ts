@@ -18,6 +18,7 @@ import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
 import { extractJson } from "../lib/json-extract.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /** Single event from the fixture/category file */
 interface GameEvent {
@@ -497,10 +498,11 @@ export async function runContentVerify(input: ContentVerifyInput): Promise<Conte
   console.log("Tools: [" + VERIFIER_TOOLS.join(", ") + "]");
   console.log("");
 
-  // Resolve repo root
+  // Resolve repo root from this file's location (dist/workflows/ -> dist/ -> sdk/ -> Scripts/ -> repo root)
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = process.env.GITHUB_WORKSPACE
     ?? process.env.SDK_REPO_ROOT
-    ?? process.cwd();
+    ?? path.resolve(__dirname, "..", "..", "..", "..");
 
   // Resolve the file path
   const resolvedPath = path.isAbsolute(input.filePath)
