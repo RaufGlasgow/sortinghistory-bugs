@@ -2,7 +2,7 @@ name: SDK Content Pipeline
 
 on:
   repository_dispatch:
-    types: [sdk-content-verify, sdk-resume]
+    types: [sdk-content-verify, sdk-content-resume]
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
