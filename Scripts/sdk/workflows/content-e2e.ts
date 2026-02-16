@@ -59,6 +59,8 @@ import {
   type ContentFinding,
   type ContentFixOutput,
 } from "./content-fix.js";
+import { isKnownCategory } from "../lib/categories.js";
+import { ROUTING } from "../config.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -615,6 +617,43 @@ export async function runContentE2E(
     console.log("Issue: #" + input.issue_number);
   }
   console.log("");
+
+  // ---------------------------------------------------
+  // Guard: Reject unknown/unrecognized categories (AC8)
+  // ---------------------------------------------------
+  if (category === "unknown" || category === "Unknown" || !isKnownCategory(category)) {
+    const errorMsg =
+      "Cannot run content verification: category '" + category + "' is not recognized. " +
+      "Triage may not have identified the affected category.";
+    console.error("[content-e2e] " + errorMsg);
+
+    // Post error comment on the issue if we have an issue number
+    if (input.issue_number) {
+      try {
+        execSync(
+          "gh issue comment " + input.issue_number +
+            " --repo " + ROUTING.PRIVATE_REPO +
+            " --body " + JSON.stringify("## Content Verification Failed\n\n" + errorMsg),
+          { encoding: "utf-8", timeout: 30_000 },
+        );
+        console.log("[content-e2e] Error comment posted on issue #" + input.issue_number);
+      } catch (commentErr: unknown) {
+        const commentErrMsg = commentErr instanceof Error ? commentErr.message : String(commentErr);
+        console.error("[content-e2e] WARNING: Failed to post error comment: " + commentErrMsg);
+      }
+    }
+
+    return {
+      status: "escalated",
+      workflowId: "none",
+      totalFindings: 0,
+      approvedFindings: 0,
+      fixAttempts: 0,
+      prNumber: null,
+      prUrl: null,
+      error: errorMsg,
+    };
+  }
 
   // Resolve file path
   const resolvedFilePath = path.isAbsolute(input.filePath)

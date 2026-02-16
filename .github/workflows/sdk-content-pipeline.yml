@@ -12,7 +12,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: sdk-content-pipeline
+  group: sdk-content-${{ github.event.client_payload.issue_number || github.run_id }}
   cancel-in-progress: false
 
 env:
