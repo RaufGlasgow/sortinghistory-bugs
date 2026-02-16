@@ -12,54 +12,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check if already analyzed
+      - name: Validate payload
+        run: |
+          ISSUE="${{ github.event.client_payload.issue_number }}"
+          if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid issue_number in payload: '$ISSUE'. Must be a positive integer."
+            exit 1
+          fi
+          echo "ISSUE_NUMBER=$ISSUE" >> "$GITHUB_ENV"
+          echo "Validated issue_number: $ISSUE"
+
+      - name: Check if already triaged
         id: check
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
-          script: |
-            const issueNumber = ${{ github.event.client_payload.issue_number }};
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Check if issue already has sdk-routed label (triage already ran)
+          LABELS=$(gh issue view "$ISSUE_NUMBER" --repo RaufGlasgow/Sorting-History --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$LABELS" | grep -q "^sdk-routed$"; then
+            echo "Issue #$ISSUE_NUMBER already has sdk-routed label, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Issue #$ISSUE_NUMBER needs triage, proceeding"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
-            const issue = await github.rest.issues.get({
-              owner: 'RaufGlasgow',
-              repo: 'Sorting-History',
-              issue_number: issueNumber
-            });
-
-            // Check if needs-review label already present (indicates analysis completed)
-            const hasNeedsReview = issue.data.labels.some(l => l.name === 'needs-review');
-            if (hasNeedsReview) {
-              console.log('Issue already has needs-review label, skipping analysis');
-              core.setOutput('skip', 'true');
-              return;
-            }
-
-            // Check if analysis comment exists
-            const comments = await github.rest.issues.listComments({
-              owner: 'RaufGlasgow',
-              repo: 'Sorting-History',
-              issue_number: issueNumber
-            });
-            const hasAnalysis = comments.data.some(c =>
-              c.body && (
-                c.body.includes('## AI Bug Analysis') ||
-                c.body.includes('## Bug Analysis') ||
-                (c.body.includes('```json') && c.body.includes('suggested_fix'))
-              )
-            );
-
-            if (hasAnalysis) {
-              console.log('Issue already has analysis comment, skipping analysis');
-              core.setOutput('skip', 'true');
-              return;
-            }
-
-            console.log('Issue needs analysis, proceeding');
-            core.setOutput('skip', 'false');
-
-      - name: Checkout repository
+      - name: Checkout public repo (automation scripts + SDK)
         if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v4
+
+      - name: Checkout private repo (game source for codebase reading)
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          path: game-repo
 
       - name: Setup Node.js
         if: steps.check.outputs.skip != 'true'
@@ -67,83 +55,22 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Fetch Issue Details
+      - name: Install SDK dependencies
         if: steps.check.outputs.skip != 'true'
-        id: issue
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
-          script: |
-            const issueNumber = ${{ github.event.client_payload.issue_number }};
-            const issue = await github.rest.issues.get({
-              owner: 'RaufGlasgow',
-              repo: 'Sorting-History',
-              issue_number: issueNumber
-            });
-            core.setOutput('title', issue.data.title);
-            core.setOutput('body', issue.data.body || '');
+        working-directory: Scripts/sdk
+        run: npm ci
 
-      - name: Analyze Bug Report
+      - name: Build SDK TypeScript
         if: steps.check.outputs.skip != 'true'
-        id: analyze
+        working-directory: Scripts/sdk
+        run: npm run build
+
+      - name: Run SDK triage
+        if: steps.check.outputs.skip != 'true'
+        working-directory: Scripts/sdk
         env:
-          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_BUGS }}
-          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
-          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
-          ISSUE_BODY: ${{ steps.issue.outputs.body }}
-          PRIVATE_REPO_NAME: RaufGlasgow/Sorting-History
-        run: node Scripts/analyze-bug.js
-
-      - name: Add Labels
-        if: steps.check.outputs.skip != 'true' && steps.analyze.outputs.labels != ''
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
-          script: |
-            const labels = '${{ steps.analyze.outputs.labels }}'.split(',').filter(l => l.trim());
-            const issueNum = ${{ github.event.client_payload.issue_number }};
-            if (labels.length > 0) {
-              await github.rest.issues.addLabels({
-                owner: 'RaufGlasgow',
-                repo: 'Sorting-History',
-                issue_number: issueNum,
-                labels: labels
-              });
-            }
-
-            // Remove needs-triage, add needs-review
-            try {
-              await github.rest.issues.removeLabel({
-                owner: 'RaufGlasgow',
-                repo: 'Sorting-History',
-                issue_number: issueNum,
-                name: 'needs-triage'
-              });
-            } catch (e) {
-              // Label might not exist, ignore
-            }
-
-            await github.rest.issues.addLabels({
-              owner: 'RaufGlasgow',
-              repo: 'Sorting-History',
-              issue_number: issueNum,
-              labels: ['needs-review']
-            });
-
-      - name: Post Analysis Comment
-        if: steps.check.outputs.skip != 'true' && steps.analyze.outputs.analysis != ''
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PRIVATE_REPO_PAT }}
-          script: |
-            const analysis = process.env.ANALYSIS_COMMENT;
-            const issueNum = ${{ github.event.client_payload.issue_number }};
-            await github.rest.issues.createComment({
-              owner: 'RaufGlasgow',
-              repo: 'Sorting-History',
-              issue_number: issueNum,
-              body: analysis
-            });
-        env:
-          ANALYSIS_COMMENT: ${{ steps.analyze.outputs.analysis }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
+        timeout-minutes: 5
