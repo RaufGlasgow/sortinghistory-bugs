@@ -39,6 +39,7 @@ function generateWorkflowId(type: WorkflowType): string {
     translation_verification: "tv",
     bug_triage: "bt",
     complex_bug: "cb",
+    bug_fix: "bf",
   };
   const prefix = prefixMap[type];
   const date = new Date().toISOString().slice(0, 10);

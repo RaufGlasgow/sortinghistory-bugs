@@ -30,6 +30,7 @@ import {
 } from "./workflows/content-e2e.js";
 import { runContentE2ETest } from "./workflows/content-e2e-test.js";
 import { runRealTriage } from "./workflows/triage.js";
+import { runBugFix, type BugFixInput } from "./workflows/bug-fix.js";
 import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
 
 /**
@@ -243,7 +244,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test|bug-fix> <payload>");
     process.exit(1);
   }
 
@@ -495,8 +496,57 @@ async function main(): Promise<void> {
       await runRealTriage({ issueNumber });
       break;
     }
+    case "bug-fix": {
+      // Story SDK-BF.1: Bug fix subagent — spawns Opus 4.6 to fix a bug
+      // Usage: orchestrator.ts bug-fix --issue <NUM> [--game-repo <path>] [--dry-run]
+      const issueNumber = parseIssueFlag();
+      const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
+      const isDryRun = hasFlag("dry-run");
+
+      console.log("[orchestrator] Bug fix: issue=#" + issueNumber + " game-repo=" + gameRepo + " dry-run=" + isDryRun);
+
+      const bugFixResult = await runBugFix({
+        issueNumber,
+        gameRepoPath: gameRepo,
+        dryRun: isDryRun,
+      });
+
+      console.log("[orchestrator] Bug fix result: " + (bugFixResult.success ? "success" : "failed"));
+      if (bugFixResult.error) {
+        console.error("[orchestrator] Error: " + bugFixResult.error);
+      }
+      if (bugFixResult.summary) {
+        console.log("[orchestrator] Files modified: " + bugFixResult.summary.files_modified.length);
+        console.log("[orchestrator] Compilation: " + bugFixResult.summary.compilation_result);
+        console.log("[orchestrator] Confidence: " + bugFixResult.summary.confidence);
+      }
+
+      // Post result comment on the issue
+      if (bugFixResult.success && bugFixResult.summary) {
+        postIssueComment(
+          issueNumber,
+          "## Bug Fix Applied\n\n" +
+            "**Summary:** " + bugFixResult.summary.fix_summary + "\n" +
+            "**Files modified:** " + bugFixResult.summary.files_modified.length + "\n" +
+            "**Compilation:** " + bugFixResult.summary.compilation_result + "\n" +
+            "**Confidence:** " + bugFixResult.summary.confidence + "\n\n" +
+            "**Workflow:** `" + bugFixResult.workflowId + "`",
+        );
+      } else if (!bugFixResult.success) {
+        postIssueComment(
+          issueNumber,
+          "## Bug Fix Failed\n\n" +
+            "The bug fix subagent could not resolve this issue automatically.\n\n" +
+            "**Error:** " + (bugFixResult.error ?? "Unknown") + "\n" +
+            "**Workflow:** `" + bugFixResult.workflowId + "`\n\n" +
+            "Manual intervention is required.",
+        );
+      }
+
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test, bug-fix`);
       process.exit(1);
   }
 }

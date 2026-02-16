@@ -93,3 +93,91 @@ export function buildHooksConfig(): Partial<Record<HookEvent, HookCallbackMatche
     PostToolUse: [createJsonValidationHook(), createDiacriticsHook()],
   };
 }
+
+/**
+ * Build hooks configuration for bug fix subagents.
+ *
+ * ALLOWS writes to:
+ *   - .swift files (the point of bug fixing)
+ *   - Data .json files (content fixes)
+ *
+ * BLOCKS writes to:
+ *   - .github/ directory (workflow files)
+ *   - Scripts/ directory (automation code)
+ *   - .yml, .yaml, .ts, .js files (automation/config files)
+ *   - Package.swift, .pbxproj, .xcworkspace (project config)
+ */
+export function buildBugFixHooksConfig(gameRepoPath: string): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+  const blockBugFixWrites: HookCallback = async (input, _toolUseID, _options) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+
+    const preInput = input as PreToolUseHookInput;
+    const filePath = getFilePath(preInput.tool_input);
+    if (!filePath) return {};
+
+    // Normalize to compare against game repo path
+    const normalized = filePath.replace(/\\/g, "/");
+    const repoNormalized = gameRepoPath.replace(/\\/g, "/");
+
+    // Resolve relative to game repo for consistent checking
+    const relative = normalized.startsWith(repoNormalized)
+      ? normalized.slice(repoNormalized.length).replace(/^\//, "")
+      : normalized;
+
+    // BLOCK: automation directories
+    if (relative.startsWith(".github/") || relative.startsWith("Scripts/")) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "deny" as const,
+          permissionDecisionReason: `Bug fix subagent cannot modify automation files (${relative})`,
+        },
+      };
+    }
+
+    // BLOCK: automation/config file extensions
+    const blockedExtensions = [".yml", ".yaml", ".ts", ".js"];
+    if (blockedExtensions.some((ext) => normalized.endsWith(ext))) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "deny" as const,
+          permissionDecisionReason: `Bug fix subagent cannot modify automation files (${normalized})`,
+        },
+      };
+    }
+
+    // BLOCK: project config files
+    const blockedFiles = ["Package.swift"];
+    const blockedProjectExtensions = [".pbxproj", ".xcworkspace"];
+    const baseName = normalized.split("/").pop() ?? "";
+
+    if (blockedFiles.includes(baseName)) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "deny" as const,
+          permissionDecisionReason: `Bug fix subagent cannot modify project config (${baseName})`,
+        },
+      };
+    }
+
+    if (blockedProjectExtensions.some((ext) => normalized.endsWith(ext) || normalized.includes(ext + "/"))) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "deny" as const,
+          permissionDecisionReason: `Bug fix subagent cannot modify project config (${normalized})`,
+        },
+      };
+    }
+
+    // ALLOW: .swift files and .json files (and anything else not blocked above)
+    return {};
+  };
+
+  return {
+    PreToolUse: [{ matcher: "Write|Edit", hooks: [blockBugFixWrites] }],
+    PostToolUse: [createJsonValidationHook()],
+  };
+}

@@ -15,7 +15,8 @@ export type WorkflowType =
   | "content_verification"
   | "translation_verification"
   | "bug_triage"
-  | "complex_bug";
+  | "complex_bug"
+  | "bug_fix";
 
 /** Workflow status transitions: verifying → awaiting_approval → fixing → re_verifying → complete | escalated */
 export type WorkflowStatus =
@@ -54,6 +55,9 @@ export const TRIAGE_TOOLS = ["Read", "Glob", "Grep"] as const;
 
 /** Read-write tools for fixer subagents (restricted to Data/ directory via hooks) */
 export const FIXER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as const;
+
+/** Read-write tools for bug fix subagents (Swift + JSON via buildBugFixHooksConfig) */
+export const BUG_FIX_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as const;
 
 /** Routing constants — repos, labels, dispatch event types (Story 4.2) */
 export const ROUTING = {
