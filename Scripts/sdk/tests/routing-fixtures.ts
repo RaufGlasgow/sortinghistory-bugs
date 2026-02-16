@@ -1,7 +1,8 @@
 /**
- * Story 4.2: Routing Test Fixtures
+ * Routing Test Fixtures
  *
- * 9 test fixtures covering all 7 routing paths + idempotency skip + category fallback.
+ * 11 test fixtures covering all routing paths + idempotency skip + category fallback.
+ * Updated for SDK-BF.3: ui_bug and gameplay_bug now label-only (wait for /approve).
  * Used by the routing-test harness (pure logic tests, no API calls, $0.00 cost).
  */
 
@@ -62,10 +63,10 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     },
   },
 
-  // --- route-3: ui_bug P4 (simple) -> dispatch approve (AC-3) ---
+  // --- route-3: ui_bug P4 -> label-only + wait for /approve (SDK-BF.3 AC1) ---
   {
     id: "route-3",
-    description: "simple ui_bug (P4) routes to auto-fix dispatch",
+    description: "ui_bug P4 routes to label-only (wait for /approve)",
     input: {
       classification: "ui_bug",
       severity: "P4",
@@ -74,18 +75,16 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
       issue_number: 44,
     },
     expected: {
-      type: "dispatch",
-      event_type: ROUTING.DISPATCH_APPROVE,
-      repo: ROUTING.PUBLIC_REPO,
-      payload_keys: ["issue_number"],
-      payload_values: { issue_number: 44 },
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_UI_BUG, "severity/P4", ROUTING.LABEL_ROUTED],
     },
   },
 
-  // --- route-4: ui_bug P1 (complex) -> label needs-claude-code (AC-4) ---
+  // --- route-4: ui_bug P1 -> label-only + wait for /approve (SDK-BF.3 AC1) ---
   {
     id: "route-4",
-    description: "complex ui_bug (P1) routes to manual Claude Code queue",
+    description: "ui_bug P1 routes to label-only (wait for /approve)",
     input: {
       classification: "ui_bug",
       severity: "P1",
@@ -96,14 +95,14 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_UI_BUG, "severity/P1", ROUTING.LABEL_ROUTED],
     },
   },
 
-  // --- route-5: gameplay_bug -> label needs-claude-code (AC-5) ---
+  // --- route-5: gameplay_bug -> label-only + wait for /approve (SDK-BF.3 AC2) ---
   {
     id: "route-5",
-    description: "gameplay_bug always routes to manual Claude Code queue",
+    description: "gameplay_bug routes to label-only (wait for /approve)",
     input: {
       classification: "gameplay_bug",
       severity: "P2",
@@ -114,7 +113,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P2", ROUTING.LABEL_ROUTED],
     },
   },
 
@@ -188,6 +187,42 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
       repo: ROUTING.PUBLIC_REPO,
       payload_keys: ["workflow_type", "category", "issue_number"],
       payload_values: { workflow_type: "content_verification", category: "unknown", issue_number: 49 },
+    },
+  },
+
+  // --- route-10: ui_bug P2 -> label-only (SDK-BF.3 — verify mid-severity also label-only) ---
+  {
+    id: "route-10",
+    description: "ui_bug P2 routes to label-only (all severities same path)",
+    input: {
+      classification: "ui_bug",
+      severity: "P2",
+      confidence: 0.85,
+      extracted_context: { screen: "CategorySelectionView" },
+      issue_number: 50,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_UI_BUG, "severity/P2", ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-11: gameplay_bug P4 -> label-only (SDK-BF.3 — verify low severity also label-only) ---
+  {
+    id: "route-11",
+    description: "gameplay_bug P4 routes to label-only (all severities same path)",
+    input: {
+      classification: "gameplay_bug",
+      severity: "P4",
+      confidence: 0.7,
+      extracted_context: { area: "results-screen" },
+      issue_number: 51,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P4", ROUTING.LABEL_ROUTED],
     },
   },
 ];
