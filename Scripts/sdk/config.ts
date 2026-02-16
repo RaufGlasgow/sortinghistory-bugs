@@ -69,11 +69,14 @@ export const ROUTING = {
   DISPATCH_CONTENT_VERIFY: "sdk-content-verify",
   DISPATCH_CONTENT_RESUME: "sdk-content-resume",
   DISPATCH_APPROVE: "approve",
+  DISPATCH_SDK_BUG_FIX: "sdk-bug-fix",
 
   /** Labels applied by routing */
   LABEL_ROUTED: "sdk-routed",
   LABEL_CONTENT_ERROR: "content-error",
   LABEL_TRANSLATION_ERROR: "translation-error",
+  LABEL_UI_BUG: "ui-bug",
+  LABEL_GAMEPLAY_BUG: "gameplay-bug",
   LABEL_NEEDS_CLAUDE_CODE: "needs-claude-code",
   LABEL_FEATURE_REQUEST: "feature-request",
   LABEL_NEEDS_HUMAN_REVIEW: "needs-human-review",

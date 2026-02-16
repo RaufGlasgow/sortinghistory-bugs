@@ -136,34 +136,23 @@ export function decideRoute(input: RoutingInput): RoutingAction {
     }
 
     case "ui_bug": {
-      // AC-3 / AC-4: simple (P3/P4) vs complex (P1/P2)
-      if (input.severity === "P3" || input.severity === "P4") {
-        // AC-3: simple — dispatch to auto-fix pipeline
-        return {
-          type: "dispatch",
-          event_type: ROUTING.DISPATCH_APPROVE,
-          repo: ROUTING.PUBLIC_REPO,
-          payload: {
-            issue_number: input.issue_number,
-          },
-        };
-      }
-      // AC-4: complex — manual queue
+      // SDK-BF.3 AC1: ALL ui_bug severities → label with classification + severity, wait for /approve
+      // Triage classifies and labels only. Fix dispatch happens via /approve webhook command.
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
-        labels: [ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
+        labels: [ROUTING.LABEL_UI_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
       };
     }
 
     case "gameplay_bug": {
-      // AC-5: always manual queue
+      // SDK-BF.3 AC2: ALL gameplay_bug severities → label with classification + severity, wait for /approve
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
-        labels: [ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
+        labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
       };
     }
 
