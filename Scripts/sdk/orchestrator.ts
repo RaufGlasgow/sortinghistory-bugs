@@ -1,4 +1,5 @@
-import { MODELS, PATHS, type WorkflowType } from "./config.js";
+import { execSync } from "node:child_process";
+import { MODELS, PATHS, ROUTING, type WorkflowType } from "./config.js";
 import {
   createWorkflowState,
   updateWorkflowState,
@@ -21,9 +22,15 @@ import { runContentVerify, type ContentVerifyInput } from "./workflows/content-v
 import { runContentVerifyTest } from "./workflows/content-verify-test.js";
 import { runContentFix, type ContentFixInput } from "./workflows/content-fix.js";
 import { runContentFixTest } from "./workflows/content-fix-test.js";
-import { runContentE2E, type ContentE2EInput, type ApprovalResponse } from "./workflows/content-e2e.js";
+import {
+  runContentE2E,
+  resumeContentE2E,
+  type ContentE2EInput,
+  type ApprovalResponse,
+} from "./workflows/content-e2e.js";
 import { runContentE2ETest } from "./workflows/content-e2e-test.js";
 import { runRealTriage } from "./workflows/triage.js";
+import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
 
 /**
  * Parse a named flag from process.argv.
@@ -41,18 +48,26 @@ function parseFlag(flagName: string): string | null {
 }
 
 /**
- * Parse and validate --issue flag as a positive integer (AC7, AC8).
+ * Check for the presence of a boolean flag (e.g., --no-dry-run).
+ * Returns true if the flag is present.
+ */
+function hasFlag(flagName: string): boolean {
+  return process.argv.includes("--" + flagName, 3);
+}
+
+/**
+ * Parse and validate --issue flag as a positive integer (AC7, AC8, AC12).
  * Exits with error if invalid.
  */
 function parseIssueFlag(): number {
   const issueStr = parseFlag("issue");
   if (!issueStr) {
-    console.error("triage requires --issue <number> flag");
-    console.error("Usage: orchestrator.ts triage --issue 42");
+    console.error("Command requires --issue <number> flag");
+    console.error("Usage: orchestrator.ts <command> --issue 42");
     process.exit(1);
   }
 
-  // AC8: Validate as numeric to prevent injection
+  // AC8/AC13: Validate as numeric to prevent injection
   if (!/^\d+$/.test(issueStr)) {
     console.error("Invalid --issue value: \"" + issueStr + "\". Must be a positive integer.");
     process.exit(1);
@@ -65,6 +80,47 @@ function parseIssueFlag(): number {
   }
 
   return issueNumber;
+}
+
+/**
+ * Parse and validate --action flag for resume command (AC12).
+ * Must be "approve" or "reject".
+ */
+function parseActionFlag(): "approve" | "reject" {
+  const actionStr = parseFlag("action");
+  if (!actionStr) {
+    console.error("resume requires --action <approve|reject> flag");
+    console.error("Usage: orchestrator.ts resume --issue 42 --action approve");
+    process.exit(1);
+  }
+
+  if (actionStr !== "approve" && actionStr !== "reject") {
+    console.error("Invalid --action value: \"" + actionStr + "\". Must be 'approve' or 'reject'.");
+    process.exit(1);
+  }
+
+  return actionStr;
+}
+
+/**
+ * Parse and validate --category flag for content-e2e command.
+ * Must be a known category name.
+ */
+function parseCategoryFlag(): string {
+  const category = parseFlag("category");
+  if (!category) {
+    console.error("content-e2e requires --category <name> flag");
+    console.error("Usage: orchestrator.ts content-e2e --category \"US History\" --issue 42 --no-dry-run");
+    process.exit(1);
+  }
+
+  if (!isKnownCategory(category)) {
+    console.error("Unknown category: \"" + category + "\"");
+    console.error("Valid categories: " + allCategoryNames().join(", "));
+    process.exit(1);
+  }
+
+  return category;
 }
 
 /** Parameters for starting a new workflow */
@@ -98,7 +154,7 @@ async function runWorkflow(params: WorkflowParams): Promise<void> {
   console.log(`[orchestrator] Workflow ${state.workflow_id} — not yet implemented for ${params.type}`);
 }
 
-/** Resume a paused workflow after human approval/rejection. */
+/** Resume a paused workflow after human approval/rejection (legacy JSON path). */
 async function resumeWorkflow(params: ResumeParams): Promise<void> {
   let workflowId = params.workflowId;
 
@@ -163,6 +219,24 @@ async function getStatus(workflowId: string): Promise<void> {
   }, null, 2));
 }
 
+/**
+ * Post a comment on a GitHub issue in the private repo.
+ * Used by resume and content-e2e to report results back on the issue.
+ */
+function postIssueComment(issueNumber: number, comment: string): void {
+  const repo = ROUTING.PRIVATE_REPO;
+  try {
+    execSync(
+      "gh issue comment " + issueNumber + " --repo " + repo + " --body " + JSON.stringify(comment),
+      { encoding: "utf-8", timeout: 30_000 },
+    );
+    console.log("[orchestrator] Comment posted on " + repo + "#" + issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[orchestrator] WARNING: Failed to post comment: " + errMsg);
+  }
+}
+
 /** Entry point — invoked from GitHub Actions or CLI */
 async function main(): Promise<void> {
   const command = process.argv[2];
@@ -184,8 +258,81 @@ async function main(): Promise<void> {
       break;
     }
     case "resume": {
+      // Story 2.4b (AC4, AC12): Flag-based resume command
+      // Usage: orchestrator.ts resume --issue <number> --action <approve|reject>
+      // Also supports legacy JSON payload for backward compatibility
+      if (hasFlag("issue") || hasFlag("action")) {
+        // Flag-based path (AC12)
+        const issueNumber = parseIssueFlag();
+        const action = parseActionFlag();
+
+        console.log("[orchestrator] Resume via flags: issue=#" + issueNumber + " action=" + action);
+
+        // Look up the workflow by issue number (AC14)
+        const foundState = await findWorkflowByIssue(issueNumber);
+        if (!foundState) {
+          console.error("[orchestrator] No paused workflow found for issue #" + issueNumber);
+
+          // AC14: Post comment on issue about missing workflow
+          postIssueComment(
+            issueNumber,
+            "## Resume Failed\n\n" +
+              "No paused workflow found for this issue. " +
+              "It may have already been completed or was never started.",
+          );
+
+          process.exit(1);
+        }
+
+        // Call resumeContentE2E (AC2, AC4)
+        const result = await resumeContentE2E(
+          foundState.workflow_id,
+          { action },
+          { dryRun: false },  // AC8: explicitly false in CI path
+        );
+
+        console.log("[orchestrator] Resume result: " + result.status);
+        if (result.error) {
+          console.error("[orchestrator] Error: " + result.error);
+        }
+        if (result.prNumber) {
+          console.log("[orchestrator] PR: #" + result.prNumber);
+        }
+
+        // Post result comment on the issue
+        if (result.status === "complete" && result.prNumber) {
+          postIssueComment(
+            issueNumber,
+            "## Content Fix Complete\n\n" +
+              "PR #" + result.prNumber + " created with " +
+              result.approvedFindings + " finding(s) fixed.\n\n" +
+              "**Workflow:** `" + result.workflowId + "`",
+          );
+        } else if (result.status === "escalated") {
+          postIssueComment(
+            issueNumber,
+            "## Content Fix Escalated\n\n" +
+              "The content fix could not be completed automatically.\n\n" +
+              "**Error:** " + (result.error ?? "Unknown") + "\n" +
+              "**Workflow:** `" + result.workflowId + "`\n\n" +
+              "Manual intervention is required.",
+          );
+        } else if (result.status === "complete" && action === "reject") {
+          postIssueComment(
+            issueNumber,
+            "## Findings Rejected\n\n" +
+              "All findings have been rejected. Workflow closed.\n\n" +
+              "**Workflow:** `" + result.workflowId + "`",
+          );
+        }
+
+        break;
+      }
+
+      // Legacy JSON payload path
       if (!payload) {
-        console.error("resume requires a JSON payload: {workflowId?, issueNumber?, action, approvedItems?}");
+        console.error("resume requires --issue and --action flags, or a JSON payload");
+        console.error("Usage: orchestrator.ts resume --issue 42 --action approve");
         process.exit(1);
       }
       const params = JSON.parse(payload) as ResumeParams;
@@ -283,9 +430,53 @@ async function main(): Promise<void> {
       break;
     }
     case "content-e2e": {
-      // Story 2.3: Content E2E orchestration — full verify -> approve -> fix -> re-verify -> PR pipeline
+      // Story 2.3 + 2.4b: Content E2E orchestration
+      // Supports both flag-based (CI) and JSON payload (legacy/test) modes
+      if (hasFlag("category") || hasFlag("issue") || hasFlag("no-dry-run")) {
+        // Flag-based path for CI (Story 2.4b AC5)
+        const category = parseCategoryFlag();
+        const issueNumber = parseIssueFlag();
+        const noDryRun = hasFlag("no-dry-run");
+
+        // Resolve file path from category
+        const gameRepoPath = PATHS.GAME_REPO;
+        const filePath = categoryToFilePath(category, gameRepoPath);
+        if (!filePath) {
+          console.error("Could not resolve file path for category: " + category);
+          process.exit(1);
+        }
+
+        const correctionsLogPath = gameRepoPath + "/Data/corrections/corrections-log.json";
+
+        const e2eInput: ContentE2EInput = {
+          filePath,
+          category,
+          correctionsLogPath,
+          repoRoot: gameRepoPath,
+          dryRun: !noDryRun,  // AC8: --no-dry-run explicitly sets dryRun: false
+          issue_number: issueNumber,  // AC9: pass issue_number
+        };
+
+        const result = await runContentE2E(e2eInput);
+
+        // Post findings summary on the issue if we paused
+        if (result.status === "awaiting_approval") {
+          const findingsText = result.totalFindings + " finding(s) detected.";
+          postIssueComment(
+            issueNumber,
+            "## Content Verification Complete\n\n" +
+              findingsText + "\n\n" +
+              "**Workflow:** `" + result.workflowId + "`\n\n" +
+              "Comment `approve` to fix, or `reject` to dismiss.",
+          );
+        }
+
+        break;
+      }
+
+      // Legacy JSON payload path
       if (!payload) {
-        console.error("content-e2e requires a JSON payload: {filePath, category?, correctionsLogPath, repoRoot?, dryRun?, branch?, baseBranch?}");
+        console.error("content-e2e requires flags (--category, --issue, --no-dry-run) or a JSON payload");
         process.exit(1);
       }
       const e2eInput = JSON.parse(payload) as ContentE2EInput & { approval?: ApprovalResponse };
