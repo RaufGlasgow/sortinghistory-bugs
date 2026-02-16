@@ -221,6 +221,21 @@ jobs:
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --add-label "fix-failed"
 
+      - name: Bump Version (centralized)
+        id: bump-version
+        if: steps.fix.outputs.applied == 'true'
+        working-directory: game-code
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GAME_REPO_PATH: "."
+        run: |
+          # bump-version.sh reads NEXT_ALPHA_VERSION, updates SettingsView.swift,
+          # and increments the variable for the next run.
+          # Note: apply-fix.js also bumps internally — this step ensures the
+          # canonical bump-version.sh script is used. The last write wins in
+          # SettingsView.swift, so this is the authoritative version number.
+          bash "${{ github.workspace }}/Scripts/bump-version.sh"
+
       - name: Commit Changes
         if: steps.fix.outputs.applied == 'true'
         working-directory: game-code
