@@ -63,6 +63,7 @@ export const ROUTING = {
 
   /** Dispatch event types */
   DISPATCH_CONTENT_VERIFY: "sdk-content-verify",
+  DISPATCH_CONTENT_RESUME: "sdk-content-resume",
   DISPATCH_APPROVE: "approve",
 
   /** Labels applied by routing */
