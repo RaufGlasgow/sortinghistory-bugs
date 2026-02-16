@@ -24,7 +24,7 @@ jobs:
       - name: Extract Issue Number from PR Body
         id: extract
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           echo "Fetching PR #$PR_NUM from $PRIVATE_REPO..."
 
@@ -68,7 +68,7 @@ jobs:
 
       - name: Close PR with Rejection Comment
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           echo "Closing PR #$PR_NUM..."
 
@@ -126,7 +126,7 @@ jobs:
       - name: Update Issue Labels
         if: steps.extract.outputs.issue_found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
           echo "Updating labels on issue #$ISSUE_NUM..."
@@ -140,7 +140,7 @@ jobs:
       - name: Get Max Fix Attempts
         id: config
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           MAX_ATTEMPTS=$(gh variable get MAX_FIX_ATTEMPTS --repo RaufGlasgow/sortinghistory-bugs 2>/dev/null || echo "2")
           echo "max_attempts=$MAX_ATTEMPTS" >> $GITHUB_OUTPUT
@@ -150,7 +150,7 @@ jobs:
         id: count
         if: steps.extract.outputs.issue_found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           MAX_ATTEMPTS: ${{ steps.config.outputs.max_attempts }}
         run: |
           ISSUE_NUM="${{ steps.extract.outputs.issue_num }}"
@@ -177,7 +177,7 @@ jobs:
       - name: Post Failure Context on Issue
         if: steps.extract.outputs.issue_found == 'true'
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
           FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
@@ -217,7 +217,7 @@ jobs:
       - name: Dispatch Retry (if under max attempts)
         if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.should_retry == 'true'
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
           FIX_SUMMARY: ${{ steps.extract.outputs.fix_summary }}
@@ -254,7 +254,7 @@ jobs:
       - name: Escalate to Manual Fix (max attempts reached)
         if: steps.extract.outputs.issue_found == 'true' && steps.count.outputs.should_retry == 'false'
         env:
-          GH_TOKEN: ${{ secrets.Private_repo_Pat }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
           ATTEMPT: ${{ steps.count.outputs.attempt }}
         run: |
