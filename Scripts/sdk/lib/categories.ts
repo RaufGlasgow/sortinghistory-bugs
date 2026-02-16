@@ -6,6 +6,7 @@
  * the category from a dispatch payload to a file path.
  *
  * 30 categories mapped per Story 2.4 AC4 table.
+ * Display names match HistoryCategory enum rawValues in GameModels.swift.
  * Unknown category returns null (not crash).
  */
 
@@ -18,47 +19,48 @@ import * as path from "node:path";
 /**
  * Maps category display name -> JSON file name (without path).
  *
- * These correspond to the files in the game repo's Data/ directory.
- * Category names come from triage extraction / issue labels.
+ * These correspond to the files in the game repo's Data/Events/ directory.
+ * Category names come from triage extraction / issue labels and match
+ * the HistoryCategory enum rawValues in Models/GameModels.swift.
  */
 const CATEGORY_FILE_MAP: Record<string, string> = {
   // --- 8 Free categories ---
-  "US History": "USHistoryEvents.json",
-  "World Wars": "WorldWarsEvents.json",
-  "Scientific Discoveries": "ScientificDiscoveriesEvents.json",
-  "Music & Entertainment": "MusicEntertainmentEvents.json",
-  "Sports History": "SportsHistoryEvents.json",
-  "Ancient Civilizations": "AncientCivilizationsEvents.json",
-  "European History": "EuropeanHistoryEvents.json",
-  "TV History": "TVHistoryEvents.json",
+  "US History": "USHistory.json",
+  "World Wars": "WorldWars.json",
+  "Scientific Discoveries": "ScientificDiscoveries.json",
+  "Music & Entertainment": "MusicEntertainment.json",
+  "Sports History": "SportsHistory.json",
+  "Ancient Civilizations": "AncientCivilizations.json",
+  "European History": "EuropeanHistory.json",
+  "TV History": "TVHistory.json",
 
   // --- 2 Explorer categories ---
-  "Food & Drink": "FoodDrinkEvents.json",
-  "Portuguese History": "PortugueseHistoryEvents.json",
+  "Food & Drink": "FoodAndDrink.json",
+  "Portuguese History": "PortugueseHistory.json",
 
   // --- 2 Historian categories ---
-  "German History": "GermanHistoryEvents.json",
-  "Women's History": "WomensHistoryEvents.json",
+  "German History": "GermanHistory.json",
+  "Women's History": "WomensHistory.json",
 
   // --- Unreleased / expansion categories ---
-  "Medieval History": "MedievalHistoryEvents.json",
-  "Medical Breakthroughs": "MedicalBreakthroughsEvents.json",
-  "Space Exploration": "SpaceExplorationEvents.json",
-  "Film History": "FilmHistoryEvents.json",
+  "Medieval History": "MedievalHistory.json",
+  "Medical Breakthroughs": "MedicalBreakthroughs.json",
+  "Space Exploration": "SpaceExploration.json",
+  "Film History": "FilmHistory.json",
   "Economic Events": "EconomicEvents.json",
-  "Art History": "ArtHistoryEvents.json",
-  "Technology History": "TechnologyHistoryEvents.json",
-  "Political History": "PoliticalHistoryEvents.json",
-  "Religious History": "ReligiousHistoryEvents.json",
-  "Environmental History": "EnvironmentalHistoryEvents.json",
-  "Literary History": "LiteraryHistoryEvents.json",
-  "Fashion History": "FashionHistoryEvents.json",
-  "African History": "AfricanHistoryEvents.json",
-  "Asian History": "AsianHistoryEvents.json",
-  "Latin American History": "LatinAmericanHistoryEvents.json",
-  "Middle Eastern History": "MiddleEasternHistoryEvents.json",
-  "Australian History": "AustralianHistoryEvents.json",
-  "Canadian History": "CanadianHistoryEvents.json",
+  "Technological Inventions": "TechnologicalInventions.json",
+  "Political Events": "PoliticalEvents.json",
+  "Religious Events": "ReligiousEvents.json",
+  "Natural Disasters": "NaturalDisasters.json",
+  "Revolutions & Independence": "RevolutionsIndependence.json",
+  "Artists & Literature": "ArtistsLiterature.json",
+  "African History": "AfricanHistory.json",
+  "Asian History": "AsianHistory.json",
+  "South American History": "SouthAmericanHistory.json",
+  "LGBTQ History": "LGBTQHistory.json",
+  "Black History": "BlackHistory.json",
+  "Animal History": "AnimalHistory.json",
+  "Geography History": "GeographyHistory.json",
 };
 
 // ---------------------------------------------------------------------------
@@ -87,7 +89,7 @@ export function categoryToFilePath(
 ): string | null {
   const fileName = categoryToFileName(category);
   if (!fileName) return null;
-  return path.join(gameRepoPath, "Data", fileName);
+  return path.join(gameRepoPath, "Data", "Events", fileName);
 }
 
 /**
