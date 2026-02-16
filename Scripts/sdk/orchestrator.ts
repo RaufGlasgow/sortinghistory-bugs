@@ -23,6 +23,49 @@ import { runContentFix, type ContentFixInput } from "./workflows/content-fix.js"
 import { runContentFixTest } from "./workflows/content-fix-test.js";
 import { runContentE2E, type ContentE2EInput, type ApprovalResponse } from "./workflows/content-e2e.js";
 import { runContentE2ETest } from "./workflows/content-e2e-test.js";
+import { runRealTriage } from "./workflows/triage.js";
+
+/**
+ * Parse a named flag from process.argv.
+ * Supports: `--flag value` syntax.
+ * Returns the value as a string, or null if not found.
+ */
+function parseFlag(flagName: string): string | null {
+  const args = process.argv;
+  for (let i = 3; i < args.length; i++) {
+    if (args[i] === "--" + flagName && i + 1 < args.length) {
+      return args[i + 1];
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse and validate --issue flag as a positive integer (AC7, AC8).
+ * Exits with error if invalid.
+ */
+function parseIssueFlag(): number {
+  const issueStr = parseFlag("issue");
+  if (!issueStr) {
+    console.error("triage requires --issue <number> flag");
+    console.error("Usage: orchestrator.ts triage --issue 42");
+    process.exit(1);
+  }
+
+  // AC8: Validate as numeric to prevent injection
+  if (!/^\d+$/.test(issueStr)) {
+    console.error("Invalid --issue value: \"" + issueStr + "\". Must be a positive integer.");
+    process.exit(1);
+  }
+
+  const issueNumber = parseInt(issueStr, 10);
+  if (issueNumber <= 0 || !Number.isFinite(issueNumber)) {
+    console.error("Invalid --issue value: " + issueNumber + ". Must be a positive integer.");
+    process.exit(1);
+  }
+
+  return issueNumber;
+}
 
 /** Parameters for starting a new workflow */
 interface WorkflowParams {
@@ -126,7 +169,7 @@ async function main(): Promise<void> {
   const payload = process.argv[3];
 
   if (!command) {
-    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test> <payload>");
+    console.error("Usage: orchestrator.ts <run|resume|status|proof|triage|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test> <payload>");
     process.exit(1);
   }
 
@@ -255,8 +298,14 @@ async function main(): Promise<void> {
       await runContentE2ETest();
       break;
     }
+    case "triage": {
+      // Story 2.4a: Real triage command — fetches issue from private repo, classifies, routes
+      const issueNumber = parseIssueFlag();
+      await runRealTriage({ issueNumber });
+      break;
+    }
     default:
-      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test`);
+      console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test`);
       process.exit(1);
   }
 }

@@ -72,4 +72,5 @@ export const ROUTING = {
   LABEL_NEEDS_CLAUDE_CODE: "needs-claude-code",
   LABEL_FEATURE_REQUEST: "feature-request",
   LABEL_NEEDS_HUMAN_REVIEW: "needs-human-review",
+  LABEL_NEEDS_TRIAGE: "needs-triage",
 } as const;
