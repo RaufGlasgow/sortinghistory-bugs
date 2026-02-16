@@ -39,6 +39,12 @@ interface DispatchAction {
   event_type: string;
   repo: string;
   payload: Record<string, unknown>;
+  /** Optional: labels to apply on the source issue (private repo) before dispatch (HIGH-4 fix) */
+  issue_labels?: {
+    repo: string;
+    issue_number: number;
+    labels: string[];
+  };
 }
 
 /** Label action — adds labels to an issue */
@@ -93,6 +99,7 @@ export function decideRoute(input: RoutingInput): RoutingAction {
   switch (input.classification) {
     case "content_error": {
       // AC-1: dispatch sdk-content-verify to public repo
+      // HIGH-4 fix: also apply sdk-routed + content-error labels on the private repo issue
       const category = (typeof input.extracted_context.category === "string" && input.extracted_context.category !== "")
         ? input.extracted_context.category
         : "unknown";
@@ -104,6 +111,11 @@ export function decideRoute(input: RoutingInput): RoutingAction {
           workflow_type: "content_verification",
           category,
           issue_number: input.issue_number,
+        },
+        issue_labels: {
+          repo: ROUTING.PRIVATE_REPO,
+          issue_number: input.issue_number,
+          labels: [ROUTING.LABEL_ROUTED, ROUTING.LABEL_CONTENT_ERROR],
         },
       };
     }
@@ -286,6 +298,9 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
       console.log("[routing]   event_type: " + action.event_type);
       console.log("[routing]   repo: " + action.repo);
       console.log("[routing]   payload: " + JSON.stringify(action.payload));
+      if (action.issue_labels) {
+        console.log("[routing]   issue_labels: [" + action.issue_labels.labels.join(", ") + "] on " + action.issue_labels.repo + "#" + action.issue_labels.issue_number);
+      }
     } else if (action.type === "label") {
       console.log("[routing]   repo: " + action.repo);
       console.log("[routing]   issue_number: " + action.issue_number);
@@ -304,6 +319,14 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
 
   switch (action.type) {
     case "dispatch":
+      // HIGH-4 fix: apply labels on the source issue before dispatching
+      if (action.issue_labels) {
+        await githubLabel(
+          action.issue_labels.repo,
+          action.issue_labels.issue_number,
+          action.issue_labels.labels,
+        );
+      }
       await githubDispatch(action.repo, action.event_type, action.payload);
       break;
 
