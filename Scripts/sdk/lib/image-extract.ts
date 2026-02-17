@@ -20,6 +20,27 @@ export interface ExtractedImage {
 }
 
 /**
+ * Detect actual image format from base64 data header bytes.
+ *
+ * The app's webhook hardcodes `data:image/png;base64,` for all screenshots
+ * regardless of actual format, so we must detect from the data itself.
+ *
+ * Magic byte signatures (base64-encoded):
+ * - JPEG: starts with /9j/ (FF D8 FF)
+ * - PNG:  starts with iVBOR (89 50 4E 47)
+ * - GIF:  starts with R0lG (47 49 46)
+ * - WebP: starts with UklG (52 49 46 46) + WEBP at offset 8
+ */
+function detectMediaType(base64Data: string, declaredType: string): ImageMediaType {
+  if (base64Data.startsWith("/9j/")) return "image/jpeg";
+  if (base64Data.startsWith("iVBOR")) return "image/png";
+  if (base64Data.startsWith("R0lG")) return "image/gif";
+  if (base64Data.startsWith("UklG")) return "image/webp";
+  // Fall back to declared type if detection fails
+  return `image/${declaredType}` as ImageMediaType;
+}
+
+/**
  * Regex pattern matching Markdown images with base64 data URIs.
  *
  * Matches: ![alt text](data:image/png;base64,ABCDef012+/=)
@@ -58,12 +79,14 @@ export function extractBase64Images(text: string): ExtractedImage[] {
 
   let match: RegExpExecArray | null;
   while ((match = BASE64_IMAGE_REGEX.exec(text)) !== null) {
-    const imageSubtype = match[2] as "png" | "jpeg" | "gif" | "webp";
+    const declaredSubtype = match[2];
     // Strip any whitespace that may have been introduced by line wrapping
     const cleanData = match[3].replace(/\s/g, "");
+    // Detect actual format from data bytes (app may declare wrong type)
+    const mediaType = detectMediaType(cleanData, declaredSubtype);
 
     images.push({
-      mediaType: `image/${imageSubtype}`,
+      mediaType,
       data: cleanData,
     });
   }
