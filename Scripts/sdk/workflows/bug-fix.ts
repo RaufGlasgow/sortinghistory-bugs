@@ -27,6 +27,7 @@ import { MODELS, BUG_FIX_TOOLS, PATHS, ROUTING } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
 import { buildBugFixHooksConfig } from "../lib/hooks.js";
 import { extractJson } from "../lib/json-extract.js";
+import { extractBase64Images, stripBase64Images } from "../lib/image-extract.js";
 import {
   createWorkflowState,
   updateWorkflowState,
@@ -241,19 +242,31 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
   // --------------------------------------------------
   // Step 4: Build user prompt with issue context
   // --------------------------------------------------
+  // Extract base64 images from the issue body for multimodal content blocks
+  const images = extractBase64Images(issueContext.body);
+  if (images.length > 0) {
+    console.log("[bug-fix] Extracted " + images.length + " screenshot(s) from issue body");
+  }
+
+  // Strip base64 images from text to avoid sending raw data as prompt noise
+  const cleanBody = stripBase64Images(issueContext.body);
+  const cleanTriageComment = issueContext.triageComment
+    ? stripBase64Images(issueContext.triageComment)
+    : null;
+
   const contextParts = [
     "Fix the following bug in the SortingHistory iOS game.",
     "",
     "## Bug Report (Issue #" + issueNumber + ")",
     "**Title:** " + issueContext.title,
     "",
-    issueContext.body,
+    cleanBody,
   ];
 
-  if (issueContext.triageComment) {
+  if (cleanTriageComment) {
     contextParts.push("");
     contextParts.push("## Triage Analysis");
-    contextParts.push(issueContext.triageComment);
+    contextParts.push(cleanTriageComment);
   }
 
   contextParts.push("");
@@ -311,6 +324,7 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
     hooks,
     cwd: gameRepoPath,
     maxTurns: 100,
+    images,
   });
 
   // --------------------------------------------------

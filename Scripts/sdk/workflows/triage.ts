@@ -18,6 +18,7 @@ import { execSync } from "node:child_process";
 import { ROUTING } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
 import { decideRoute, executeRoute, type RoutingInput } from "../lib/routing.js";
+import { stripBase64Images } from "../lib/image-extract.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -166,13 +167,14 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   console.log("");
   console.log("--- Classifying issue #" + issueNumber + " ---");
 
-  // Build report text from issue title + body
+  // Build report text from issue title + body, stripping base64 images
   const reportText = issueData.title + "\n\n" + issueData.body;
+  const cleanReportText = stripBase64Images(reportText);
 
   let triageResult: TriageResult;
   try {
     triageResult = await runTriage({
-      report_text: reportText,
+      report_text: cleanReportText,
       report_id: "issue-" + issueNumber,
     });
   } catch (err: unknown) {
