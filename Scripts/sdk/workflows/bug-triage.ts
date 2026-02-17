@@ -17,6 +17,7 @@
 import { MODELS, TRIAGE_TOOLS, PATHS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
 import { extractJson } from "../lib/json-extract.js";
+import { stripBase64Images } from "../lib/image-extract.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -109,6 +110,9 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     process.exit(1);
   }
 
+  // Strip base64 images from report text to avoid sending raw data as text
+  const cleanReportText = stripBase64Images(input.report_text);
+
   // Build user prompt with report text and context paths
   const gameDataPath = PATHS.GAME_REPO + "/Data/Events/";
   const archRegistryPath = "Scripts/context/architecture-registry.json";
@@ -118,7 +122,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     "",
     "## Bug Report",
     "Report ID: " + reportId,
-    "\"" + input.report_text + "\"",
+    "\"" + cleanReportText + "\"",
     "",
     "## Available Context",
     "- Game event data files are at: " + gameDataPath,
@@ -141,7 +145,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     prompt: userPrompt,
     systemPrompt,
     cwd: repoRoot,
-    maxTurns: 10,
+    maxTurns: 20,
   });
 
   console.log("");

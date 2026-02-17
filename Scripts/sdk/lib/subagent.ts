@@ -14,11 +14,13 @@ import type {
   SDKResultSuccess,
   SDKResultError,
   SDKAssistantMessage,
+  SDKUserMessage,
   Options,
   HookEvent,
   HookCallbackMatcher,
   ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
+import type { ExtractedImage } from "./image-extract.js";
 
 /** Result returned by spawnSubagent */
 export interface SubagentResult {
@@ -68,6 +70,44 @@ export interface SubagentParams {
   persistSession?: boolean;
   /** Session ID to resume from a previous run */
   resume?: string;
+  /** Optional images to include as multimodal content blocks */
+  images?: ExtractedImage[];
+}
+
+/**
+ * Create an async generator that yields a single SDKUserMessage with
+ * multimodal content blocks (text + images).
+ *
+ * Used when bug reports contain inline base64 screenshots that should
+ * be sent as proper image content blocks rather than raw text.
+ */
+async function* createMultimodalPrompt(
+  text: string,
+  images: ExtractedImage[],
+): AsyncGenerator<SDKUserMessage> {
+  const content: Array<Record<string, unknown>> = [
+    { type: "text", text },
+  ];
+
+  for (const img of images) {
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: img.mediaType,
+        data: img.data,
+      },
+    });
+  }
+
+  yield {
+    type: "user" as const,
+    message: {
+      role: "user" as const,
+      content,
+    },
+    parent_tool_use_id: null,
+  } as SDKUserMessage;
 }
 
 /**
@@ -121,7 +161,10 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
       options.systemPrompt = params.systemPrompt;
     }
 
-    const conversation = query({ prompt: params.prompt, options });
+    const promptInput = (params.images && params.images.length > 0)
+      ? createMultimodalPrompt(params.prompt, params.images)
+      : params.prompt;
+    const conversation = query({ prompt: promptInput, options });
 
     for await (const message of conversation) {
       logMessage(message);
