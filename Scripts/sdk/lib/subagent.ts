@@ -102,6 +102,7 @@ async function* createMultimodalPrompt(
 
   yield {
     type: "user" as const,
+    session_id: "",
     message: {
       role: "user" as const,
       content,
