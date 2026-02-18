@@ -30,6 +30,7 @@ const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set([
 const EXCLUSION_PATTERNS: readonly string[] = [
   "DerivedData/",
   ".build/",
+  ".dSYM/",
   "xcuserdata/",
   "node_modules/",
   ".DS_Store",
