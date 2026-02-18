@@ -153,7 +153,44 @@ jobs:
         run: |
           git config user.name "SDK Bug Fix Bot"
           git config user.email "bot@sortinghistory.com"
-          git add -A
+
+          # Safe git add: only stage files with allowed extensions
+          # Replaces dangerous `git add -A` that staged DerivedData (PR #90)
+          ALLOWED_EXTS="swift json strings md plist pbxproj xcscheme"
+          STAGED_COUNT=0
+
+          # Collect all changed + untracked files
+          ALL_FILES=$(git diff --name-only; git ls-files --others --exclude-standard)
+
+          for FILE in $ALL_FILES; do
+            # Skip exclusion patterns
+            case "$FILE" in
+              *DerivedData/*|*.build/*|*xcuserdata/*|*node_modules/*|*.DS_Store|*.o|*.dSYM|*.dSYM/*)
+                echo "EXCLUDED: $FILE"
+                continue
+                ;;
+            esac
+
+            # Check file extension against allowlist
+            EXT="${FILE##*.}"
+            ALLOWED=false
+            for AEXT in $ALLOWED_EXTS; do
+              if [ "$EXT" = "$AEXT" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+
+            if [ "$ALLOWED" = true ]; then
+              git add -- "$FILE"
+              echo "STAGED: $FILE"
+              STAGED_COUNT=$((STAGED_COUNT + 1))
+            else
+              echo "EXCLUDED: $FILE (extension .$EXT not in allowlist)"
+            fi
+          done
+
+          echo "Safe git add complete: $STAGED_COUNT file(s) staged"
 
           if git diff --staged --quiet; then
             echo "No changes to commit after staging"

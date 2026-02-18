@@ -18,7 +18,7 @@ import { execSync } from "node:child_process";
 import { ROUTING } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
 import { decideRoute, executeRoute, type RoutingInput } from "../lib/routing.js";
-import { stripBase64Images } from "../lib/image-extract.js";
+import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -167,8 +167,16 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   console.log("");
   console.log("--- Classifying issue #" + issueNumber + " ---");
 
-  // Build report text from issue title + body, stripping base64 images
+  // Build report text from issue title + body
   const reportText = issueData.title + "\n\n" + issueData.body;
+
+  // Extract screenshots BEFORE stripping them — triage needs to see visual bugs
+  const extractedImages = extractBase64Images(reportText);
+  if (extractedImages.length > 0) {
+    console.log("[triage] Extracted " + extractedImages.length + " screenshot(s) from issue body");
+  }
+
+  // Strip base64 from text prompt (model will receive images as content blocks instead)
   const cleanReportText = stripBase64Images(reportText);
 
   let triageResult: TriageResult;
@@ -176,6 +184,7 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
     triageResult = await runTriage({
       report_text: cleanReportText,
       report_id: "issue-" + issueNumber,
+      images: extractedImages.length > 0 ? extractedImages : undefined,
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -301,21 +310,28 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
 
 /** Build the classification result comment (AC4) */
 function buildClassificationComment(triage: TriageResult): string {
+  // Defensive: fallback to "unknown" if any field is unexpectedly missing
+  const classification = triage.classification || "unknown";
+  const severity = triage.severity || "unknown";
+  const confidence = typeof triage.confidence === "number" ? triage.confidence : 0;
+  const reasoning = triage.reasoning || "No reasoning provided";
+  const extractedContext = triage.extracted_context ?? {};
+
   const lines = [
     "## Triage Classification",
     "",
     "| Field | Value |",
     "|-------|-------|",
-    "| Classification | `" + triage.classification + "` |",
-    "| Severity | `" + triage.severity + "` |",
-    "| Confidence | " + (triage.confidence * 100).toFixed(0) + "% |",
+    "| Classification | `" + classification + "` |",
+    "| Severity | `" + severity + "` |",
+    "| Confidence | " + (confidence * 100).toFixed(0) + "% |",
     "",
-    "**Reasoning:** " + triage.reasoning,
+    "**Reasoning:** " + reasoning,
   ];
 
-  if (Object.keys(triage.extracted_context).length > 0) {
+  if (Object.keys(extractedContext).length > 0) {
     lines.push("");
-    lines.push("**Extracted context:** `" + JSON.stringify(triage.extracted_context) + "`");
+    lines.push("**Extracted context:** `" + JSON.stringify(extractedContext) + "`");
   }
 
   return lines.join("\n");

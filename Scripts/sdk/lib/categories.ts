@@ -42,6 +42,13 @@ const CATEGORY_FILE_MAP: Record<string, string> = {
   "German History": "GermanHistory.json",
   "Women's History": "WomensHistory.json",
 
+  // --- 5 Epic / Expansion categories (Historian-only, 500+ events) ---
+  "US History Epic": "USHistory-Expansion1.json",
+  "World Wars Epic": "WorldWars-Expansion1.json",
+  "Sports History Epic": "SportsHistory-Expansion1.json",
+  "Film History Epic": "FilmHistory-Expansion1.json",
+  "TV History Epic": "TVHistory-Expansion1.json",
+
   // --- Unreleased / expansion categories ---
   "Medieval History": "MedievalHistory.json",
   "Medical Breakthroughs": "MedicalBreakthroughs.json",
@@ -62,6 +69,39 @@ const CATEGORY_FILE_MAP: Record<string, string> = {
   "Animal History": "AnimalHistory.json",
   "Geography History": "GeographyHistory.json",
 };
+
+// ---------------------------------------------------------------------------
+// Reverse map: file name (without extension) -> category display name
+// ---------------------------------------------------------------------------
+
+const FILE_TO_CATEGORY_MAP: Record<string, string> = {};
+for (const [category, fileName] of Object.entries(CATEGORY_FILE_MAP)) {
+  const baseName = fileName.replace(/\.json$/, "");
+  FILE_TO_CATEGORY_MAP[baseName] = category;
+}
+
+// ---------------------------------------------------------------------------
+// Epic category set and minimum event counts
+// ---------------------------------------------------------------------------
+
+/**
+ * Set of Epic/Expansion category display names.
+ * Epic categories are premium paid content (Historian-only) with 500+ events.
+ * They are distinct registry entries, NOT extensions of base categories.
+ */
+const EPIC_CATEGORIES = new Set([
+  "US History Epic",
+  "World Wars Epic",
+  "Sports History Epic",
+  "Film History Epic",
+  "TV History Epic",
+]);
+
+/** Minimum event count for Epic categories */
+const EPIC_MIN_EVENTS = 500;
+
+/** Minimum event count for base categories */
+const BASE_MIN_EVENTS = 100;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -106,4 +146,35 @@ export function isKnownCategory(category: string): boolean {
  */
 export function allCategoryNames(): string[] {
   return Object.keys(CATEGORY_FILE_MAP);
+}
+
+/**
+ * Reverse lookup: given a JSON file base name (without .json extension),
+ * return the category display name.
+ *
+ * @param fileName - File base name, e.g. "WorldWars-Expansion1" or "USHistory"
+ * @returns Category display name or null if not found
+ */
+export function fileNameToCategory(fileName: string): string | null {
+  // Strip .json extension if caller passed it
+  const baseName = fileName.replace(/\.json$/, "");
+  return FILE_TO_CATEGORY_MAP[baseName] ?? null;
+}
+
+/**
+ * Check whether a category is an Epic/Expansion category.
+ * Epic categories are premium paid content (Historian-only, 500+ events).
+ */
+export function isEpicCategory(category: string): boolean {
+  return EPIC_CATEGORIES.has(category);
+}
+
+/**
+ * Get the minimum event count required for a category.
+ * Epic categories require 500 events; base categories require 100.
+ * Returns 0 if the category is unknown.
+ */
+export function getMinEventCount(category: string): number {
+  if (!isKnownCategory(category)) return 0;
+  return EPIC_CATEGORIES.has(category) ? EPIC_MIN_EVENTS : BASE_MIN_EVENTS;
 }
