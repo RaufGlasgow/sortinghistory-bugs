@@ -61,6 +61,18 @@ Use this classification ONLY when:
 - **P3:** Medium -- minor issue, workaround exists, does not block core gameplay
 - **P4:** Low -- cosmetic, enhancement, nice-to-have, feature requests
 
+## Screenshot Analysis
+
+Bug reports may include screenshots as attached images. When screenshots are present:
+
+1. **Examine every screenshot carefully** before classifying the bug
+2. Look for visual evidence: clipped text, misaligned layouts, wrong colors, incorrect data displayed, broken UI elements
+3. Compare what the screenshot shows against what the bug report text describes
+4. If the screenshot reveals a UI issue that the text does not mention, factor it into your classification
+5. Note any visible text/data in screenshots that helps identify the category, event, or screen involved
+
+Screenshots are critical for `ui_bug` classification -- a report with a screenshot showing layout problems is almost certainly a UI bug even if the text description is vague.
+
 ## Context Extraction
 
 When the report mentions specific events, dates, categories, or languages:
@@ -81,6 +93,9 @@ When the report mentions specific events, dates, categories, or languages:
 
 Output ONLY a JSON object. No markdown code blocks, no explanation before or after. Just raw JSON.
 
+**CRITICAL: All 6 top-level fields are REQUIRED. Never omit any field.**
+**CRITICAL: The `extracted_context` object MUST always include all 5 structured fields listed below.** If a field genuinely cannot be determined from the report, set its value to `"unknown"` (the string) -- NEVER use `null`, `undefined`, or omit the field.
+
 ```
 {
   "classification": "content_error" | "translation_error" | "ui_bug" | "gameplay_bug" | "feature_request" | "needs_human_review",
@@ -88,12 +103,11 @@ Output ONLY a JSON object. No markdown code blocks, no explanation before or aft
   "severity": "P1" | "P2" | "P3" | "P4",
   "reasoning": "Brief explanation of why this classification was chosen",
   "extracted_context": {
-    "category": "optional - for content/translation errors",
-    "event_id": "optional - for content/translation errors",
-    "event_title": "optional - for content/translation errors",
-    "language": "optional - for translation errors",
-    "relevant_files": ["optional - for code bugs"],
-    "initial_diagnosis": "optional - for code bugs"
+    "category": "The game category involved (e.g., 'US History', 'Sports History') or 'unknown'",
+    "file_path": "Path to the relevant source file (event JSON or Swift file) or 'unknown'",
+    "event_id": "The specific event ID if identifiable, or 'unknown'",
+    "expected_behavior": "What should happen according to the reporter",
+    "actual_behavior": "What actually happens according to the reporter"
   },
   "routing_recommendation": "Where this should go next (e.g., 'content verification pipeline', 'translation team', 'developer review', 'manual triage queue')"
 }

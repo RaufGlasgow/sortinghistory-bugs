@@ -130,6 +130,9 @@ const VALID_CATEGORIES = new Set([
   "Revolutions & Independence", "Artists & Literature", "Music & Entertainment",
   "Religious Events", "Natural Disasters", "Economic Events", "Sports History",
   "LGBTQ History", "Black History", "Women's History", "TV History", "Food & Drink",
+  // Epic / Expansion categories (Historian-only, 500+ events)
+  "US History Epic", "World Wars Epic", "Sports History Epic",
+  "Film History Epic", "TV History Epic",
 ]);
 
 /** Common nationalities and country names for P4 country context detection */

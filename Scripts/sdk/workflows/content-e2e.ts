@@ -60,6 +60,7 @@ import {
   type ContentFixOutput,
 } from "./content-fix.js";
 import { isKnownCategory } from "../lib/categories.js";
+import { safeGitAdd } from "../lib/git-utils.js";
 import { ROUTING } from "../config.js";
 
 // ------------------------------------------------------------------
@@ -201,8 +202,15 @@ function createPullRequest(opts: {
   }
 
   try {
-    // Stage, commit, and push
-    execSync("git add -A", { cwd: opts.cwd, encoding: "utf-8" });
+    // Stage only allowed file types (replaces dangerous `git add -A` -- PV2-1.3)
+    const addResult = safeGitAdd(opts.cwd);
+    if (addResult.staged.length === 0) {
+      console.log("[content-e2e] No allowed files to stage after safe filtering");
+      console.log("[content-e2e] Excluded files: " + addResult.excluded.length);
+      throw new Error("No allowed files to stage -- safe git add filtered everything");
+    }
+    console.log("[content-e2e] Safe git add: " + addResult.staged.length + " files staged, " + addResult.excluded.length + " excluded");
+
     execSync(
       'git commit -m "fix(content): automated content fix from SDK pipeline"',
       { cwd: opts.cwd, encoding: "utf-8" },

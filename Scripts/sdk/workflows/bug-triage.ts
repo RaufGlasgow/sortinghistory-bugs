@@ -35,6 +35,8 @@ export interface TriageResult {
 export interface TriageInput {
   report_text: string;
   report_id?: string;
+  /** Optional screenshots extracted from the bug report (base64 image data) */
+  images?: import("../lib/image-extract.js").ExtractedImage[];
 }
 
 /** Valid classification values */
@@ -87,9 +89,11 @@ function validateTriageResult(obj: Record<string, unknown>): string[] {
 /** Run the bug triage workflow */
 export async function runTriage(input: TriageInput): Promise<TriageResult> {
   const reportId = input.report_id ?? "unknown";
+  const imageCount = input.images?.length ?? 0;
   console.log("=== Story 4.1: Bug Triage — Report " + reportId + " ===");
   console.log("Model: " + MODELS.VERIFIER);
   console.log("Tools: [" + TRIAGE_TOOLS.join(", ") + "]");
+  console.log("Screenshots: " + imageCount + " image(s) attached");
   console.log("Report text: \"" + input.report_text + "\"");
   console.log("");
 
@@ -110,7 +114,8 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     process.exit(1);
   }
 
-  // Strip base64 images from report text to avoid sending raw data as text
+  // Strip base64 images from report text to avoid sending raw base64 as text tokens.
+  // Images are passed separately as multimodal content blocks (if provided by caller).
   const cleanReportText = stripBase64Images(input.report_text);
 
   // Build user prompt with report text and context paths
@@ -122,6 +127,9 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     "",
     "## Bug Report",
     "Report ID: " + reportId,
+    (imageCount > 0
+      ? "(This report includes " + imageCount + " screenshot(s) — see attached images for visual evidence)"
+      : "(No screenshots attached)"),
     "\"" + cleanReportText + "\"",
     "",
     "## Available Context",
@@ -139,6 +147,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   ].join("\n");
 
   // Spawn Haiku subagent with read-only triage tools
+  // Pass screenshots as multimodal image blocks so the model can analyze visual bugs
   const result: SubagentResult = await spawnSubagent({
     model: MODELS.VERIFIER,
     tools: [...TRIAGE_TOOLS],
@@ -146,6 +155,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     systemPrompt,
     cwd: repoRoot,
     maxTurns: 20,
+    images: input.images,
   });
 
   console.log("");
@@ -218,15 +228,19 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     console.log("Context: " + JSON.stringify(triageResult.extracted_context, null, 2));
   }
 
-  // Log metrics
+  // Log metrics (including screenshot cost tracking for PV2-1.4)
   console.log("");
   console.log("=== Metrics ===");
   console.log("Model: " + (result.model ?? MODELS.VERIFIER));
   console.log("Session ID: " + result.sessionId);
+  console.log("Screenshots sent: " + imageCount);
   console.log("Input tokens: " + result.inputTokens);
   console.log("Output tokens: " + result.outputTokens);
   console.log("Duration: " + result.durationMs + "ms");
   console.log("Cost: $" + result.costUsd.toFixed(4));
+  if (imageCount > 0) {
+    console.log("Cost with screenshots: $" + result.costUsd.toFixed(4) + " (target: ~$0.03-0.05/bug)");
+  }
   console.log("Tools used: [" + result.toolsUsed.join(", ") + "]");
 
   if (Object.keys(result.modelUsage).length > 0) {
