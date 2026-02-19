@@ -15,6 +15,9 @@
  */
 
 import { execSync } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ROUTING } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
 import { decideRoute, executeRoute, type RoutingInput } from "../lib/routing.js";
@@ -84,14 +87,17 @@ function fetchIssue(issueNumber: number): { title: string; body: string; labels:
   };
 }
 
-/** Post a comment on the issue in the private repo */
+/** Post a comment on the issue in the private repo.
+ *  Uses --body-file to avoid shell backtick command substitution eating markdown code spans. */
 function postIssueComment(issueNumber: number, comment: string): void {
   const repo = ROUTING.PRIVATE_REPO;
   console.log("[triage] Posting comment on " + repo + "#" + issueNumber);
 
+  const tmpFile = join(tmpdir(), "gh-comment-" + issueNumber + "-" + Date.now() + ".md");
   try {
+    writeFileSync(tmpFile, comment, "utf-8");
     execSync(
-      "gh issue comment " + issueNumber + " --repo " + repo + " --body " + JSON.stringify(comment),
+      "gh issue comment " + issueNumber + " --repo " + repo + " --body-file " + tmpFile,
       { encoding: "utf-8", timeout: 30_000 },
     );
     console.log("[triage] Comment posted successfully");
@@ -99,6 +105,8 @@ function postIssueComment(issueNumber: number, comment: string): void {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[triage] WARNING: Failed to post comment on issue #" + issueNumber + ": " + errMsg);
     // Non-fatal: the triage still succeeded even if comment fails
+  } finally {
+    try { unlinkSync(tmpFile); } catch { /* cleanup best-effort */ }
   }
 }
 

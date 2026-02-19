@@ -1,4 +1,7 @@
 import { execSync } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MODELS, PATHS, ROUTING, type WorkflowType } from "./config.js";
 import {
   createWorkflowState,
@@ -222,19 +225,23 @@ async function getStatus(workflowId: string): Promise<void> {
 
 /**
  * Post a comment on a GitHub issue in the private repo.
- * Used by resume and content-e2e to report results back on the issue.
+ * Uses --body-file to avoid shell backtick command substitution eating markdown code spans.
  */
 function postIssueComment(issueNumber: number, comment: string): void {
   const repo = ROUTING.PRIVATE_REPO;
+  const tmpFile = join(tmpdir(), "gh-comment-" + issueNumber + "-" + Date.now() + ".md");
   try {
+    writeFileSync(tmpFile, comment, "utf-8");
     execSync(
-      "gh issue comment " + issueNumber + " --repo " + repo + " --body " + JSON.stringify(comment),
+      "gh issue comment " + issueNumber + " --repo " + repo + " --body-file " + tmpFile,
       { encoding: "utf-8", timeout: 30_000 },
     );
     console.log("[orchestrator] Comment posted on " + repo + "#" + issueNumber);
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[orchestrator] WARNING: Failed to post comment: " + errMsg);
+  } finally {
+    try { unlinkSync(tmpFile); } catch { /* cleanup best-effort */ }
   }
 }
 
