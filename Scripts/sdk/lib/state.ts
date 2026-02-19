@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PATHS, type WorkflowType, type WorkflowStatus } from "../config.js";
+import { PATHS, LIMITS, type WorkflowType, type WorkflowStatus } from "../config.js";
 
 /** A single finding from a verification pass */
 export interface WorkflowFinding {
@@ -9,6 +9,52 @@ export interface WorkflowFinding {
   gates_failed: string[];
   details: string;
   severity: string;
+}
+
+/** Log entry for a single fix attempt (Story PV2-2.4) */
+export interface AttemptLogEntry {
+  /** 1-based attempt number */
+  attempt_number: number;
+  /** Model ID used for this attempt */
+  model: string;
+  /** Description of the fix approach taken */
+  approach: string;
+  /** Outcome: "success", "qa_rejected", "compilation_error", "timeout", "error" */
+  result: string;
+  /** Compiler or runtime error output, if any */
+  error_output: string | null;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+}
+
+/** QA verdict for a single attempt (Story PV2-2.4) */
+export interface QAVerdictEntry {
+  /** 1-based attempt number this verdict applies to */
+  attempt_number: number;
+  /** QA verdict: "pass", "fail", "partial" */
+  verdict: string;
+  /** Array of specific findings from QA review */
+  findings: string[];
+  /** Human-readable summary of QA review */
+  summary: string;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+}
+
+/** Token usage and cost tracking per SDK call (Story PV2-2.4) */
+export interface ModelUsageEntry {
+  /** Pipeline step (e.g. "fix_attempt_1", "qa_review_1", "triage") */
+  step: string;
+  /** Model ID used */
+  model: string;
+  /** Input tokens consumed */
+  input_tokens: number;
+  /** Output tokens consumed */
+  output_tokens: number;
+  /** Estimated cost in USD */
+  cost_estimate: number;
+  /** ISO 8601 timestamp */
+  timestamp: string;
 }
 
 /** Workflow instance state — persists between SDK sessions across approval gates */
@@ -30,6 +76,12 @@ export interface WorkflowState {
   pr_number: number | null;
   error: string | null;
   issue_number: number | null;
+  /** Detailed log of each fix attempt (PV2-2.4) */
+  attempt_log: AttemptLogEntry[];
+  /** QA review results per attempt (PV2-2.4) */
+  qa_results: QAVerdictEntry[];
+  /** Token/cost tracking per SDK call (PV2-2.4) */
+  models_used: ModelUsageEntry[];
 }
 
 /** Generate a workflow ID: {prefix}-{date}-{sequence} with true sequential numbering */
@@ -114,11 +166,14 @@ export async function createWorkflowState(
     approved_findings: [],
     rejected_findings: [],
     fix_attempts: 0,
-    max_fix_attempts: 2,
+    max_fix_attempts: LIMITS.MAX_FIX_ATTEMPTS,
     fix_results: [],
     pr_number: null,
     error: null,
     issue_number: issueNumber ?? null,
+    attempt_log: [],
+    qa_results: [],
+    models_used: [],
   };
 
   ensureDir(PATHS.STATE_DIR);
@@ -148,14 +203,28 @@ export async function updateWorkflowState(
   return updated;
 }
 
-/** Load a workflow state file by ID. Returns null if not found. */
+/** Load a workflow state file by ID. Returns null if not found.
+ *  Backward compatible: old state files missing PV2-2.4 fields get empty-array defaults. */
 export async function loadWorkflowState(workflowId: string): Promise<WorkflowState | null> {
   const filePath = path.join(PATHS.STATE_DIR, `${workflowId}.json`);
   if (!fs.existsSync(filePath)) {
     return null;
   }
   const data = fs.readFileSync(filePath, "utf-8");
-  return JSON.parse(data) as WorkflowState;
+  const raw = JSON.parse(data) as Record<string, unknown>;
+
+  // Backward compatibility: default PV2-2.4 fields if missing from old state files
+  if (!Array.isArray(raw.attempt_log)) {
+    raw.attempt_log = [];
+  }
+  if (!Array.isArray(raw.qa_results)) {
+    raw.qa_results = [];
+  }
+  if (!Array.isArray(raw.models_used)) {
+    raw.models_used = [];
+  }
+
+  return raw as unknown as WorkflowState;
 }
 
 /** List all workflow state files, optionally filtered by status */

@@ -40,7 +40,7 @@ export const PATHS = {
 
 /** Workflow limits from Architecture Section 4.1 */
 export const LIMITS = {
-  MAX_FIX_ATTEMPTS: 2,
+  MAX_FIX_ATTEMPTS: 3,
   SESSION_TIMEOUT_MINUTES: 30,
 } as const;
 
