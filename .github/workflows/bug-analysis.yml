@@ -3,18 +3,24 @@ name: Bug Analysis
 on:
   repository_dispatch:
     types: [analyze]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to triage (from private repo)'
+        required: true
+        type: string
 
 jobs:
   analyze:
     concurrency:
-      group: bug-analysis-${{ github.event.client_payload.issue_number }}
+      group: bug-analysis-${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
 
     steps:
       - name: Validate payload
         run: |
-          ISSUE="${{ github.event.client_payload.issue_number }}"
+          ISSUE="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
           if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid issue_number in payload: '$ISSUE'. Must be a positive integer."
             exit 1
