@@ -53,6 +53,9 @@ export const PROOF_TOOLS = ["Read", "Glob", "Grep"] as const;
 /** Read-only tools for triage subagent — no Bash needed */
 export const TRIAGE_TOOLS = ["Read", "Glob", "Grep"] as const;
 
+/** Read-only tools for QA review subagent — no Write, Edit, or Bash (Story PV2-3.1) */
+export const QA_TOOLS = ["Read", "Glob", "Grep"] as const;
+
 /** Read-write tools for fixer subagents (restricted to Data/ directory via hooks) */
 export const FIXER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as const;
 

@@ -17,7 +17,7 @@ env:
 jobs:
   fix-bug:
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: Validate payload
@@ -66,7 +66,7 @@ jobs:
           git checkout -b "$BRANCH"
           echo "name=$BRANCH" >> $GITHUB_OUTPUT
 
-      - name: Run SDK bug-fix subagent
+      - name: Run SDK bug-fix subagent with QA gate
         id: fix
         working-directory: Scripts/sdk
         env:
@@ -89,12 +89,20 @@ jobs:
           COMPILATION=$(echo "$OUTPUT" | grep '\[orchestrator\] Compilation:' | sed 's/.*Compilation: //')
           CONFIDENCE=$(echo "$OUTPUT" | grep '\[orchestrator\] Confidence:' | sed 's/.*Confidence: //')
 
-          # Extract the detailed fix summary from the issue comment the orchestrator posts
-          # The orchestrator logs the full result; we capture key pieces for the PR
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           echo "files_modified=${FILES_MODIFIED:-unknown}" >> $GITHUB_OUTPUT
           echo "compilation=${COMPILATION:-unknown}" >> $GITHUB_OUTPUT
           echo "confidence=${CONFIDENCE:-unknown}" >> $GITHUB_OUTPUT
+
+          # Check if QA summary file was written by the orchestrator (PV2-3.3 AC10)
+          QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
+          if [ -f "$QA_SUMMARY_FILE" ]; then
+            echo "has_qa_summary=true" >> $GITHUB_OUTPUT
+            echo "QA summary file found at $QA_SUMMARY_FILE"
+          else
+            echo "has_qa_summary=false" >> $GITHUB_OUTPUT
+            echo "No QA summary file found"
+          fi
 
           if [ $EXIT_CODE -ne 0 ]; then
             echo "applied=false" >> $GITHUB_OUTPUT
@@ -135,20 +143,10 @@ jobs:
             } >> $GITHUB_OUTPUT
           fi
 
-      # ── Success path: bump version, commit, push, create PR ──
-
-      - name: Bump version (centralized)
-        id: bump-version
-        if: steps.changes.outputs.has_changes == 'true'
-        working-directory: game-repo
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          GAME_REPO_PATH: "."
-        run: |
-          bash "${{ github.workspace }}/Scripts/bump-version.sh"
+      # ── Success path: commit, push, bump version (AFTER QA approval), create PR ──
 
       - name: Commit changes
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         run: |
           git config user.name "SDK Bug Fix Bot"
@@ -199,12 +197,37 @@ jobs:
 
           git commit -m "fix(#${{ env.ISSUE_NUM }}): SDK bug fix for #${{ env.ISSUE_NUM }}
 
-          Applied by SDK bug fix pipeline (Opus 4.6)
+          Applied by SDK bug fix pipeline (Opus 4.6) with QA gate
           Compilation: ${{ steps.fix.outputs.compilation }}
           Confidence: ${{ steps.fix.outputs.confidence }}"
 
+      # PV2-3.3 AC14: Version bump AFTER QA approval (not before commit)
+      # If QA rejects, no version number is consumed
+      - name: Bump version (centralized)
+        id: bump-version
+        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        working-directory: game-repo
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          GAME_REPO_PATH: "."
+        run: |
+          bash "${{ github.workspace }}/Scripts/bump-version.sh"
+
+      - name: Amend commit with version bump
+        if: steps.bump-version.outputs.ALPHA_VERSION != ''
+        working-directory: game-repo
+        run: |
+          # Stage the version bump changes
+          git add -A
+          if ! git diff --staged --quiet; then
+            git commit --amend --no-edit
+            echo "Version bump included in commit"
+          else
+            echo "No version bump changes to amend"
+          fi
+
       - name: Push branch
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
@@ -216,9 +239,10 @@ jobs:
             git push origin "$BRANCH"
           fi
 
+      # PV2-3.3 AC9/AC10: Build PR body with QA summary included via --body-file
       - name: Create PR on private repo
         id: create-pr
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -229,6 +253,7 @@ jobs:
           FILES_MODIFIED="${{ steps.fix.outputs.files_modified }}"
           ALPHA_VERSION="${{ steps.bump-version.outputs.ALPHA_VERSION }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
 
           # Fetch issue title
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${ISSUE_NUM} --jq '.title')
@@ -240,44 +265,59 @@ jobs:
             gh pr close "$EXISTING_PR" --repo RaufGlasgow/Sorting-History 2>/dev/null || true
           fi
 
-          # Build PR body
-          PR_BODY="## SDK Bug Fix
+          # Build PR body file (uses --body-file to avoid shell backtick issues)
+          PR_BODY_FILE="/tmp/pr-body-${ISSUE_NUM}.md"
 
-          Fixes RaufGlasgow/Sorting-History#${ISSUE_NUM}
+          {
+            echo "## SDK Bug Fix"
+            echo ""
+            echo "Fixes RaufGlasgow/Sorting-History#${ISSUE_NUM}"
+            echo ""
+            echo "### Changes Made"
+            echo "**Compilation:** ${COMPILATION}"
+            echo "**Confidence:** ${CONFIDENCE}"
+            echo ""
+            echo "**Files modified:**"
+            echo '```'
+            echo "${{ steps.changes.outputs.modified_files }}"
+            echo '```'
+            echo ""
 
-          ### Changes Made
-          **Compilation:** ${COMPILATION}
-          **Confidence:** ${CONFIDENCE}
+            # Include QA summary if available (PV2-3.3 AC9)
+            if [ -f "$QA_SUMMARY_FILE" ]; then
+              echo "---"
+              echo ""
+              cat "$QA_SUMMARY_FILE"
+              echo ""
+              echo "---"
+              echo ""
+            fi
 
-          **Files modified:**
-          \`\`\`
-          ${{ steps.changes.outputs.modified_files }}
-          \`\`\`
-
-          ### How to Test
-          1. Install build version **1.1.0-alpha.${ALPHA_VERSION}** on device or simulator
-          2. Navigate to the area affected by issue #${ISSUE_NUM}
-          3. Verify the bug is fixed
-          4. Check for regressions in related functionality
-
-          \`\`\`bash
-          # Build and test locally:
-          xcodebuild build \\
-            -scheme SortingHistory \\
-            -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \\
-            -derivedDataPath DerivedData \\
-            CODE_SIGNING_ALLOWED=NO
-          \`\`\`
-
-          ### Rejection Instructions
-          If this fix doesn't work, post a comment **on this PR** with:
-          \`\`\`
-          /reject Describe what's still broken
-          \`\`\`
-
-          ---
-          *Created by [SDK bug fix pipeline]($RUN_URL) (Opus 4.6).*
-          *All fixes require manual review and merge.*"
+            echo "### How to Test"
+            echo "1. Install build version **1.1.0-alpha.${ALPHA_VERSION}** on device or simulator"
+            echo "2. Navigate to the area affected by issue #${ISSUE_NUM}"
+            echo "3. Verify the bug is fixed"
+            echo "4. Check for regressions in related functionality"
+            echo ""
+            echo '```bash'
+            echo "# Build and test locally:"
+            echo "xcodebuild build \\"
+            echo "  -scheme SortingHistory \\"
+            echo "  -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \\"
+            echo "  -derivedDataPath DerivedData \\"
+            echo "  CODE_SIGNING_ALLOWED=NO"
+            echo '```'
+            echo ""
+            echo "### Rejection Instructions"
+            echo "If this fix doesn't work, post a comment **on this PR** with:"
+            echo '```'
+            echo "/reject Describe what's still broken"
+            echo '```'
+            echo ""
+            echo "---"
+            echo "*Created by [SDK bug fix pipeline](${RUN_URL}) (Opus 4.6 + QA gate).*"
+            echo "*All fixes require manual review and merge.*"
+          } > "$PR_BODY_FILE"
 
           PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE}"
 
@@ -286,13 +326,28 @@ jobs:
             --head "$BRANCH" \
             --base main \
             --title "$PR_TITLE" \
-            --body "$PR_BODY"
+            --body-file "$PR_BODY_FILE"
 
           # Get PR URL
           PR_URL=$(gh pr view --repo RaufGlasgow/Sorting-History "$BRANCH" --json url -q .url)
           PR_NUMBER=$(gh pr view --repo RaufGlasgow/Sorting-History "$BRANCH" --json number -q .number)
           echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+          # Cleanup
+          rm -f "$PR_BODY_FILE"
+
+      # PV2-3.3 AC11: Post QA review comment on the issue
+      - name: Post QA review comment on issue
+        if: steps.fix.outputs.has_qa_summary == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
+          if [ -f "$QA_SUMMARY_FILE" ]; then
+            gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" --body-file "$QA_SUMMARY_FILE"
+            echo "QA review comment posted on issue #${{ env.ISSUE_NUM }}"
+          fi
 
       - name: Post success comment on issue
         if: steps.create-pr.outputs.pr_url != ''
