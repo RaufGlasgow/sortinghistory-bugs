@@ -27,12 +27,13 @@ import { ROUTING } from "../config.js";
 // Types
 // ---------------------------------------------------------------------------
 
-/** Summary of a single fix attempt by the pipeline */
+/** Summary of a single fix attempt by the pipeline.
+ *  Result values aligned with AttemptLogEntry in state.ts (canonical source of truth). */
 export interface AttemptLogSummary {
   attempt_number: number;
   model: string;
   approach: string;
-  result: "compile_fail" | "qa_rejected" | "qa_needs_revision" | "quality_gate_fail" | "timeout";
+  result: "success" | "compilation_error" | "qa_rejected" | "qa_needs_revision" | "quality_gate_fail" | "timeout" | "error";
   error_summary: string;
 }
 
@@ -75,14 +76,17 @@ export interface HandoffResult {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Human-readable label for attempt result codes */
+/** Human-readable label for attempt result codes.
+ *  Covers all canonical result values from AttemptLogEntry in state.ts. */
 function resultLabel(result: AttemptLogSummary["result"]): string {
   const map: Record<AttemptLogSummary["result"], string> = {
-    compile_fail: "Compilation failed",
+    success: "Fix succeeded",
+    compilation_error: "Compilation failed",
     qa_rejected: "QA rejected",
     qa_needs_revision: "QA needs revision",
     quality_gate_fail: "Quality gate failed",
     timeout: "Timed out",
+    error: "Unexpected error",
   };
   return map[result] ?? result;
 }

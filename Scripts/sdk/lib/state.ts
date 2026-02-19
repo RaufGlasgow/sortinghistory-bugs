@@ -19,7 +19,7 @@ export interface AttemptLogEntry {
   model: string;
   /** Description of the fix approach taken */
   approach: string;
-  /** Outcome: "success", "qa_rejected", "compilation_error", "timeout", "error" */
+  /** Outcome: "success", "compilation_error", "qa_rejected", "qa_needs_revision", "quality_gate_fail", "timeout", "error" */
   result: string;
   /** Compiler or runtime error output, if any */
   error_output: string | null;
@@ -203,6 +203,21 @@ export async function updateWorkflowState(
   return updated;
 }
 
+/** Apply backward compatibility defaults for PV2-2.4 fields to a parsed state object.
+ *  Old state files may be missing attempt_log, qa_results, and models_used. */
+function applyStateDefaults(raw: Record<string, unknown>): WorkflowState {
+  if (!Array.isArray(raw.attempt_log)) {
+    raw.attempt_log = [];
+  }
+  if (!Array.isArray(raw.qa_results)) {
+    raw.qa_results = [];
+  }
+  if (!Array.isArray(raw.models_used)) {
+    raw.models_used = [];
+  }
+  return raw as unknown as WorkflowState;
+}
+
 /** Load a workflow state file by ID. Returns null if not found.
  *  Backward compatible: old state files missing PV2-2.4 fields get empty-array defaults. */
 export async function loadWorkflowState(workflowId: string): Promise<WorkflowState | null> {
@@ -213,18 +228,7 @@ export async function loadWorkflowState(workflowId: string): Promise<WorkflowSta
   const data = fs.readFileSync(filePath, "utf-8");
   const raw = JSON.parse(data) as Record<string, unknown>;
 
-  // Backward compatibility: default PV2-2.4 fields if missing from old state files
-  if (!Array.isArray(raw.attempt_log)) {
-    raw.attempt_log = [];
-  }
-  if (!Array.isArray(raw.qa_results)) {
-    raw.qa_results = [];
-  }
-  if (!Array.isArray(raw.models_used)) {
-    raw.models_used = [];
-  }
-
-  return raw as unknown as WorkflowState;
+  return applyStateDefaults(raw);
 }
 
 /** List all workflow state files, optionally filtered by status */
@@ -240,7 +244,8 @@ export async function listWorkflowStates(
 
   for (const file of files) {
     const data = fs.readFileSync(path.join(PATHS.STATE_DIR, file), "utf-8");
-    const state = JSON.parse(data) as WorkflowState;
+    const raw = JSON.parse(data) as Record<string, unknown>;
+    const state = applyStateDefaults(raw);
     if (!statusFilter || state.status === statusFilter) {
       states.push(state);
     }

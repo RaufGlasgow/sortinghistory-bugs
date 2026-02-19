@@ -115,7 +115,7 @@ const ESCALATION_PATHS: Record<
   code_complex: [
     { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 15, qaTurns: 8 },
     { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 20, qaTurns: 10 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.COMPLEX_BUG, fixTurns: 25, qaTurns: 12 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 25, qaTurns: 12 },
   ],
 } as const;
 
