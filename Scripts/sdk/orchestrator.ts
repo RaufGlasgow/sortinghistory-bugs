@@ -504,7 +504,7 @@ async function main(): Promise<void> {
       break;
     }
     case "bug-fix": {
-      // Story SDK-BF.1: Bug fix subagent — spawns Opus 4.6 to fix a bug
+      // Story SDK-BF.1 + PV2-3.3: Bug fix subagent with QA gate
       // Usage: orchestrator.ts bug-fix --issue <NUM> [--game-repo <path>] [--dry-run]
       const issueNumber = parseIssueFlag();
       const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
@@ -528,17 +528,37 @@ async function main(): Promise<void> {
         console.log("[orchestrator] Confidence: " + bugFixResult.summary.confidence);
       }
 
-      // Post result comment on the issue
+      // PV2-3.3 AC10: Write QA summary to temp file for YAML to read
+      if (bugFixResult.qaSummary) {
+        const qaSummaryFile = join(gameRepo, "..", "qa-summary.md");
+        try {
+          writeFileSync(qaSummaryFile, bugFixResult.qaSummary, "utf-8");
+          console.log("[orchestrator] QA summary written to: " + qaSummaryFile);
+        } catch (writeErr: unknown) {
+          const writeMsg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+          console.log("[orchestrator] WARNING: Could not write QA summary file: " + writeMsg);
+        }
+      }
+
+      // Post result comment on the issue (includes QA summary)
       if (bugFixResult.success && bugFixResult.summary) {
-        postIssueComment(
-          issueNumber,
-          "## Bug Fix Applied\n\n" +
-            "**Summary:** " + bugFixResult.summary.fix_summary + "\n" +
-            "**Files modified:** " + bugFixResult.summary.files_modified.length + "\n" +
-            "**Compilation:** " + bugFixResult.summary.compilation_result + "\n" +
-            "**Confidence:** " + bugFixResult.summary.confidence + "\n\n" +
-            "**Workflow:** `" + bugFixResult.workflowId + "`",
-        );
+        const commentParts = [
+          "## Bug Fix Applied",
+          "",
+          "**Summary:** " + bugFixResult.summary.fix_summary,
+          "**Files modified:** " + bugFixResult.summary.files_modified.length,
+          "**Compilation:** " + bugFixResult.summary.compilation_result,
+          "**Confidence:** " + bugFixResult.summary.confidence,
+          "",
+          "**Workflow:** `" + bugFixResult.workflowId + "`",
+        ];
+        if (bugFixResult.qaSummary) {
+          commentParts.push("");
+          commentParts.push("---");
+          commentParts.push("");
+          commentParts.push(bugFixResult.qaSummary);
+        }
+        postIssueComment(issueNumber, commentParts.join("\n"));
       } else if (!bugFixResult.success) {
         postIssueComment(
           issueNumber,
