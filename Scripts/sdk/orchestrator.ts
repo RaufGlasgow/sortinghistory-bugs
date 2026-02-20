@@ -504,7 +504,7 @@ async function main(): Promise<void> {
       break;
     }
     case "bug-fix": {
-      // Story SDK-BF.1 + PV2-3.3: Bug fix subagent with QA gate
+      // Story SDK-BF.1 + PV2-3.3 + PV2-4.2: Bug fix with retry loop
       // Usage: orchestrator.ts bug-fix --issue <NUM> [--game-repo <path>] [--dry-run]
       const issueNumber = parseIssueFlag();
       const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
@@ -519,6 +519,7 @@ async function main(): Promise<void> {
       });
 
       console.log("[orchestrator] Bug fix result: " + (bugFixResult.success ? "success" : "failed"));
+      console.log("[orchestrator] Fix attempts used: " + bugFixResult.fixAttemptsUsed);
       if (bugFixResult.error) {
         console.error("[orchestrator] Error: " + bugFixResult.error);
       }
@@ -540,15 +541,19 @@ async function main(): Promise<void> {
         }
       }
 
-      // Post result comment on the issue (includes QA summary)
+      // Post result comment on the issue (includes QA summary and attempt count)
       if (bugFixResult.success && bugFixResult.summary) {
+        const attemptNote = bugFixResult.fixAttemptsUsed > 1
+          ? " (succeeded on attempt " + bugFixResult.fixAttemptsUsed + ")"
+          : "";
         const commentParts = [
-          "## Bug Fix Applied",
+          "## Bug Fix Applied" + attemptNote,
           "",
           "**Summary:** " + bugFixResult.summary.fix_summary,
           "**Files modified:** " + bugFixResult.summary.files_modified.length,
           "**Compilation:** " + bugFixResult.summary.compilation_result,
           "**Confidence:** " + bugFixResult.summary.confidence,
+          "**Attempts:** " + bugFixResult.fixAttemptsUsed,
           "",
           "**Workflow:** `" + bugFixResult.workflowId + "`",
         ];
@@ -559,15 +564,18 @@ async function main(): Promise<void> {
           commentParts.push(bugFixResult.qaSummary);
         }
         postIssueComment(issueNumber, commentParts.join("\n"));
-      } else if (!bugFixResult.success) {
-        postIssueComment(
-          issueNumber,
-          "## Bug Fix Failed\n\n" +
-            "The bug fix subagent could not resolve this issue automatically.\n\n" +
-            "**Error:** " + (bugFixResult.error ?? "Unknown") + "\n" +
-            "**Workflow:** `" + bugFixResult.workflowId + "`\n\n" +
-            "Manual intervention is required.",
-        );
+      }
+      // Note: failure comments are now posted by bug-fix.ts (PV2-4.2 AC7)
+      // No need to duplicate here
+
+      // PV2-4.2 AC5: Output attempt number for YAML PR title
+      if (bugFixResult.fixAttemptsUsed > 1) {
+        console.log("[orchestrator] Retry needed: attempt " + bugFixResult.fixAttemptsUsed);
+      }
+
+      // Exit with code 1 on failure so YAML correctly detects applied=false
+      if (!bugFixResult.success) {
+        process.exit(1);
       }
 
       break;

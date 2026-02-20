@@ -88,11 +88,13 @@ jobs:
           FILES_MODIFIED=$(echo "$OUTPUT" | grep '\[orchestrator\] Files modified:' | sed 's/.*Files modified: //')
           COMPILATION=$(echo "$OUTPUT" | grep '\[orchestrator\] Compilation:' | sed 's/.*Compilation: //')
           CONFIDENCE=$(echo "$OUTPUT" | grep '\[orchestrator\] Confidence:' | sed 's/.*Confidence: //')
+          FIX_ATTEMPTS=$(echo "$OUTPUT" | grep '\[orchestrator\] Fix attempts used:' | sed 's/.*Fix attempts used: //')
 
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           echo "files_modified=${FILES_MODIFIED:-unknown}" >> $GITHUB_OUTPUT
           echo "compilation=${COMPILATION:-unknown}" >> $GITHUB_OUTPUT
           echo "confidence=${CONFIDENCE:-unknown}" >> $GITHUB_OUTPUT
+          echo "fix_attempts=${FIX_ATTEMPTS:-1}" >> $GITHUB_OUTPUT
 
           # Check if QA summary file was written by the orchestrator (PV2-3.3 AC10)
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
@@ -251,6 +253,7 @@ jobs:
           COMPILATION="${{ steps.fix.outputs.compilation }}"
           CONFIDENCE="${{ steps.fix.outputs.confidence }}"
           FILES_MODIFIED="${{ steps.fix.outputs.files_modified }}"
+          FIX_ATTEMPTS="${{ steps.fix.outputs.fix_attempts }}"
           ALPHA_VERSION="${{ steps.bump-version.outputs.ALPHA_VERSION }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
@@ -276,6 +279,9 @@ jobs:
             echo "### Changes Made"
             echo "**Compilation:** ${COMPILATION}"
             echo "**Confidence:** ${CONFIDENCE}"
+            if [ "$FIX_ATTEMPTS" -gt 1 ] 2>/dev/null; then
+              echo "**Fix Attempts:** ${FIX_ATTEMPTS} (retry with model escalation)"
+            fi
             echo ""
             echo "**Files modified:**"
             echo '```'
@@ -315,11 +321,16 @@ jobs:
             echo '```'
             echo ""
             echo "---"
-            echo "*Created by [SDK bug fix pipeline](${RUN_URL}) (Opus 4.6 + QA gate).*"
+            echo "*Created by [SDK bug fix pipeline](${RUN_URL}) (retry loop + model escalation + QA gate).*"
             echo "*All fixes require manual review and merge.*"
           } > "$PR_BODY_FILE"
 
-          PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE}"
+          # PV2-4.2 AC5: Include attempt number in PR title if retry was needed
+          if [ "$FIX_ATTEMPTS" -gt 1 ] 2>/dev/null; then
+            PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE} [attempt ${FIX_ATTEMPTS}]"
+          else
+            PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE}"
+          fi
 
           gh pr create \
             --repo RaufGlasgow/Sorting-History \
