@@ -57,10 +57,7 @@ import {
   runContentVerify,
   type ContentVerificationResult,
 } from "./content-verify.js";
-import {
-  type ContentFinding,
-  type ContentFixOutput,
-} from "./content-fix.js";
+// content-fix.js: no longer importing ContentFinding/ContentFixOutput (unused after PV2-4.3 refactor)
 import { isKnownCategory } from "../lib/categories.js";
 import { safeGitAdd } from "../lib/git-utils.js";
 import {
@@ -539,6 +536,13 @@ export async function finalizeWorkflow(
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error("[content-e2e] PR creation failed: " + errMsg);
+
+      // AC7: Post failure comment on issue
+      if (options.issueNumber) {
+        postFailureComment(options.issueNumber, "PR creation failed: " + errMsg);
+        addHandoffLabel(options.issueNumber);
+      }
+
       await updateWorkflowState(state.workflow_id, {
         status: "complete",
         fix_attempts: retryResult.fixAttemptsUsed,
@@ -813,6 +817,14 @@ export async function runContentE2E(
   // Load fresh state (has findings stored)
   const currentState = await loadWorkflowState(state.workflow_id);
   if (!currentState) {
+    const reloadError = "Could not reload workflow state after approval processing";
+
+    // AC7: Post failure comment on issue
+    if (input.issue_number) {
+      postFailureComment(input.issue_number, reloadError);
+      addHandoffLabel(input.issue_number);
+    }
+
     return {
       status: "escalated",
       workflowId: state.workflow_id,
@@ -821,7 +833,7 @@ export async function runContentE2E(
       fixAttempts: 0,
       prNumber: null,
       prUrl: null,
-      error: "Could not reload workflow state",
+      error: reloadError,
     };
   }
 
@@ -863,6 +875,14 @@ export async function runContentE2E(
   // ---------------------------------------------------
   const updatedState = await loadWorkflowState(state.workflow_id);
   if (!updatedState) {
+    const retryReloadError = "Could not reload workflow state for retry loop";
+
+    // AC7: Post failure comment on issue
+    if (input.issue_number) {
+      postFailureComment(input.issue_number, retryReloadError);
+      addHandoffLabel(input.issue_number);
+    }
+
     return {
       status: "escalated",
       workflowId: state.workflow_id,
@@ -871,7 +891,7 @@ export async function runContentE2E(
       fixAttempts: 0,
       prNumber: null,
       prUrl: null,
-      error: "Could not reload workflow state for retry loop",
+      error: retryReloadError,
     };
   }
 
@@ -991,7 +1011,10 @@ export async function resumeContentE2E(
   // ---------------------------------------------------
   const state = await loadWorkflowState(workflowId);
   if (!state) {
-    console.error("[resume] No state file found for workflow: " + workflowId);
+    const noStateError = "No state file found for workflow: " + workflowId;
+    console.error("[resume] " + noStateError);
+    // AC7: Cannot post to GitHub -- state was not loaded so issue_number is unknown.
+    // This is logged to console only. The caller (GitHub Actions) will surface the failure.
     return {
       status: "escalated",
       workflowId,
@@ -1000,7 +1023,7 @@ export async function resumeContentE2E(
       fixAttempts: 0,
       prNumber: null,
       prUrl: null,
-      error: "No state file found for workflow: " + workflowId,
+      error: noStateError,
     };
   }
 
@@ -1008,10 +1031,17 @@ export async function resumeContentE2E(
   // Step 2: Validate state is awaiting_approval
   // ---------------------------------------------------
   if (state.status !== "awaiting_approval") {
+    const statusError = "Workflow is not in awaiting_approval state (current: " + state.status + ")";
     console.error(
       "[resume] Workflow " + workflowId + " is in status '" + state.status +
       "', expected 'awaiting_approval'",
     );
+
+    // AC7: Post failure comment on issue
+    if (state.issue_number) {
+      postFailureComment(state.issue_number, statusError);
+    }
+
     return {
       status: state.status,
       workflowId,
@@ -1020,7 +1050,7 @@ export async function resumeContentE2E(
       fixAttempts: state.fix_attempts,
       prNumber: state.pr_number,
       prUrl: null,
-      error: "Workflow is not in awaiting_approval state (current: " + state.status + ")",
+      error: statusError,
     };
   }
 
@@ -1046,7 +1076,15 @@ export async function resumeContentE2E(
   if (resolvedPath) {
     filePath = resolvedPath;
   } else {
-    console.error("[resume] Unknown category '" + category + "' -- cannot determine file path");
+    const categoryError = "Unknown category '" + category + "' -- cannot determine file path for content fix";
+    console.error("[resume] " + categoryError);
+
+    // AC7: Post failure comment on issue
+    if (state.issue_number) {
+      postFailureComment(state.issue_number, categoryError);
+      addHandoffLabel(state.issue_number);
+    }
+
     return {
       status: "escalated",
       workflowId,
@@ -1113,6 +1151,14 @@ export async function resumeContentE2E(
 
   const updatedState = await loadWorkflowState(workflowId);
   if (!updatedState) {
+    const resumeReloadError = "Could not reload workflow state for retry loop";
+
+    // AC7: Post failure comment on issue
+    if (state.issue_number) {
+      postFailureComment(state.issue_number, resumeReloadError);
+      addHandoffLabel(state.issue_number);
+    }
+
     return {
       status: "escalated",
       workflowId,
@@ -1121,7 +1167,7 @@ export async function resumeContentE2E(
       fixAttempts: 0,
       prNumber: null,
       prUrl: null,
-      error: "Could not reload workflow state for retry loop",
+      error: resumeReloadError,
     };
   }
 
