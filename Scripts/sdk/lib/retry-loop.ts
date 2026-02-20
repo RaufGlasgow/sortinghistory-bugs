@@ -33,7 +33,7 @@ import {
   type BugProfile,
   type ModelSelection,
 } from "./model-router.js";
-import { runQAReview, toVerdictEntry, type QAInput, type QAResult, type QAVerdict } from "./qa-gate.js";
+import { runQAReview, toVerdictEntry, type QAInput, type QAResult } from "./qa-gate.js";
 import { runQualityGate, type QualityGateResult } from "./quality-gate.js";
 import {
   generateHandoff,
