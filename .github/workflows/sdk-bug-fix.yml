@@ -4,31 +4,53 @@ on:
   repository_dispatch:
     types: [sdk-bug-fix]
 
+  # PV2-4.4: Browser-friendly trigger for full pipeline or QA-only re-runs
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number on the private repo (e.g. 84)'
+        required: true
+        type: string
+      mode:
+        description: 'Pipeline mode: full = fix + QA, qa-only = QA on existing fix branch'
+        required: true
+        type: choice
+        options:
+          - full
+          - qa-only
+        default: full
+
 permissions:
   contents: write
 
+# PV2-4.4 AC6: Concurrency group resolves issue number from either trigger
 concurrency:
-  group: sdk-fix-${{ github.event.client_payload.issue_number }}
+  group: sdk-fix-${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}
   cancel-in-progress: false
 
 env:
-  ISSUE_NUM: ${{ github.event.client_payload.issue_number }}
+  # Unified issue number resolution: repository_dispatch or workflow_dispatch
+  ISSUE_NUM: ${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}
+  # PV2-4.4: Mode resolution — repository_dispatch is always "full"
+  PIPELINE_MODE: ${{ github.event_name == 'repository_dispatch' && 'full' || github.event.inputs.mode }}
 
 jobs:
   fix-bug:
     runs-on: macos-14
-    timeout-minutes: 60
+    # PV2-4.4 AC9: 15 minutes for qa-only, 60 for full
+    timeout-minutes: ${{ github.event.inputs.mode == 'qa-only' && 15 || 60 }}
 
     steps:
       - name: Validate payload
         run: |
-          ISSUE="${{ github.event.client_payload.issue_number }}"
+          ISSUE="${{ env.ISSUE_NUM }}"
           if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
-            echo "::error::Invalid issue_number in payload: '$ISSUE'. Must be a positive integer."
+            echo "::error::Invalid issue_number: '$ISSUE'. Must be a positive integer."
             exit 1
           fi
           echo "ISSUE_NUMBER=$ISSUE" >> "$GITHUB_ENV"
           echo "Validated issue_number: $ISSUE"
+          echo "Pipeline mode: ${{ env.PIPELINE_MODE }}"
 
       - name: Checkout public repo (automation scripts + SDK)
         uses: actions/checkout@v4
@@ -58,13 +80,36 @@ jobs:
         working-directory: Scripts/sdk
         run: npm run build
 
-      - name: Create fix branch in game repo
+      # ── Branch setup: different for full vs qa-only ──
+
+      - name: Create fix branch in game repo (full mode)
         id: branch
+        if: env.PIPELINE_MODE == 'full'
         working-directory: game-repo
         run: |
           BRANCH="fix/sdk-bug-${{ env.ISSUE_NUM }}"
           git checkout -b "$BRANCH"
           echo "name=$BRANCH" >> $GITHUB_OUTPUT
+
+      # PV2-4.4 AC3a: Checkout existing fix branch (qa-only mode)
+      - name: Checkout existing fix branch (qa-only mode)
+        id: branch-qa
+        if: env.PIPELINE_MODE == 'qa-only'
+        working-directory: game-repo
+        run: |
+          BRANCH="fix/sdk-bug-${{ env.ISSUE_NUM }}"
+          echo "name=$BRANCH" >> $GITHUB_OUTPUT
+
+          # Check if the branch exists on the remote
+          if ! git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "::error::No fix branch found for issue #${{ env.ISSUE_NUM }}. Run a full pipeline first, or verify the issue number is correct."
+            exit 1
+          fi
+
+          git checkout "$BRANCH"
+          echo "Checked out existing fix branch: $BRANCH"
+
+      # ── Run SDK orchestrator ──
 
       - name: Run SDK bug-fix subagent with QA gate
         id: fix
@@ -75,9 +120,17 @@ jobs:
           PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           set +e
+
+          # PV2-4.4 AC7/AC8: Pass --qa-only flag when mode is qa-only
+          QA_ONLY_FLAG=""
+          if [ "${{ env.PIPELINE_MODE }}" = "qa-only" ]; then
+            QA_ONLY_FLAG="--qa-only"
+          fi
+
           OUTPUT=$(node dist/orchestrator.js bug-fix \
             --issue ${{ env.ISSUE_NUM }} \
-            --game-repo "${{ github.workspace }}/game-repo" 2>&1)
+            --game-repo "${{ github.workspace }}/game-repo" \
+            $QA_ONLY_FLAG 2>&1)
           EXIT_CODE=$?
           set -e
 
@@ -88,11 +141,13 @@ jobs:
           FILES_MODIFIED=$(echo "$OUTPUT" | grep '\[orchestrator\] Files modified:' | sed 's/.*Files modified: //')
           COMPILATION=$(echo "$OUTPUT" | grep '\[orchestrator\] Compilation:' | sed 's/.*Compilation: //')
           CONFIDENCE=$(echo "$OUTPUT" | grep '\[orchestrator\] Confidence:' | sed 's/.*Confidence: //')
+          FIX_ATTEMPTS=$(echo "$OUTPUT" | grep '\[orchestrator\] Fix attempts used:' | sed 's/.*Fix attempts used: //')
 
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           echo "files_modified=${FILES_MODIFIED:-unknown}" >> $GITHUB_OUTPUT
           echo "compilation=${COMPILATION:-unknown}" >> $GITHUB_OUTPUT
           echo "confidence=${CONFIDENCE:-unknown}" >> $GITHUB_OUTPUT
+          echo "fix_attempts=${FIX_ATTEMPTS:-0}" >> $GITHUB_OUTPUT
 
           # Check if QA summary file was written by the orchestrator (PV2-3.3 AC10)
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
@@ -120,8 +175,11 @@ jobs:
           exit $EXIT_CODE
         continue-on-error: true
 
+      # ── Full mode: check for changes, commit, version bump ──
+
       - name: Check for changes in game repo
         id: changes
+        if: env.PIPELINE_MODE == 'full'
         working-directory: game-repo
         run: |
           CHANGED_FILES=$(git diff --name-only)
@@ -143,10 +201,10 @@ jobs:
             } >> $GITHUB_OUTPUT
           fi
 
-      # ── Success path: commit, push, bump version (AFTER QA approval), create PR ──
+      # ── Success path (full mode): commit, push, bump version, create PR ──
 
       - name: Commit changes
-        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        if: env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         run: |
           git config user.name "SDK Bug Fix Bot"
@@ -202,10 +260,10 @@ jobs:
           Confidence: ${{ steps.fix.outputs.confidence }}"
 
       # PV2-3.3 AC14: Version bump AFTER QA approval (not before commit)
-      # If QA rejects, no version number is consumed
+      # PV2-4.4 AC4: Skip version bump entirely in qa-only mode
       - name: Bump version (centralized)
         id: bump-version
-        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        if: env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -213,21 +271,53 @@ jobs:
         run: |
           bash "${{ github.workspace }}/Scripts/bump-version.sh"
 
+      # PV2-4.4 AC10: Fix git add -A bug — use safe git add pattern for version bump amend
       - name: Amend commit with version bump
-        if: steps.bump-version.outputs.ALPHA_VERSION != ''
+        if: env.PIPELINE_MODE == 'full' && steps.bump-version.outputs.ALPHA_VERSION != ''
         working-directory: game-repo
         run: |
-          # Stage the version bump changes
-          git add -A
+          # Stage only files with allowed extensions (same pattern as Commit step)
+          # Replaces dangerous `git add -A` that reintroduces build artifacts
+          ALLOWED_EXTS="swift json strings md plist pbxproj xcscheme"
+          STAGED_COUNT=0
+
+          ALL_FILES=$(git diff --name-only; git ls-files --others --exclude-standard)
+
+          for FILE in $ALL_FILES; do
+            case "$FILE" in
+              *DerivedData/*|*.build/*|*xcuserdata/*|*node_modules/*|*.DS_Store|*.o|*.dSYM|*.dSYM/*)
+                echo "EXCLUDED: $FILE"
+                continue
+                ;;
+            esac
+
+            EXT="${FILE##*.}"
+            ALLOWED=false
+            for AEXT in $ALLOWED_EXTS; do
+              if [ "$EXT" = "$AEXT" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+
+            if [ "$ALLOWED" = true ]; then
+              git add -- "$FILE"
+              echo "STAGED: $FILE"
+              STAGED_COUNT=$((STAGED_COUNT + 1))
+            else
+              echo "EXCLUDED: $FILE (extension .$EXT not in allowlist)"
+            fi
+          done
+
           if ! git diff --staged --quiet; then
             git commit --amend --no-edit
-            echo "Version bump included in commit"
+            echo "Version bump included in commit ($STAGED_COUNT file(s) staged)"
           else
             echo "No version bump changes to amend"
           fi
 
-      - name: Push branch
-        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+      - name: Push branch (full mode)
+        if: env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
@@ -239,21 +329,27 @@ jobs:
             git push origin "$BRANCH"
           fi
 
-      # PV2-3.3 AC9/AC10: Build PR body with QA summary included via --body-file
+      # ── PR creation: handles both full and qa-only modes ──
+
+      # PV2-4.4 AC3f: Create PR on success (works for both full and qa-only)
       - name: Create PR on private repo
         id: create-pr
-        if: steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        if: >-
+          (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true')
+          || (env.PIPELINE_MODE == 'qa-only' && steps.fix.outputs.applied == 'true')
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           ISSUE_NUM="${{ env.ISSUE_NUM }}"
-          BRANCH="${{ steps.branch.outputs.name }}"
+          BRANCH="${{ steps.branch.outputs.name || steps.branch-qa.outputs.name }}"
           COMPILATION="${{ steps.fix.outputs.compilation }}"
           CONFIDENCE="${{ steps.fix.outputs.confidence }}"
           FILES_MODIFIED="${{ steps.fix.outputs.files_modified }}"
+          FIX_ATTEMPTS="${{ steps.fix.outputs.fix_attempts }}"
           ALPHA_VERSION="${{ steps.bump-version.outputs.ALPHA_VERSION }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
+          MODE="${{ env.PIPELINE_MODE }}"
 
           # Fetch issue title
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${ISSUE_NUM} --jq '.title')
@@ -269,19 +365,32 @@ jobs:
           PR_BODY_FILE="/tmp/pr-body-${ISSUE_NUM}.md"
 
           {
-            echo "## SDK Bug Fix"
-            echo ""
-            echo "Fixes RaufGlasgow/Sorting-History#${ISSUE_NUM}"
-            echo ""
-            echo "### Changes Made"
-            echo "**Compilation:** ${COMPILATION}"
-            echo "**Confidence:** ${CONFIDENCE}"
-            echo ""
-            echo "**Files modified:**"
-            echo '```'
-            echo "${{ steps.changes.outputs.modified_files }}"
-            echo '```'
-            echo ""
+            if [ "$MODE" = "qa-only" ]; then
+              echo "## SDK Bug Fix (QA-Only Re-Run)"
+              echo ""
+              echo "Fixes RaufGlasgow/Sorting-History#${ISSUE_NUM}"
+              echo ""
+              echo "> This PR was created by a **QA-only re-run**. The fix was generated in a previous pipeline run."
+              echo "> No new fix was generated. Only QA review and quality gate were re-run."
+              echo ""
+            else
+              echo "## SDK Bug Fix"
+              echo ""
+              echo "Fixes RaufGlasgow/Sorting-History#${ISSUE_NUM}"
+              echo ""
+              echo "### Changes Made"
+              echo "**Compilation:** ${COMPILATION}"
+              echo "**Confidence:** ${CONFIDENCE}"
+              if [ "$FIX_ATTEMPTS" -gt 1 ] 2>/dev/null; then
+                echo "**Fix Attempts:** ${FIX_ATTEMPTS} (retry with model escalation)"
+              fi
+              echo ""
+              echo "**Files modified:**"
+              echo '```'
+              echo "${{ steps.changes.outputs.modified_files }}"
+              echo '```'
+              echo ""
+            fi
 
             # Include QA summary if available (PV2-3.3 AC9)
             if [ -f "$QA_SUMMARY_FILE" ]; then
@@ -293,21 +402,24 @@ jobs:
               echo ""
             fi
 
-            echo "### How to Test"
-            echo "1. Install build version **1.1.0-alpha.${ALPHA_VERSION}** on device or simulator"
-            echo "2. Navigate to the area affected by issue #${ISSUE_NUM}"
-            echo "3. Verify the bug is fixed"
-            echo "4. Check for regressions in related functionality"
-            echo ""
-            echo '```bash'
-            echo "# Build and test locally:"
-            echo "xcodebuild build \\"
-            echo "  -scheme SortingHistory \\"
-            echo "  -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \\"
-            echo "  -derivedDataPath DerivedData \\"
-            echo "  CODE_SIGNING_ALLOWED=NO"
-            echo '```'
-            echo ""
+            if [ "$MODE" = "full" ] && [ -n "$ALPHA_VERSION" ]; then
+              echo "### How to Test"
+              echo "1. Install build version **1.1.0-alpha.${ALPHA_VERSION}** on device or simulator"
+              echo "2. Navigate to the area affected by issue #${ISSUE_NUM}"
+              echo "3. Verify the bug is fixed"
+              echo "4. Check for regressions in related functionality"
+              echo ""
+              echo '```bash'
+              echo "# Build and test locally:"
+              echo "xcodebuild build \\"
+              echo "  -scheme SortingHistory \\"
+              echo "  -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.2' \\"
+              echo "  -derivedDataPath DerivedData \\"
+              echo "  CODE_SIGNING_ALLOWED=NO"
+              echo '```'
+              echo ""
+            fi
+
             echo "### Rejection Instructions"
             echo "If this fix doesn't work, post a comment **on this PR** with:"
             echo '```'
@@ -315,11 +427,22 @@ jobs:
             echo '```'
             echo ""
             echo "---"
-            echo "*Created by [SDK bug fix pipeline](${RUN_URL}) (Opus 4.6 + QA gate).*"
+            if [ "$MODE" = "qa-only" ]; then
+              echo "*Created by [SDK bug fix pipeline -- QA-only re-run](${RUN_URL}).*"
+            else
+              echo "*Created by [SDK bug fix pipeline](${RUN_URL}) (retry loop + model escalation + QA gate).*"
+            fi
             echo "*All fixes require manual review and merge.*"
           } > "$PR_BODY_FILE"
 
-          PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE}"
+          # PR title
+          if [ "$MODE" = "qa-only" ]; then
+            PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE} [QA re-run]"
+          elif [ "$FIX_ATTEMPTS" -gt 1 ] 2>/dev/null; then
+            PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE} [attempt ${FIX_ATTEMPTS}]"
+          else
+            PR_TITLE="fix(issue ${ISSUE_NUM}): ${ISSUE_TITLE}"
+          fi
 
           gh pr create \
             --repo RaufGlasgow/Sorting-History \
@@ -356,12 +479,17 @@ jobs:
         run: |
           PR_URL="${{ steps.create-pr.outputs.pr_url }}"
           PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          MODE="${{ env.PIPELINE_MODE }}"
 
           {
-            echo "## SDK Fix PR Ready for Review: PR #${PR_NUMBER}"
+            if [ "$MODE" = "qa-only" ]; then
+              echo "## SDK Fix PR Ready for Review (QA-Only Re-Run): PR #${PR_NUMBER}"
+            else
+              echo "## SDK Fix PR Ready for Review: PR #${PR_NUMBER}"
+            fi
             echo ""
             echo "**Status:** Awaiting your review"
-            echo "**Branch:** \`${{ steps.branch.outputs.name }}\`"
+            echo "**Branch:** \`${{ steps.branch.outputs.name || steps.branch-qa.outputs.name }}\`"
             echo ""
             echo "### Next Steps"
             echo "1. Review the changes in [PR #${PR_NUMBER}](${PR_URL})"
@@ -382,10 +510,22 @@ jobs:
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --add-label "fix-generated,pr-created"
 
+      # PV2-4.4 AC3f: Remove escalation labels on qa-only success
+      - name: Remove escalation labels (qa-only success)
+        if: env.PIPELINE_MODE == 'qa-only' && steps.create-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "needs-handoff-review" 2>/dev/null || true
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "fix-failed" 2>/dev/null || true
+          echo "Removed escalation labels from issue #${{ env.ISSUE_NUM }}"
+
       # ── Failure path: label + comment ──
 
       - name: Handle failure - no changes
-        if: always() && (steps.fix.outputs.applied != 'true' || steps.changes.outputs.has_changes != 'true')
+        if: always() && (steps.fix.outputs.applied != 'true' || (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes != 'true'))
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -396,14 +536,27 @@ jobs:
           fi
 
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MODE="${{ env.PIPELINE_MODE }}"
 
           {
-            echo "## SDK Bug Fix Failed"
+            if [ "$MODE" = "qa-only" ]; then
+              echo "## QA-Only Re-Run Failed"
+            else
+              echo "## SDK Bug Fix Failed"
+            fi
             echo ""
-            echo "The SDK bug fix subagent could not generate a fix for this issue."
+            if [ "$MODE" = "qa-only" ]; then
+              echo "The QA-only re-run could not approve the existing fix for this issue."
+            else
+              echo "The SDK bug fix subagent could not generate a fix for this issue."
+            fi
             echo ""
             if [ "${{ steps.fix.outputs.applied }}" != "true" ]; then
-              echo "**Reason:** Subagent returned an error or could not resolve the issue."
+              if [ "$MODE" = "qa-only" ]; then
+                echo "**Reason:** QA review did not approve the fix, or an error occurred."
+              else
+                echo "**Reason:** Subagent returned an error or could not resolve the issue."
+              fi
             else
               echo "**Reason:** Subagent ran but produced no file changes."
             fi

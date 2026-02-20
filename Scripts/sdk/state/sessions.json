@@ -1,0 +1,22 @@
+{
+  "sessions": {
+    "cv-2026-02-15-001": {
+      "session_id": "sim-cv-2026-02-15-001",
+      "status": "paused",
+      "paused_at": "2026-02-15T17:56:18.216Z",
+      "resume_step": "fix_approved_findings"
+    },
+    "cv-2026-02-15-002": {
+      "session_id": "sim-cv-2026-02-15-002",
+      "status": "paused",
+      "paused_at": "2026-02-15T18:04:26.878Z",
+      "resume_step": "fix_approved_findings"
+    },
+    "cv-2026-02-15-004": {
+      "session_id": "sim-cv-2026-02-15-004",
+      "status": "paused",
+      "paused_at": "2026-02-15T18:12:48.391Z",
+      "resume_step": "fix_approved_findings"
+    }
+  }
+}

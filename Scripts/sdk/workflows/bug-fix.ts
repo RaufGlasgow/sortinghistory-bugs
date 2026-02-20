@@ -1,61 +1,49 @@
 /**
  * Story SDK-BF.1: Bug Fix Subagent Workflow
  * Story PV2-3.3: QA Gate Integration
+ * Story PV2-4.2: Retry Loop Integration
  *
- * Spawns an Opus 4.6 subagent with full tool suite to fix bugs in the
- * SortingHistory iOS game codebase. After the fix subagent completes,
- * captures the diff and runs a QA review gate before PR creation.
+ * Thin wrapper around runRetryLoop() (PV2-4.1) that:
+ *   1. Fetches issue context from GitHub
+ *   2. Parses triage classification from the triage comment (AC2, AC3)
+ *   3. Delegates fix -> compile -> QA -> quality gate cycle to runRetryLoop()
+ *   4. On success: stages changes with safeGitAdd(), returns result for PR creation (AC5)
+ *   5. On failure: commits handoff, posts issue comment, labels issue (AC6, AC7)
  *
- * Flow (PV2-3.3):
- *   1. Fetch issue context from GitHub
- *   2. Spawn fix subagent (Opus 4.6)
- *   3. Capture git diff in game repo
- *   4. Check compilation from self-report — skip QA if failed
- *   5. Determine QA profile from changed file extensions
- *   6. Run QA review (code, content, or both)
- *   7. Handle verdict:
- *      - approved -> quality gate -> PR creation
- *      - needs_revision -> escalate with handoff (interim until Epic 4 retry loop)
- *      - rejected -> escalate with handoff, no PR
- *   8. If QA subagent crashes -> still create PR with warning banner
- *   9. Return QA summary for YAML to include in PR body
- *
- * Hooks (buildBugFixHooksConfig):
- *   - ALLOWS writes to .swift files and Data JSON files
- *   - BLOCKS writes to .github/, Scripts/, .yml, .yaml, .ts, .js,
- *     Package.swift, .pbxproj, .xcworkspace
+ * The retry loop handles: model selection/escalation, fix subagent spawning,
+ * compilation checking, QA review with infra retry, quality gate, handoff
+ * generation, and attempt logging.
  *
  * State file: bug_fix workflow type, "bf-" prefix
  *
  * Exit codes:
  * - 0: Success (fix applied, QA approved, JSON summary returned)
- * - 1: Failure (subagent error, compilation failure, QA rejection, invalid response)
+ * - 1: Failure (all attempts exhausted, QA rejection, infrastructure error)
  */
 
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { MODELS, BUG_FIX_TOOLS, PATHS, ROUTING } from "../config.js";
-import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
-import { buildBugFixHooksConfig } from "../lib/hooks.js";
-import { extractJson } from "../lib/json-extract.js";
+import { ROUTING, LIMITS } from "../config.js";
 import { extractBase64Images, stripBase64Images } from "../lib/image-extract.js";
 import {
   createWorkflowState,
   updateWorkflowState,
-  type WorkflowState,
 } from "../lib/state.js";
-import { runQAReview, toVerdictEntry, type QAInput, type QAResult } from "../lib/qa-gate.js";
-import { determineQAProfile } from "../lib/model-router.js";
-import { runQualityGate } from "../lib/quality-gate.js";
 import {
-  generateHandoff,
   commitHandoff,
   postHandoffComment,
-  type HandoffInput,
 } from "../lib/handoff-generator.js";
-import { getMinEventCount, fileNameToCategory } from "../lib/categories.js";
+import { safeGitAdd } from "../lib/git-utils.js";
+import {
+  runRetryLoop,
+  type TriageContext,
+  type RetryLoopResult,
+} from "../lib/retry-loop.js";
+import { runQAReview, type QAInput, type QAResult } from "../lib/qa-gate.js";
+import { runQualityGate } from "../lib/quality-gate.js";
+import { selectModels, determineBugProfile, determineQAProfile } from "../lib/model-router.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -77,6 +65,8 @@ export interface BugFixInput {
   gameRepoPath: string;
   /** If true, skip actual subagent spawn and log what would happen */
   dryRun: boolean;
+  /** If true, skip fix generation and run QA on the existing fix branch (PV2-4.4) */
+  qaOnly?: boolean;
 }
 
 /** Result of the bug fix workflow */
@@ -89,7 +79,7 @@ export interface BugFixResult {
   issueNumber: number;
   /** Parsed fix summary from the subagent (null if parsing failed) */
   summary: BugFixSummary | null;
-  /** Subagent metrics */
+  /** Subagent metrics (aggregated from retry loop) */
   metrics: {
     model: string | null;
     inputTokens: number;
@@ -102,6 +92,8 @@ export interface BugFixResult {
   error: string | null;
   /** QA review summary for inclusion in PR body (PV2-3.3) */
   qaSummary: string | null;
+  /** Number of fix attempts used (PV2-4.2) */
+  fixAttemptsUsed: number;
 }
 
 // ------------------------------------------------------------------
@@ -109,7 +101,15 @@ export interface BugFixResult {
 // ------------------------------------------------------------------
 
 /** Fetch issue body and comments from the private repo */
-function fetchIssueContext(issueNumber: number): { title: string; body: string; triageComment: string | null; triageClassification: string | null } {
+function fetchIssueContext(issueNumber: number): {
+  title: string;
+  body: string;
+  triageComment: string | null;
+  triageClassification: string | null;
+  triageSeverity: string | null;
+  triageConfidence: number | null;
+  triageReasoning: string | null;
+} {
   const repo = ROUTING.PRIVATE_REPO;
   console.log("[bug-fix] Fetching issue #" + issueNumber + " from " + repo);
 
@@ -137,6 +137,9 @@ function fetchIssueContext(issueNumber: number): { title: string; body: string; 
   // Fetch comments to find triage/analysis comment
   let triageComment: string | null = null;
   let triageClassification: string | null = null;
+  let triageSeverity: string | null = null;
+  let triageConfidence: number | null = null;
+  let triageReasoning: string | null = null;
   try {
     const commentsJson = execSync(
       "gh issue view " + issueNumber + " --repo " + repo + " --json comments",
@@ -158,6 +161,25 @@ function fetchIssueContext(issueNumber: number): { title: string; body: string; 
           triageClassification = classMatch[1];
         }
 
+        // Try to extract severity
+        const sevMatch = comment.body.match(/\*\*Severity:\*\*\s*(\S+)/);
+        if (sevMatch) {
+          triageSeverity = sevMatch[1];
+        }
+
+        // Try to extract confidence
+        const confMatch = comment.body.match(/\*\*Confidence:\*\*\s*([\d.]+)/);
+        if (confMatch) {
+          triageConfidence = parseFloat(confMatch[1]);
+          if (isNaN(triageConfidence)) triageConfidence = null;
+        }
+
+        // Try to extract reasoning (everything after "**Reasoning:**" until next section)
+        const reasonMatch = comment.body.match(/\*\*Reasoning:\*\*\s*([\s\S]*?)(?=\n##|\n\*\*|$)/);
+        if (reasonMatch) {
+          triageReasoning = reasonMatch[1].trim();
+        }
+
         break;
       }
     }
@@ -166,6 +188,12 @@ function fetchIssueContext(issueNumber: number): { title: string; body: string; 
       console.log("[bug-fix] Found triage/analysis comment");
       if (triageClassification) {
         console.log("[bug-fix] Triage classification: " + triageClassification);
+      }
+      if (triageSeverity) {
+        console.log("[bug-fix] Triage severity: " + triageSeverity);
+      }
+      if (triageConfidence !== null) {
+        console.log("[bug-fix] Triage confidence: " + triageConfidence);
       }
     } else {
       console.log("[bug-fix] No triage/analysis comment found on issue");
@@ -180,231 +208,74 @@ function fetchIssueContext(issueNumber: number): { title: string; body: string; 
     body: parsed.body ?? "",
     triageComment,
     triageClassification,
+    triageSeverity,
+    triageConfidence,
+    triageReasoning,
   };
 }
 
 // ------------------------------------------------------------------
-// Diff Capture Helpers (PV2-3.3 AC1)
+// Triage Context Parser (PV2-4.2 AC2, AC3)
 // ------------------------------------------------------------------
 
 /**
- * Capture the git diff and changed file list from the game repo.
- * Uses execSync to run git commands in the game repo working tree.
+ * Build a TriageContext from the parsed issue context.
+ *
+ * AC2: Bug profile is determined from triage classification.
+ * AC3: If triage comment is not found, default to code_complex profile (safe fallback).
+ *
+ * The TriageContext is passed to runRetryLoop() which uses it for model selection
+ * via determineBugProfile() in model-router.ts.
  */
-function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string[] } {
-  console.log("[bug-fix] Capturing git diff in " + gameRepoPath);
-
-  let diff = "";
-  let changedFilesRaw = "";
-
-  try {
-    diff = execSync("git diff", {
-      cwd: gameRepoPath,
-      encoding: "utf-8",
-      timeout: 30_000,
-      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
-    });
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[bug-fix] WARNING: git diff failed: " + errMsg);
+function buildTriageContext(issueContext: {
+  triageClassification: string | null;
+  triageSeverity: string | null;
+  triageConfidence: number | null;
+  triageReasoning: string | null;
+}): TriageContext {
+  // AC3: Default to code_complex if no triage context (safe fallback — uses highest model)
+  if (!issueContext.triageClassification) {
+    console.log("[bug-fix] No triage classification found -- defaulting to code_complex profile");
+    return {
+      classification: "ui_bug", // maps to code_complex when file extensions unknown
+      confidence: 0.5, // low confidence = complex profile for content bugs
+      severity: "medium",
+      reasoning: "No triage analysis available -- using safe default",
+      fileExtensions: [".swift", ".json"], // multiple extensions = code_complex
+    };
   }
 
-  try {
-    changedFilesRaw = execSync("git diff --name-only", {
-      cwd: gameRepoPath,
-      encoding: "utf-8",
-      timeout: 30_000,
-    }).trim();
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[bug-fix] WARNING: git diff --name-only failed: " + errMsg);
-  }
-
-  // Also check for untracked files
-  let untrackedRaw = "";
-  try {
-    untrackedRaw = execSync("git ls-files --others --exclude-standard", {
-      cwd: gameRepoPath,
-      encoding: "utf-8",
-      timeout: 30_000,
-    }).trim();
-  } catch {
-    // Non-fatal
-  }
-
-  // Combine tracked changes and untracked files
-  const allFiles = [changedFilesRaw, untrackedRaw]
-    .filter(Boolean)
-    .join("\n")
-    .split("\n")
-    .filter(Boolean);
-
-  // For untracked files, capture their content as diff too
-  if (untrackedRaw) {
-    for (const untrackedFile of untrackedRaw.split("\n").filter(Boolean)) {
-      try {
-        const fileDiff = execSync("git diff --no-index /dev/null " + JSON.stringify(untrackedFile), {
-          cwd: gameRepoPath,
-          encoding: "utf-8",
-          timeout: 10_000,
-          maxBuffer: 5 * 1024 * 1024,
-        });
-        diff += "\n" + fileDiff;
-      } catch (err: unknown) {
-        // git diff --no-index returns exit code 1 when differences found (normal)
-        // The diff output is on stdout, accessible via the error object
-        const stdout = (err as any)?.stdout;
-        if (typeof stdout === "string" && stdout.length > 0) {
-          diff += "\n" + stdout;
-        }
-      }
-    }
-  }
-
-  console.log("[bug-fix] Diff captured: " + diff.split("\n").length + " lines, " + allFiles.length + " files changed");
-  console.log("[bug-fix] Changed files: " + allFiles.join(", "));
-
-  return { diff, changedFiles: allFiles };
+  return {
+    classification: issueContext.triageClassification,
+    confidence: issueContext.triageConfidence ?? 0.7,
+    severity: issueContext.triageSeverity ?? "medium",
+    reasoning: issueContext.triageReasoning ?? "Triage classification available but no detailed reasoning",
+    fileExtensions: inferFileExtensions(issueContext.triageClassification),
+  };
 }
 
 /**
- * Extract file extensions from a list of file paths.
- * Returns the extensions including the leading dot.
+ * Infer likely file extensions from triage classification.
+ * Used for initial model selection before the actual diff is captured.
  */
-function extractFileExtensions(changedFiles: string[]): string[] {
-  const extensions: string[] = [];
-  for (const file of changedFiles) {
-    const ext = path.extname(file);
-    if (ext) {
-      extensions.push(ext);
-    }
+function inferFileExtensions(classification: string): string[] {
+  switch (classification) {
+    case "content_error":
+      return [".json"];
+    case "translation_error":
+      return [".json", ".strings"];
+    case "ui_bug":
+      return [".swift"];
+    case "gameplay_bug":
+      return [".swift"];
+    default:
+      // Unknown classification -- assume mixed (code_complex)
+      return [".swift", ".json"];
   }
-  return extensions;
 }
 
 // ------------------------------------------------------------------
-// QA Summary Formatter (PV2-3.3 AC10)
-// ------------------------------------------------------------------
-
-/**
- * Format a QA review result into a human-readable markdown summary
- * suitable for inclusion in PR bodies and issue comments.
- */
-function formatQASummary(qaResult: QAResult, qaProfile: string): string {
-  const parts: string[] = [];
-
-  parts.push("## QA Review");
-  parts.push("");
-
-  if (!qaResult.success || !qaResult.verdict) {
-    parts.push("**Status:** QA REVIEW INCOMPLETE");
-    parts.push("**Error:** " + (qaResult.error ?? "Unknown error"));
-    parts.push("");
-    parts.push("> **Warning:** The QA review could not be completed. Manual review is required.");
-    return parts.join("\n");
-  }
-
-  const verdict = qaResult.verdict;
-  const verdictEmoji = verdict.verdict === "approved" ? "APPROVED" :
-    verdict.verdict === "needs_revision" ? "NEEDS REVISION" : "REJECTED";
-
-  parts.push("**Verdict:** " + verdictEmoji);
-  parts.push("**Risk Level:** " + verdict.risk_level);
-  parts.push("**Profile:** " + qaProfile);
-  parts.push("");
-
-  if (verdict.findings.length > 0) {
-    parts.push("### Findings");
-    parts.push("");
-    for (const finding of verdict.findings) {
-      parts.push("- **[" + finding.criterion + "/" + finding.severity + "]** `" + finding.file + "`: " + finding.description);
-    }
-    parts.push("");
-  }
-
-  parts.push("### Summary");
-  parts.push("");
-  parts.push(verdict.summary);
-
-  if (qaResult.metrics) {
-    parts.push("");
-    parts.push("<details>");
-    parts.push("<summary>QA Review Metrics</summary>");
-    parts.push("");
-    parts.push("- **Model:** " + qaResult.metrics.model);
-    parts.push("- **Input tokens:** " + qaResult.metrics.inputTokens);
-    parts.push("- **Output tokens:** " + qaResult.metrics.outputTokens);
-    parts.push("- **Duration:** " + qaResult.metrics.durationMs + "ms");
-    parts.push("- **Cost:** $" + qaResult.metrics.costUsd.toFixed(4));
-    parts.push("");
-    parts.push("</details>");
-  }
-
-  return parts.join("\n");
-}
-
-/**
- * Format a QA failure warning banner for PR bodies when QA infrastructure fails.
- * (PV2-3.3 AC8)
- */
-function formatQAFailureWarning(error: string): string {
-  const parts: string[] = [];
-  parts.push("## QA Review");
-  parts.push("");
-  parts.push("> **QA REVIEW INCOMPLETE:** " + error + ". Manual review required.");
-  parts.push("");
-  parts.push("The QA review subagent could not complete its analysis. This does NOT mean the fix is bad --");
-  parts.push("it means QA infrastructure had an issue. Please review the changes manually before merging.");
-  return parts.join("\n");
-}
-
-// ------------------------------------------------------------------
-// Event Count Context Builder (for content QA)
-// ------------------------------------------------------------------
-
-/**
- * Build event count context string for content QA review.
- * For each changed JSON file in Data/Events/, reports the current event count
- * and the minimum required for that category.
- */
-function buildEventCountContext(changedFiles: string[], gameRepoPath: string): string | undefined {
-  const contextLines: string[] = [];
-
-  for (const file of changedFiles) {
-    if (!file.endsWith(".json")) continue;
-    if (!file.includes("Data/Events/") && !file.includes("Data/events/")) continue;
-
-    const baseName = path.basename(file, ".json");
-    const category = fileNameToCategory(baseName);
-    if (!category) continue;
-
-    const minCount = getMinEventCount(category);
-    const fullPath = path.join(gameRepoPath, file);
-
-    let eventCount = 0;
-    try {
-      const content = fs.readFileSync(fullPath, "utf-8");
-      const parsed = JSON.parse(content) as { events?: unknown[] };
-      if (Array.isArray(parsed.events)) {
-        eventCount = parsed.events.length;
-      }
-    } catch {
-      // File might not exist yet or be malformed
-      eventCount = -1;
-    }
-
-    if (eventCount >= 0) {
-      contextLines.push(baseName + ".json: " + eventCount + " events (minimum: " + minCount + ")");
-    } else {
-      contextLines.push(baseName + ".json: could not read event count (minimum: " + minCount + ")");
-    }
-  }
-
-  return contextLines.length > 0 ? contextLines.join("\n") : undefined;
-}
-
-// ------------------------------------------------------------------
-// Label Helper (PV2-3.3 AC6, AC7)
+// Label Helper (PV2-4.2 AC6, AC7)
 // ------------------------------------------------------------------
 
 /**
@@ -426,32 +297,363 @@ function addHandoffLabel(issueNumber: number): void {
 }
 
 // ------------------------------------------------------------------
+// QA-Only Mode (PV2-4.4)
+// ------------------------------------------------------------------
+
+/**
+ * Run QA review on an existing fix branch without generating a new fix.
+ *
+ * PV2-4.4 AC3/AC8: Captures diff from the existing fix branch vs main,
+ * validates it is non-empty, then runs QA review + quality gate.
+ * Does NOT call runRetryLoop() or spawn any fix subagent.
+ *
+ * Returns a BugFixResult that the caller (orchestrator + YAML) can use
+ * to create a PR or label the issue based on the QA verdict.
+ */
+async function runQAOnly(input: BugFixInput): Promise<BugFixResult> {
+  const { issueNumber, gameRepoPath } = input;
+
+  console.log("=== PV2-4.4: QA-Only Mode ===");
+  console.log("Issue: #" + issueNumber);
+  console.log("Game repo: " + gameRepoPath);
+  console.log("");
+
+  // Step 1: Create workflow state
+  const state = await createWorkflowState(
+    "bug_fix",
+    "dispatch",
+    undefined,
+    issueNumber,
+  );
+  console.log("[qa-only] Workflow created: " + state.workflow_id);
+
+  // Step 2: Fetch issue context
+  let issueContext: ReturnType<typeof fetchIssueContext>;
+  try {
+    issueContext = fetchIssueContext(issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[qa-only] FATAL: " + errMsg);
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: "Could not fetch issue: " + errMsg,
+    });
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: null,
+      error: "Could not fetch issue: " + errMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
+    };
+  }
+
+  // Step 3: Capture diff from the existing fix branch vs main
+  // AC3b: Use git diff main...HEAD for unified diff format compatible with QA
+  console.log("[qa-only] Capturing diff from fix branch vs main...");
+
+  let diff: string;
+  let changedFiles: string[];
+  try {
+    diff = execSync("git diff main...HEAD", {
+      cwd: gameRepoPath,
+      encoding: "utf-8",
+      timeout: 30_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const changedFilesRaw = execSync("git diff main...HEAD --name-only", {
+      cwd: gameRepoPath,
+      encoding: "utf-8",
+      timeout: 30_000,
+    }).trim();
+
+    changedFiles = changedFilesRaw ? changedFilesRaw.split("\n").filter(Boolean) : [];
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[qa-only] FATAL: Could not capture diff: " + errMsg);
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: "Could not capture diff from fix branch: " + errMsg,
+    });
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: null,
+      error: "Could not capture diff from fix branch: " + errMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
+    };
+  }
+
+  // AC3c: Empty diff guard
+  if (!diff.trim() || changedFiles.length === 0) {
+    const emptyMsg = "No changes found on fix branch relative to main. The fix may have already been merged.";
+    console.error("[qa-only] FATAL: " + emptyMsg);
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: emptyMsg,
+    });
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: null,
+      error: emptyMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
+    };
+  }
+
+  console.log("[qa-only] Diff captured: " + diff.split("\n").length + " lines, " + changedFiles.length + " files");
+  console.log("[qa-only] Changed files: " + changedFiles.join(", "));
+
+  // Step 4: Parse triage context for model selection
+  const triageContext = buildTriageContext(issueContext);
+  const bugProfile = determineBugProfile({
+    classification: triageContext.classification,
+    confidence: triageContext.confidence,
+    fileExtensions: triageContext.fileExtensions,
+  });
+
+  // Use attempt 1 model selection for QA-only (no escalation needed)
+  const fileExtensions = changedFiles
+    .map(f => { const d = f.lastIndexOf("."); return d > 0 ? f.slice(d) : ""; })
+    .filter(Boolean);
+  const modelSelection = selectModels(bugProfile, 1, fileExtensions);
+  const qaProfile = determineQAProfile(fileExtensions);
+
+  console.log("[qa-only] QA model: " + modelSelection.qaModel);
+  console.log("[qa-only] QA profile: " + qaProfile);
+  console.log("");
+
+  // Strip base64 images from issue body
+  const cleanBody = stripBase64Images(issueContext.body);
+  const cleanTriageComment = issueContext.triageComment
+    ? stripBase64Images(issueContext.triageComment)
+    : null;
+
+  // Step 5: Run QA review (AC3d)
+  console.log("[qa-only] Running QA review...");
+  await updateWorkflowState(state.workflow_id, { status: "re_verifying" });
+
+  const qaInput: QAInput = {
+    bugTitle: issueContext.title,
+    bugBody: cleanBody,
+    triageClassification: triageContext.classification,
+    triageComment: cleanTriageComment,
+    diff,
+    changedFiles,
+    gameRepoPath,
+    qaModel: modelSelection.qaModel,
+    qaMaxTurns: modelSelection.qaMaxTurns,
+    qaProfile,
+    attemptNumber: 1,
+    images: extractBase64Images(issueContext.body),
+  };
+
+  let qaResult: QAResult;
+  try {
+    qaResult = await runQAReview(qaInput);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[qa-only] QA review threw exception: " + errMsg);
+    qaResult = {
+      success: false,
+      verdict: null,
+      metrics: null,
+      error: "QA review exception: " + errMsg,
+    };
+  }
+
+  // Step 6: Run quality gate (AC3e)
+  console.log("[qa-only] Running quality gate...");
+  const qualityGateResult = runQualityGate(diff, changedFiles);
+
+  if (!qualityGateResult.passed) {
+    console.log("[qa-only] Quality gate FAILED:");
+    for (const failure of qualityGateResult.failures) {
+      console.log("  [" + failure.check + "] " + failure.description);
+    }
+  } else {
+    console.log("[qa-only] Quality gate PASSED");
+  }
+
+  // Step 7: Build QA summary for PR body
+  let qaSummary: string | null = null;
+  if (qaResult.success && qaResult.verdict) {
+    const verdictLabel = qaResult.verdict.verdict === "approved" ? "APPROVED" :
+      qaResult.verdict.verdict === "needs_revision" ? "NEEDS REVISION" : "REJECTED";
+
+    const parts: string[] = [];
+    parts.push("## QA Review (QA-Only Re-Run)");
+    parts.push("");
+    parts.push("**Verdict:** " + verdictLabel);
+    parts.push("**Risk Level:** " + qaResult.verdict.risk_level);
+    parts.push("**Profile:** " + qaProfile);
+    parts.push("");
+
+    if (qaResult.verdict.findings.length > 0) {
+      parts.push("### Findings");
+      parts.push("");
+      for (const finding of qaResult.verdict.findings) {
+        parts.push("- **[" + finding.criterion + "/" + finding.severity + "]** `" + finding.file + "`: " + finding.description);
+      }
+      parts.push("");
+    }
+
+    parts.push("### Summary");
+    parts.push("");
+    parts.push(qaResult.verdict.summary);
+
+    if (qaResult.metrics) {
+      parts.push("");
+      parts.push("<details>");
+      parts.push("<summary>QA Review Metrics</summary>");
+      parts.push("");
+      parts.push("- **Model:** " + qaResult.metrics.model);
+      parts.push("- **Input tokens:** " + qaResult.metrics.inputTokens);
+      parts.push("- **Output tokens:** " + qaResult.metrics.outputTokens);
+      parts.push("- **Duration:** " + qaResult.metrics.durationMs + "ms");
+      parts.push("- **Cost:** $" + qaResult.metrics.costUsd.toFixed(4));
+      parts.push("");
+      parts.push("</details>");
+    }
+
+    if (!qualityGateResult.passed) {
+      parts.push("");
+      parts.push("### Quality Gate");
+      parts.push("");
+      parts.push("**Status:** FAILED");
+      for (const failure of qualityGateResult.failures) {
+        parts.push("- **[" + failure.check + "]** " + failure.description);
+      }
+    }
+
+    qaSummary = parts.join("\n");
+  } else if (!qaResult.success) {
+    qaSummary = "## QA Review (QA-Only Re-Run)\n\n" +
+      "> **QA REVIEW INCOMPLETE:** " + (qaResult.error ?? "Unknown QA error") + ". Manual review required.\n\n" +
+      "The QA review subagent could not complete its analysis. Please review the changes manually before merging.";
+  }
+
+  // Step 8: Determine success/failure
+  const qaApproved = qaResult.success && qaResult.verdict?.verdict === "approved";
+  const overallSuccess = qaApproved && qualityGateResult.passed;
+
+  if (overallSuccess) {
+    console.log("");
+    console.log("[qa-only] QA APPROVED + Quality Gate PASSED");
+
+    await updateWorkflowState(state.workflow_id, {
+      status: "complete",
+      error: null,
+    });
+
+    console.log("");
+    console.log("=== QA-Only Re-Run COMPLETE -- Issue #" + issueNumber + " ===");
+
+    return {
+      success: true,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: qaResult.metrics ? {
+        model: qaResult.metrics.model,
+        inputTokens: qaResult.metrics.inputTokens,
+        outputTokens: qaResult.metrics.outputTokens,
+        durationMs: qaResult.metrics.durationMs,
+        costUsd: qaResult.metrics.costUsd,
+        toolsUsed: [],
+      } : null,
+      error: null,
+      qaSummary,
+      fixAttemptsUsed: 0,
+    };
+  } else {
+    // QA rejected or needs revision or quality gate failed
+    const failureReason = !qaResult.success
+      ? "QA review could not complete: " + (qaResult.error ?? "unknown")
+      : qaResult.verdict?.verdict === "rejected"
+        ? "QA rejected the fix"
+        : qaResult.verdict?.verdict === "needs_revision"
+          ? "QA requires revision: " + (qaResult.verdict?.summary ?? "")
+          : !qualityGateResult.passed
+            ? "Quality gate failed: " + qualityGateResult.failures.map(f => f.check).join(", ")
+            : "Unknown failure";
+
+    console.log("");
+    console.log("[qa-only] FAILED: " + failureReason);
+
+    // Post failure findings on the issue (AC3g)
+    postFailureComment(issueNumber, "QA-Only Re-Run: " + failureReason);
+
+    // Add label (AC3g)
+    addHandoffLabel(issueNumber);
+
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: failureReason,
+    });
+
+    console.log("");
+    console.log("=== QA-Only Re-Run FAILED -- Issue #" + issueNumber + " ===");
+
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: qaResult.metrics ? {
+        model: qaResult.metrics.model,
+        inputTokens: qaResult.metrics.inputTokens,
+        outputTokens: qaResult.metrics.outputTokens,
+        durationMs: qaResult.metrics.durationMs,
+        costUsd: qaResult.metrics.costUsd,
+        toolsUsed: [],
+      } : null,
+      error: failureReason,
+      qaSummary,
+      fixAttemptsUsed: 0,
+    };
+  }
+}
+
+// ------------------------------------------------------------------
 // Main Workflow
 // ------------------------------------------------------------------
 
 /**
- * Run the bug fix workflow with integrated QA gate (PV2-3.3).
+ * Run the bug fix workflow with retry loop (PV2-4.2).
  *
- * 1. Fetch issue body + triage analysis from GitHub
- * 2. Load system prompt from prompts/bug-fixer.md
- * 3. Spawn Opus 4.6 subagent with BUG_FIX_TOOLS + buildBugFixHooksConfig
- * 4. Parse structured JSON summary from response
- * 5. Capture git diff + changed files
- * 6. Check compilation from self-report -- skip QA if failed
- * 7. Determine QA profile from changed file extensions
- * 8. Run QA review with diff, changed files, bug context
- * 9. Handle verdict: approved -> quality gate -> PR, needs_revision/rejected -> escalate
- * 10. If QA crashes -> still create PR with warning banner
- * 11. Return QA summary for YAML to include in PR body
+ * PV2-4.4: If qaOnly is true, delegates to runQAOnly() which skips
+ * fix generation entirely and runs QA on the existing fix branch.
+ *
+ * 1. Create workflow state
+ * 2. Fetch issue body + triage analysis from GitHub
+ * 3. Parse triage context for model selection (AC2, AC3)
+ * 4. Extract screenshots for multimodal fix subagent (AC4)
+ * 5. Delegate to runRetryLoop() for fix -> compile -> QA -> quality gate cycle
+ * 6. On success: stage changes with safeGitAdd(), return result for PR creation (AC5)
+ * 7. On failure: commit handoff, post comment, label issue (AC6, AC7)
  */
 export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
   const { issueNumber, gameRepoPath, dryRun } = input;
 
-  console.log("=== SDK-BF.1 + PV2-3.3: Bug Fix Subagent with QA Gate ===");
+  // PV2-4.4 AC8: QA-only mode bypasses the entire retry loop
+  if (input.qaOnly) {
+    return runQAOnly(input);
+  }
+
+  console.log("=== PV2-4.2: Bug Fix with Retry Loop ===");
   console.log("Issue: #" + issueNumber);
   console.log("Game repo: " + gameRepoPath);
-  console.log("Model: " + MODELS.COMPLEX_BUG);
-  console.log("Tools: [" + BUG_FIX_TOOLS.join(", ") + "]");
+  console.log("Max attempts: " + LIMITS.MAX_FIX_ATTEMPTS);
   console.log("Dry run: " + dryRun);
   console.log("");
 
@@ -470,7 +672,7 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
   // --------------------------------------------------
   // Step 2: Fetch issue context from GitHub
   // --------------------------------------------------
-  let issueContext: { title: string; body: string; triageComment: string | null; triageClassification: string | null };
+  let issueContext: ReturnType<typeof fetchIssueContext>;
   try {
     issueContext = fetchIssueContext(issueNumber);
   } catch (err: unknown) {
@@ -490,48 +692,27 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
       metrics: null,
       error: "Could not fetch issue: " + errMsg,
       qaSummary: null,
+      fixAttemptsUsed: 0,
     };
   }
 
   // --------------------------------------------------
-  // Step 3: Load system prompt
+  // Step 3: Parse triage context (AC2, AC3)
   // --------------------------------------------------
-  const repoRoot = process.env.GITHUB_WORKSPACE
-    ?? process.env.SDK_REPO_ROOT
-    ?? process.cwd();
-
-  const promptPath = path.join(repoRoot, "Scripts", "sdk", "prompts", "bug-fixer.md");
-  let systemPrompt: string;
-  try {
-    systemPrompt = fs.readFileSync(promptPath, "utf-8");
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[bug-fix] Could not read system prompt at " + promptPath);
-    console.error("Error: " + errMsg);
-
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
-      error: "Could not read system prompt: " + errMsg,
-    });
-
-    return {
-      success: false,
-      workflowId: state.workflow_id,
-      issueNumber,
-      summary: null,
-      metrics: null,
-      error: "Could not read system prompt: " + errMsg,
-      qaSummary: null,
-    };
-  }
+  const triageContext = buildTriageContext(issueContext);
+  console.log("[bug-fix] Triage context:");
+  console.log("  Classification: " + triageContext.classification);
+  console.log("  Confidence: " + triageContext.confidence);
+  console.log("  Severity: " + triageContext.severity);
+  console.log("  File extensions: " + triageContext.fileExtensions.join(", "));
+  console.log("");
 
   // --------------------------------------------------
-  // Step 4: Build user prompt with issue context
+  // Step 4: Extract screenshots (AC4 — multimodal content blocks)
   // --------------------------------------------------
-  // Extract base64 images from the issue body for multimodal content blocks
-  const images = extractBase64Images(issueContext.body);
-  if (images.length > 0) {
-    console.log("[bug-fix] Extracted " + images.length + " screenshot(s) from issue body");
+  const screenshots = extractBase64Images(issueContext.body);
+  if (screenshots.length > 0) {
+    console.log("[bug-fix] Extracted " + screenshots.length + " screenshot(s) from issue body");
   }
 
   // Strip base64 images from text to avoid sending raw data as prompt noise
@@ -540,41 +721,16 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
     ? stripBase64Images(issueContext.triageComment)
     : null;
 
-  const contextParts = [
-    "Fix the following bug in the SortingHistory iOS game.",
-    "",
-    "## Bug Report (Issue #" + issueNumber + ")",
-    "**Title:** " + issueContext.title,
-    "",
-    cleanBody,
-  ];
-
-  if (cleanTriageComment) {
-    contextParts.push("");
-    contextParts.push("## Triage Analysis");
-    contextParts.push(cleanTriageComment);
-  }
-
-  contextParts.push("");
-  contextParts.push("## Instructions");
-  contextParts.push("1. Explore the codebase to understand the relevant code");
-  contextParts.push("2. Identify the root cause of the bug");
-  contextParts.push("3. Apply a targeted fix using Edit (not full file rewrites)");
-  contextParts.push("4. Verify compilation passes with xcodebuild");
-  contextParts.push("5. Output your JSON summary");
-
-  const userPrompt = contextParts.join("\n");
-
   // --------------------------------------------------
   // Step 5: Dry run check
   // --------------------------------------------------
   if (dryRun) {
-    console.log("[bug-fix] DRY RUN: Would spawn Opus 4.6 subagent with:");
-    console.log("  Model: " + MODELS.COMPLEX_BUG);
-    console.log("  Tools: [" + BUG_FIX_TOOLS.join(", ") + "]");
-    console.log("  Prompt length: " + userPrompt.length + " chars");
-    console.log("  System prompt length: " + systemPrompt.length + " chars");
-    console.log("  cwd: " + gameRepoPath);
+    console.log("[bug-fix] DRY RUN: Would call runRetryLoop() with:");
+    console.log("  Issue: #" + issueNumber);
+    console.log("  Max attempts: " + LIMITS.MAX_FIX_ATTEMPTS);
+    console.log("  Screenshots: " + screenshots.length);
+    console.log("  Triage: " + triageContext.classification + " (confidence=" + triageContext.confidence + ")");
+    console.log("  Game repo: " + gameRepoPath);
     console.log("");
 
     await updateWorkflowState(state.workflow_id, {
@@ -590,545 +746,295 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
       metrics: null,
       error: null,
       qaSummary: null,
+      fixAttemptsUsed: 0,
     };
   }
 
   // --------------------------------------------------
-  // Step 6: Spawn Opus 4.6 subagent
+  // Step 6: Run retry loop (PV2-4.1)
   // --------------------------------------------------
-  console.log("[bug-fix] Spawning Opus 4.6 subagent...");
+  console.log("[bug-fix] Delegating to retry loop...");
   await updateWorkflowState(state.workflow_id, {
     status: "fixing",
   });
 
-  const hooks = buildBugFixHooksConfig(gameRepoPath);
-
-  const result: SubagentResult = await spawnSubagent({
-    model: MODELS.COMPLEX_BUG,
-    tools: [...BUG_FIX_TOOLS],
-    prompt: userPrompt,
-    systemPrompt,
-    hooks,
-    cwd: gameRepoPath,
-    maxTurns: 100,
-    images,
-  });
-
-  // --------------------------------------------------
-  // Step 7: Log metrics
-  // --------------------------------------------------
-  console.log("");
-  console.log("[bug-fix] Subagent complete");
-  console.log("  Model: " + (result.model ?? MODELS.COMPLEX_BUG));
-  console.log("  Session ID: " + result.sessionId);
-  console.log("  Input tokens: " + result.inputTokens);
-  console.log("  Output tokens: " + result.outputTokens);
-  console.log("  Duration: " + result.durationMs + "ms");
-  console.log("  Cost: $" + result.costUsd.toFixed(4));
-  console.log("  Tools used: [" + result.toolsUsed.join(", ") + "]");
-  console.log("  Used write tools: " + result.usedWriteTools);
-  console.log("");
-
-  const metrics = {
-    model: result.model ?? MODELS.COMPLEX_BUG,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-    durationMs: result.durationMs,
-    costUsd: result.costUsd,
-    toolsUsed: result.toolsUsed,
-  };
-
-  if (!result.success) {
-    console.error("[bug-fix] Subagent failed: " + result.error);
+  let retryResult: RetryLoopResult;
+  try {
+    retryResult = await runRetryLoop({
+      issueNumber,
+      issueTitle: issueContext.title,
+      issueBody: cleanBody,
+      triage: triageContext,
+      screenshots,
+      gameRepoPath,
+      triageComment: cleanTriageComment,
+    });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[bug-fix] FATAL: Retry loop threw exception: " + errMsg);
 
     await updateWorkflowState(state.workflow_id, {
       status: "escalated",
-      error: "Subagent failed: " + (result.error ?? "unknown error"),
+      error: "Retry loop exception: " + errMsg,
     });
+
+    // AC7: Post failure comment on issue (no silent failures)
+    postFailureComment(issueNumber, "Retry loop crashed: " + errMsg);
+
+    // AC6, AC7: Label issue on exception path
+    addHandoffLabel(issueNumber);
 
     return {
       success: false,
       workflowId: state.workflow_id,
       issueNumber,
       summary: null,
-      metrics,
-      error: "Subagent failed: " + (result.error ?? "unknown error"),
-      qaSummary: null,
-    };
-  }
-
-  // --------------------------------------------------
-  // Step 8: Parse JSON summary from response
-  // --------------------------------------------------
-  let summary: BugFixSummary | null = null;
-
-  if (result.responseText) {
-    try {
-      const jsonText = extractJson(result.responseText, "files_modified");
-      const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-
-      if (
-        Array.isArray(parsed.files_modified) &&
-        typeof parsed.fix_summary === "string" &&
-        typeof parsed.compilation_result === "string" &&
-        typeof parsed.confidence === "string"
-      ) {
-        summary = {
-          files_modified: parsed.files_modified as string[],
-          fix_summary: parsed.fix_summary,
-          compilation_result: parsed.compilation_result,
-          confidence: parsed.confidence as "high" | "medium" | "low",
-        };
-        console.log("[bug-fix] Parsed fix summary:");
-        console.log("  Files modified: " + summary.files_modified.length);
-        console.log("  Summary: " + summary.fix_summary);
-        console.log("  Compilation: " + summary.compilation_result);
-        console.log("  Confidence: " + summary.confidence);
-      } else {
-        console.log("[bug-fix] WARNING: Response JSON missing expected fields");
-        console.log("  Keys found: " + Object.keys(parsed).join(", "));
-      }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.log("[bug-fix] WARNING: Could not parse JSON from response: " + errMsg);
-    }
-  } else {
-    console.log("[bug-fix] WARNING: No response text from subagent");
-  }
-
-  // --------------------------------------------------
-  // Step 9: Capture git diff (PV2-3.3 AC1)
-  // --------------------------------------------------
-  const { diff, changedFiles } = captureDiff(gameRepoPath);
-
-  if (changedFiles.length === 0) {
-    console.log("[bug-fix] No changes detected in game repo -- escalating");
-
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
-      fix_attempts: 1,
-      fix_results: summary ? [summary] : [],
-      error: "Fix subagent produced no file changes",
-    });
-
-    return {
-      success: false,
-      workflowId: state.workflow_id,
-      issueNumber,
-      summary,
-      metrics,
-      error: "Fix subagent produced no file changes",
-      qaSummary: null,
-    };
-  }
-
-  // --------------------------------------------------
-  // Step 10: Check compilation from self-report (PV2-3.3 AC2)
-  // --------------------------------------------------
-  const compilationFailed = summary?.compilation_result !== "success";
-
-  if (compilationFailed) {
-    console.log("[bug-fix] Compilation self-report: " + (summary?.compilation_result ?? "unknown") + " -- skipping QA, escalating");
-
-    // Log attempt
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
-      fix_attempts: 1,
-      fix_results: summary ? [summary] : [],
-      attempt_log: [{
-        attempt_number: 1,
-        model: MODELS.COMPLEX_BUG,
-        approach: summary?.fix_summary ?? "unknown",
-        result: "compilation_error",
-        error_output: "Compilation self-report: " + (summary?.compilation_result ?? "unknown"),
-        timestamp: new Date().toISOString(),
-      }],
-      error: "Compilation " + (summary?.compilation_result ?? "unknown") + " -- manual review required",
-    });
-
-    return {
-      success: false,
-      workflowId: state.workflow_id,
-      issueNumber,
-      summary,
-      metrics,
-      error: "Compilation " + (summary?.compilation_result ?? "unknown") + " -- manual review required",
-      qaSummary: null,
-    };
-  }
-
-  // --------------------------------------------------
-  // Step 11: Determine QA profile (PV2-3.3 AC8 prereq)
-  // --------------------------------------------------
-  const fileExtensions = extractFileExtensions(changedFiles);
-  const qaProfile = determineQAProfile(fileExtensions);
-
-  console.log("");
-  console.log("[bug-fix] QA profile: " + qaProfile);
-  console.log("[bug-fix] File extensions: " + fileExtensions.join(", "));
-  console.log("");
-
-  // Use Haiku for QA as default (cheapest), upgrade for complex diffs
-  // This matches the model-router pattern: QA model <= fix model tier
-  const qaModel = changedFiles.length > 3 ? MODELS.FIXER : MODELS.VERIFIER;
-  const qaMaxTurns = changedFiles.length > 3 ? 8 : 5;
-
-  // Build event count context for content QA
-  const eventCountContext = buildEventCountContext(changedFiles, gameRepoPath);
-
-  // --------------------------------------------------
-  // Step 12: Run QA review (PV2-3.3 AC3)
-  // --------------------------------------------------
-  console.log("[bug-fix] Running QA review...");
-
-  const qaInput: QAInput = {
-    bugTitle: issueContext.title,
-    bugBody: cleanBody,
-    triageClassification: issueContext.triageClassification ?? "unknown",
-    triageComment: cleanTriageComment,
-    diff,
-    changedFiles,
-    gameRepoPath,
-    qaModel,
-    qaMaxTurns,
-    qaProfile,
-    attemptNumber: 1,
-    images,
-    eventCountContext,
-  };
-
-  let qaResult: QAResult;
-  try {
-    qaResult = await runQAReview(qaInput);
-  } catch (err: unknown) {
-    // QA subagent crashed at infrastructure level (PV2-3.3 AC8)
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[bug-fix] QA review crashed: " + errMsg);
-    qaResult = {
-      success: false,
-      verdict: null,
       metrics: null,
-      error: "QA review crashed: " + errMsg,
+      error: "Retry loop exception: " + errMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
     };
   }
 
   // --------------------------------------------------
-  // Step 13: Log QA results to workflow state (PV2-3.3 AC4)
+  // Step 7: Aggregate metrics from retry loop
   // --------------------------------------------------
-  const qaResultsForState = qaResult.success && qaResult.verdict
-    ? [toVerdictEntry(qaResult.verdict, 1)]
-    : [];
+  const metrics = aggregateMetrics(retryResult);
+
+  // Convert retry loop's FixSummary to BugFixSummary for backward compatibility
+  const summary: BugFixSummary | null = retryResult.fixSummary
+    ? {
+        files_modified: retryResult.fixSummary.files_modified,
+        fix_summary: retryResult.fixSummary.fix_summary,
+        compilation_result: retryResult.fixSummary.compilation_result,
+        confidence: retryResult.fixSummary.confidence,
+      }
+    : null;
 
   // --------------------------------------------------
-  // Step 14: Handle QA verdict (PV2-3.3 AC5, AC6, AC7, AC8)
+  // Step 8: Handle result
   // --------------------------------------------------
+  if (retryResult.success) {
+    return await handleSuccess(
+      state.workflow_id,
+      issueNumber,
+      gameRepoPath,
+      retryResult,
+      summary,
+      metrics,
+    );
+  } else {
+    return await handleFailure(
+      state.workflow_id,
+      issueNumber,
+      gameRepoPath,
+      retryResult,
+      summary,
+      metrics,
+    );
+  }
+}
 
-  // --- Case: QA infrastructure failure (AC8) ---
-  if (!qaResult.success) {
-    console.log("[bug-fix] QA review did not complete -- proceeding with PR and warning banner");
+// ------------------------------------------------------------------
+// Success Handler (AC5)
+// ------------------------------------------------------------------
 
-    let qaSummary = formatQAFailureWarning(qaResult.error ?? "Unknown QA error");
+/**
+ * Handle a successful retry loop result.
+ *
+ * AC5: Use safeGitAdd() to stage changes, return result for PR creation.
+ * The YAML workflow handles the actual PR creation based on our return value.
+ * If retry was needed (attempts > 1), the attempt number is available for
+ * the YAML to include in the PR title.
+ */
+async function handleSuccess(
+  workflowId: string,
+  issueNumber: number,
+  gameRepoPath: string,
+  retryResult: RetryLoopResult,
+  summary: BugFixSummary | null,
+  metrics: BugFixResult["metrics"],
+): Promise<BugFixResult> {
+  console.log("");
+  console.log("[bug-fix] Retry loop SUCCEEDED on attempt " + retryResult.fixAttemptsUsed);
 
-    // Post warning comment on issue (AC8)
-    const warningComment = "## QA Review Warning\n\n" +
-      "The QA review subagent could not complete its analysis for the fix on issue #" + issueNumber + ".\n\n" +
-      "**Error:** " + (qaResult.error ?? "Unknown") + "\n\n" +
-      "The fix PR will still be created, but **manual review is required** before merging.";
+  // AC5: Stage changes with safeGitAdd() (not git add -A)
+  console.log("[bug-fix] Staging changes with safeGitAdd()...");
+  const stageResult = safeGitAdd(gameRepoPath);
+  console.log("[bug-fix] Staged " + stageResult.staged.length + " file(s), excluded " + stageResult.excluded.length);
 
-    const warningTmpFile = path.join(tmpdir(), "gh-qa-warning-" + issueNumber + "-" + Date.now() + ".md");
+  if (stageResult.staged.length === 0) {
+    console.error("[bug-fix] WARNING: safeGitAdd() staged 0 files despite retry loop success");
+    console.error("[bug-fix] Changed files from retry loop: " + retryResult.changedFiles.join(", "));
+    console.error("[bug-fix] Excluded files: " + stageResult.excluded.map(e => e.file + " (" + e.reason + ")").join(", "));
+    // Still report success -- the YAML will detect no staged changes and skip PR creation
+  }
+
+  // Update workflow state
+  await updateWorkflowState(workflowId, {
+    status: "complete",
+    fix_attempts: retryResult.fixAttemptsUsed,
+    fix_results: summary ? [summary] : [],
+    qa_results: retryResult.qaResults,
+    attempt_log: retryResult.attemptLogs,
+    models_used: retryResult.modelsUsed,
+    error: null,
+  });
+
+  console.log("");
+  console.log("[bug-fix] Status: complete");
+  console.log("[bug-fix] Workflow " + workflowId + " finished");
+  console.log("");
+  console.log("=== Bug Fix COMPLETE -- Issue #" + issueNumber + " (attempt " + retryResult.fixAttemptsUsed + ") ===");
+
+  return {
+    success: true,
+    workflowId,
+    issueNumber,
+    summary,
+    metrics,
+    error: null,
+    qaSummary: retryResult.qaSummary,
+    fixAttemptsUsed: retryResult.fixAttemptsUsed,
+  };
+}
+
+// ------------------------------------------------------------------
+// Failure Handler (AC6, AC7)
+// ------------------------------------------------------------------
+
+/**
+ * Handle a failed retry loop result.
+ *
+ * AC6: Commit handoff to pipeline/handoffs branch, post as issue comment,
+ *       add needs-handoff-review label.
+ * AC7: All failures produce a visible artifact on the issue (label + comment).
+ */
+async function handleFailure(
+  workflowId: string,
+  issueNumber: number,
+  gameRepoPath: string,
+  retryResult: RetryLoopResult,
+  summary: BugFixSummary | null,
+  metrics: BugFixResult["metrics"],
+): Promise<BugFixResult> {
+  console.log("");
+  console.log("[bug-fix] Retry loop FAILED after " + retryResult.fixAttemptsUsed + " attempt(s)");
+  console.log("[bug-fix] Error: " + (retryResult.error ?? "unknown"));
+
+  // AC6: Commit handoff to pipeline/handoffs branch
+  if (retryResult.handoffMarkdown && retryResult.handoffFilePath) {
+    console.log("[bug-fix] Committing handoff document...");
     try {
-      fs.writeFileSync(warningTmpFile, warningComment, "utf-8");
-      execSync(
-        "gh issue comment " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --body-file " + warningTmpFile,
-        { encoding: "utf-8", timeout: 30_000 },
+      commitHandoff(
+        { markdown: retryResult.handoffMarkdown, filePath: retryResult.handoffFilePath },
+        gameRepoPath,
       );
-      console.log("[bug-fix] Posted QA warning comment on issue #" + issueNumber);
-    } catch (warnErr: unknown) {
-      const warnMsg = warnErr instanceof Error ? warnErr.message : String(warnErr);
-      console.log("[bug-fix] WARNING: Could not post QA warning comment: " + warnMsg);
-    } finally {
-      try { fs.unlinkSync(warningTmpFile); } catch { /* cleanup best-effort */ }
-    }
-
-    // Run quality gate anyway — catch build artifacts even without QA
-    const qualityGateResult = runQualityGate(diff, changedFiles);
-    if (!qualityGateResult.passed) {
-      console.log("[bug-fix] Quality gate failed despite QA skip:");
-      const qgFailures: string[] = [];
-      for (const failure of qualityGateResult.failures) {
-        console.log("  [" + failure.check + "] " + failure.description);
-        qgFailures.push("- **" + failure.check + ":** " + failure.description);
-      }
-      // Append quality gate failures to the warning banner
-      qaSummary += "\n\n## Quality Gate Failures\n\n" + qgFailures.join("\n");
-    }
-
-    await updateWorkflowState(state.workflow_id, {
-      status: "complete",
-      fix_attempts: 1,
-      fix_results: summary ? [summary] : [],
-      qa_results: qaResultsForState,
-      attempt_log: [{
-        attempt_number: 1,
-        model: MODELS.COMPLEX_BUG,
-        approach: summary?.fix_summary ?? "unknown",
-        result: "success",
-        error_output: null,
-        timestamp: new Date().toISOString(),
-      }],
-      error: null,
-    });
-
-    return {
-      success: true,
-      workflowId: state.workflow_id,
-      issueNumber,
-      summary,
-      metrics,
-      error: null,
-      qaSummary,
-    };
-  }
-
-  // From here, QA completed successfully -- check verdict
-  const verdict = qaResult.verdict!;
-  const qaSummary = formatQASummary(qaResult, qaProfile);
-
-  console.log("[bug-fix] QA verdict: " + verdict.verdict);
-  console.log("[bug-fix] QA risk: " + verdict.risk_level);
-
-  // --- Case: QA approved (AC5) ---
-  if (verdict.verdict === "approved") {
-    console.log("[bug-fix] QA APPROVED -- proceeding to quality gate");
-
-    // Run quality gate
-    const qualityGateResult = runQualityGate(diff, changedFiles);
-    if (!qualityGateResult.passed) {
-      console.log("[bug-fix] Quality gate FAILED:");
-      for (const failure of qualityGateResult.failures) {
-        console.log("  [" + failure.check + "] " + failure.description);
-      }
-
-      // Quality gate failure after QA approval is an escalation
-      await updateWorkflowState(state.workflow_id, {
-        status: "escalated",
-        fix_attempts: 1,
-        fix_results: summary ? [summary] : [],
-        qa_results: qaResultsForState,
-        attempt_log: [{
-          attempt_number: 1,
-          model: MODELS.COMPLEX_BUG,
-          approach: summary?.fix_summary ?? "unknown",
-          result: "quality_gate_fail",
-          error_output: qualityGateResult.failures.map(f => "[" + f.check + "] " + f.description).join("; "),
-          timestamp: new Date().toISOString(),
-        }],
-        error: "Quality gate failed: " + qualityGateResult.failures.map(f => f.check).join(", "),
-      });
-
-      return {
-        success: false,
-        workflowId: state.workflow_id,
-        issueNumber,
-        summary,
-        metrics,
-        error: "Quality gate failed: " + qualityGateResult.failures.map(f => f.check).join(", "),
-        qaSummary,
-      };
-    }
-
-    console.log("[bug-fix] Quality gate PASSED -- ready for PR creation");
-
-    await updateWorkflowState(state.workflow_id, {
-      status: "complete",
-      fix_attempts: 1,
-      fix_results: summary ? [summary] : [],
-      qa_results: qaResultsForState,
-      attempt_log: [{
-        attempt_number: 1,
-        model: MODELS.COMPLEX_BUG,
-        approach: summary?.fix_summary ?? "unknown",
-        result: "success",
-        error_output: null,
-        timestamp: new Date().toISOString(),
-      }],
-      error: null,
-    });
-
-    console.log("");
-    console.log("[bug-fix] Status: complete (QA approved + quality gate passed)");
-    console.log("[bug-fix] Workflow " + state.workflow_id + " finished");
-    console.log("");
-    console.log("=== Bug Fix COMPLETE -- Issue #" + issueNumber + " ===");
-
-    return {
-      success: true,
-      workflowId: state.workflow_id,
-      issueNumber,
-      summary,
-      metrics,
-      error: null,
-      qaSummary,
-    };
-  }
-
-  // --- Case: QA needs_revision (AC6) ---
-  if (verdict.verdict === "needs_revision") {
-    console.log("[bug-fix] QA NEEDS REVISION -- escalating (interim behavior until Epic 4 retry loop)");
-
-    // Generate handoff document with QA findings
-    const handoffInput: HandoffInput = {
-      issueNumber,
-      issueTitle: issueContext.title,
-      issueBody: cleanBody,
-      triageClassification: issueContext.triageClassification ?? "unknown",
-      triageSeverity: "unknown",
-      triageReasoning: cleanTriageComment ?? "No triage analysis available",
-      extractedContext: {},
-      attemptLogs: [{
-        attempt_number: 1,
-        model: MODELS.COMPLEX_BUG,
-        approach: summary?.fix_summary ?? "unknown",
-        result: "qa_needs_revision",
-        error_summary: "QA review identified issues requiring revision: " + verdict.summary,
-      }],
-      qaResults: [{
-        attempt_number: 1,
-        verdict: verdict.verdict,
-        findings: verdict.findings.map(f => "[" + f.criterion + "/" + f.severity + "] " + f.file + ": " + f.description),
-        summary: verdict.summary,
-      }],
-      screenshotCount: images.length,
-      suggestedApproach: "Review the QA findings above and address each issue. The fix was close but needs revision on the points flagged by QA.",
-      failureReason: "QA review verdict: needs_revision. The automated fix was partially correct but requires human intervention to address QA findings. (Retry loop will be added in Epic 4.)",
-      tier: 3,
-    };
-
-    const handoffResult = generateHandoff(handoffInput);
-
-    // Commit handoff to pipeline/handoffs branch
-    try {
-      commitHandoff(handoffResult, gameRepoPath);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.log("[bug-fix] WARNING: Could not commit handoff: " + errMsg);
     }
 
-    // Post handoff as issue comment
-    postHandoffComment(issueNumber, handoffResult.markdown);
-
-    // Label issue (AC6)
-    addHandoffLabel(issueNumber);
-
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
-      fix_attempts: 1,
-      fix_results: summary ? [summary] : [],
-      qa_results: qaResultsForState,
-      attempt_log: [{
-        attempt_number: 1,
-        model: MODELS.COMPLEX_BUG,
-        approach: summary?.fix_summary ?? "unknown",
-        result: "qa_needs_revision",
-        error_output: "QA needs revision: " + verdict.summary,
-        timestamp: new Date().toISOString(),
-      }],
-      error: "QA needs revision -- escalated for human review",
-    });
-
-    console.log("");
-    console.log("[bug-fix] Status: escalated (QA needs_revision)");
-    console.log("[bug-fix] Workflow " + state.workflow_id + " finished");
-    console.log("");
-    console.log("=== Bug Fix ESCALATED (needs_revision) -- Issue #" + issueNumber + " ===");
-
-    return {
-      success: false,
-      workflowId: state.workflow_id,
-      issueNumber,
-      summary,
-      metrics,
-      error: "QA needs revision -- escalated for human review",
-      qaSummary,
-    };
+    // AC6: Post handoff as issue comment
+    postHandoffComment(issueNumber, retryResult.handoffMarkdown);
+  } else {
+    // AC7: Even without a handoff document, post a failure comment
+    postFailureComment(issueNumber, retryResult.error ?? "Unknown error");
   }
 
-  // --- Case: QA rejected (AC7) ---
-  console.log("[bug-fix] QA REJECTED -- escalating, no PR will be created");
-
-  // Generate handoff document with QA findings
-  const handoffInput: HandoffInput = {
-    issueNumber,
-    issueTitle: issueContext.title,
-    issueBody: cleanBody,
-    triageClassification: issueContext.triageClassification ?? "unknown",
-    triageSeverity: "unknown",
-    triageReasoning: cleanTriageComment ?? "No triage analysis available",
-    extractedContext: {},
-    attemptLogs: [{
-      attempt_number: 1,
-      model: MODELS.COMPLEX_BUG,
-      approach: summary?.fix_summary ?? "unknown",
-      result: "qa_rejected",
-      error_summary: "QA review rejected the fix: " + verdict.summary,
-    }],
-    qaResults: [{
-      attempt_number: 1,
-      verdict: verdict.verdict,
-      findings: verdict.findings.map(f => "[" + f.criterion + "/" + f.severity + "] " + f.file + ": " + f.description),
-      summary: verdict.summary,
-    }],
-    screenshotCount: images.length,
-    suggestedApproach: "The automated fix was rejected by QA. Review the findings carefully -- the fix may have introduced regressions or missed the root cause entirely.",
-    failureReason: "QA review verdict: rejected. The automated fix did not meet quality standards.",
-    tier: 3,
-  };
-
-  const handoffResult = generateHandoff(handoffInput);
-
-  // Commit handoff to pipeline/handoffs branch
-  try {
-    commitHandoff(handoffResult, gameRepoPath);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[bug-fix] WARNING: Could not commit handoff: " + errMsg);
-  }
-
-  // Post handoff as issue comment
-  postHandoffComment(issueNumber, handoffResult.markdown);
-
-  // Label issue (AC7)
+  // AC6, AC7: Label issue
   addHandoffLabel(issueNumber);
 
-  await updateWorkflowState(state.workflow_id, {
+  // Update workflow state
+  await updateWorkflowState(workflowId, {
     status: "escalated",
-    fix_attempts: 1,
+    fix_attempts: retryResult.fixAttemptsUsed,
     fix_results: summary ? [summary] : [],
-    qa_results: qaResultsForState,
-    attempt_log: [{
-      attempt_number: 1,
-      model: MODELS.COMPLEX_BUG,
-      approach: summary?.fix_summary ?? "unknown",
-      result: "qa_rejected",
-      error_output: "QA rejected: " + verdict.summary,
-      timestamp: new Date().toISOString(),
-    }],
-    error: "QA rejected -- fix does not meet quality standards",
+    qa_results: retryResult.qaResults,
+    attempt_log: retryResult.attemptLogs,
+    models_used: retryResult.modelsUsed,
+    error: retryResult.error ?? "All fix attempts exhausted",
   });
 
   console.log("");
-  console.log("[bug-fix] Status: escalated (QA rejected)");
-  console.log("[bug-fix] Workflow " + state.workflow_id + " finished");
+  console.log("[bug-fix] Status: escalated");
+  console.log("[bug-fix] Workflow " + workflowId + " finished");
   console.log("");
-  console.log("=== Bug Fix ESCALATED (rejected) -- Issue #" + issueNumber + " ===");
+  console.log("=== Bug Fix ESCALATED -- Issue #" + issueNumber + " ===");
 
   return {
     success: false,
-    workflowId: state.workflow_id,
+    workflowId,
     issueNumber,
     summary,
     metrics,
-    error: "QA rejected -- fix does not meet quality standards",
-    qaSummary,
+    error: retryResult.error ?? "All fix attempts exhausted",
+    qaSummary: retryResult.qaSummary,
+    fixAttemptsUsed: retryResult.fixAttemptsUsed,
   };
+}
+
+// ------------------------------------------------------------------
+// Helpers
+// ------------------------------------------------------------------
+
+/**
+ * Aggregate metrics from the retry loop's model usage entries.
+ * Sums up tokens and cost across all fix and QA subagent calls.
+ */
+function aggregateMetrics(retryResult: RetryLoopResult): BugFixResult["metrics"] {
+  if (retryResult.modelsUsed.length === 0) {
+    return null;
+  }
+
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCost = 0;
+  let latestModel: string | null = null;
+
+  for (const usage of retryResult.modelsUsed) {
+    totalInput += usage.input_tokens;
+    totalOutput += usage.output_tokens;
+    totalCost += usage.cost_estimate;
+    // Use the last fix model as the "primary" model
+    if (usage.step.startsWith("fix_attempt_")) {
+      latestModel = usage.model;
+    }
+  }
+
+  return {
+    model: latestModel,
+    inputTokens: totalInput,
+    outputTokens: totalOutput,
+    durationMs: 0, // Not tracked at aggregate level
+    costUsd: totalCost,
+    toolsUsed: [], // Not tracked at aggregate level
+  };
+}
+
+/**
+ * Post a generic failure comment on the issue.
+ * AC7: No silent failures -- every failure produces a visible artifact.
+ */
+function postFailureComment(issueNumber: number, error: string): void {
+  const repo = ROUTING.PRIVATE_REPO;
+  const comment = "## Bug Fix Pipeline Failed\n\n" +
+    "The bug fix pipeline could not resolve this issue automatically.\n\n" +
+    "**Error:** " + error + "\n\n" +
+    "Manual intervention is required.";
+
+  const tmpFile = path.join(tmpdir(), "gh-bugfix-fail-" + issueNumber + "-" + Date.now() + ".md");
+  try {
+    fs.writeFileSync(tmpFile, comment, "utf-8");
+    execSync(
+      "gh issue comment " + issueNumber + " --repo " + repo + " --body-file " + tmpFile,
+      { encoding: "utf-8", timeout: 30_000 },
+    );
+    console.log("[bug-fix] Posted failure comment on issue #" + issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.log("[bug-fix] WARNING: Could not post failure comment: " + errMsg);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* cleanup best-effort */ }
+  }
 }
