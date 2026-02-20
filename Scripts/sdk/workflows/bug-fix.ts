@@ -41,6 +41,9 @@ import {
   type TriageContext,
   type RetryLoopResult,
 } from "../lib/retry-loop.js";
+import { runQAReview, type QAInput, type QAResult } from "../lib/qa-gate.js";
+import { runQualityGate } from "../lib/quality-gate.js";
+import { selectModels, determineBugProfile, determineQAProfile } from "../lib/model-router.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -62,6 +65,8 @@ export interface BugFixInput {
   gameRepoPath: string;
   /** If true, skip actual subagent spawn and log what would happen */
   dryRun: boolean;
+  /** If true, skip fix generation and run QA on the existing fix branch (PV2-4.4) */
+  qaOnly?: boolean;
 }
 
 /** Result of the bug fix workflow */
@@ -292,11 +297,342 @@ function addHandoffLabel(issueNumber: number): void {
 }
 
 // ------------------------------------------------------------------
+// QA-Only Mode (PV2-4.4)
+// ------------------------------------------------------------------
+
+/**
+ * Run QA review on an existing fix branch without generating a new fix.
+ *
+ * PV2-4.4 AC3/AC8: Captures diff from the existing fix branch vs main,
+ * validates it is non-empty, then runs QA review + quality gate.
+ * Does NOT call runRetryLoop() or spawn any fix subagent.
+ *
+ * Returns a BugFixResult that the caller (orchestrator + YAML) can use
+ * to create a PR or label the issue based on the QA verdict.
+ */
+async function runQAOnly(input: BugFixInput): Promise<BugFixResult> {
+  const { issueNumber, gameRepoPath } = input;
+
+  console.log("=== PV2-4.4: QA-Only Mode ===");
+  console.log("Issue: #" + issueNumber);
+  console.log("Game repo: " + gameRepoPath);
+  console.log("");
+
+  // Step 1: Create workflow state
+  const state = await createWorkflowState(
+    "bug_fix",
+    "dispatch",
+    undefined,
+    issueNumber,
+  );
+  console.log("[qa-only] Workflow created: " + state.workflow_id);
+
+  // Step 2: Fetch issue context
+  let issueContext: ReturnType<typeof fetchIssueContext>;
+  try {
+    issueContext = fetchIssueContext(issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[qa-only] FATAL: " + errMsg);
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: "Could not fetch issue: " + errMsg,
+    });
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: null,
+      error: "Could not fetch issue: " + errMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
+    };
+  }
+
+  // Step 3: Capture diff from the existing fix branch vs main
+  // AC3b: Use git diff main...HEAD for unified diff format compatible with QA
+  console.log("[qa-only] Capturing diff from fix branch vs main...");
+
+  let diff: string;
+  let changedFiles: string[];
+  try {
+    diff = execSync("git diff main...HEAD", {
+      cwd: gameRepoPath,
+      encoding: "utf-8",
+      timeout: 30_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const changedFilesRaw = execSync("git diff main...HEAD --name-only", {
+      cwd: gameRepoPath,
+      encoding: "utf-8",
+      timeout: 30_000,
+    }).trim();
+
+    changedFiles = changedFilesRaw ? changedFilesRaw.split("\n").filter(Boolean) : [];
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[qa-only] FATAL: Could not capture diff: " + errMsg);
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: "Could not capture diff from fix branch: " + errMsg,
+    });
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: null,
+      error: "Could not capture diff from fix branch: " + errMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
+    };
+  }
+
+  // AC3c: Empty diff guard
+  if (!diff.trim() || changedFiles.length === 0) {
+    const emptyMsg = "No changes found on fix branch relative to main. The fix may have already been merged.";
+    console.error("[qa-only] FATAL: " + emptyMsg);
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: emptyMsg,
+    });
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: null,
+      error: emptyMsg,
+      qaSummary: null,
+      fixAttemptsUsed: 0,
+    };
+  }
+
+  console.log("[qa-only] Diff captured: " + diff.split("\n").length + " lines, " + changedFiles.length + " files");
+  console.log("[qa-only] Changed files: " + changedFiles.join(", "));
+
+  // Step 4: Parse triage context for model selection
+  const triageContext = buildTriageContext(issueContext);
+  const bugProfile = determineBugProfile({
+    classification: triageContext.classification,
+    confidence: triageContext.confidence,
+    fileExtensions: triageContext.fileExtensions,
+  });
+
+  // Use attempt 1 model selection for QA-only (no escalation needed)
+  const fileExtensions = changedFiles
+    .map(f => { const d = f.lastIndexOf("."); return d > 0 ? f.slice(d) : ""; })
+    .filter(Boolean);
+  const modelSelection = selectModels(bugProfile, 1, fileExtensions);
+  const qaProfile = determineQAProfile(fileExtensions);
+
+  console.log("[qa-only] QA model: " + modelSelection.qaModel);
+  console.log("[qa-only] QA profile: " + qaProfile);
+  console.log("");
+
+  // Strip base64 images from issue body
+  const cleanBody = stripBase64Images(issueContext.body);
+  const cleanTriageComment = issueContext.triageComment
+    ? stripBase64Images(issueContext.triageComment)
+    : null;
+
+  // Step 5: Run QA review (AC3d)
+  console.log("[qa-only] Running QA review...");
+  await updateWorkflowState(state.workflow_id, { status: "re_verifying" });
+
+  const qaInput: QAInput = {
+    bugTitle: issueContext.title,
+    bugBody: cleanBody,
+    triageClassification: triageContext.classification,
+    triageComment: cleanTriageComment,
+    diff,
+    changedFiles,
+    gameRepoPath,
+    qaModel: modelSelection.qaModel,
+    qaMaxTurns: modelSelection.qaMaxTurns,
+    qaProfile,
+    attemptNumber: 1,
+    images: extractBase64Images(issueContext.body),
+  };
+
+  let qaResult: QAResult;
+  try {
+    qaResult = await runQAReview(qaInput);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[qa-only] QA review threw exception: " + errMsg);
+    qaResult = {
+      success: false,
+      verdict: null,
+      metrics: null,
+      error: "QA review exception: " + errMsg,
+    };
+  }
+
+  // Step 6: Run quality gate (AC3e)
+  console.log("[qa-only] Running quality gate...");
+  const qualityGateResult = runQualityGate(diff, changedFiles);
+
+  if (!qualityGateResult.passed) {
+    console.log("[qa-only] Quality gate FAILED:");
+    for (const failure of qualityGateResult.failures) {
+      console.log("  [" + failure.check + "] " + failure.description);
+    }
+  } else {
+    console.log("[qa-only] Quality gate PASSED");
+  }
+
+  // Step 7: Build QA summary for PR body
+  let qaSummary: string | null = null;
+  if (qaResult.success && qaResult.verdict) {
+    const verdictLabel = qaResult.verdict.verdict === "approved" ? "APPROVED" :
+      qaResult.verdict.verdict === "needs_revision" ? "NEEDS REVISION" : "REJECTED";
+
+    const parts: string[] = [];
+    parts.push("## QA Review (QA-Only Re-Run)");
+    parts.push("");
+    parts.push("**Verdict:** " + verdictLabel);
+    parts.push("**Risk Level:** " + qaResult.verdict.risk_level);
+    parts.push("**Profile:** " + qaProfile);
+    parts.push("");
+
+    if (qaResult.verdict.findings.length > 0) {
+      parts.push("### Findings");
+      parts.push("");
+      for (const finding of qaResult.verdict.findings) {
+        parts.push("- **[" + finding.criterion + "/" + finding.severity + "]** `" + finding.file + "`: " + finding.description);
+      }
+      parts.push("");
+    }
+
+    parts.push("### Summary");
+    parts.push("");
+    parts.push(qaResult.verdict.summary);
+
+    if (qaResult.metrics) {
+      parts.push("");
+      parts.push("<details>");
+      parts.push("<summary>QA Review Metrics</summary>");
+      parts.push("");
+      parts.push("- **Model:** " + qaResult.metrics.model);
+      parts.push("- **Input tokens:** " + qaResult.metrics.inputTokens);
+      parts.push("- **Output tokens:** " + qaResult.metrics.outputTokens);
+      parts.push("- **Duration:** " + qaResult.metrics.durationMs + "ms");
+      parts.push("- **Cost:** $" + qaResult.metrics.costUsd.toFixed(4));
+      parts.push("");
+      parts.push("</details>");
+    }
+
+    if (!qualityGateResult.passed) {
+      parts.push("");
+      parts.push("### Quality Gate");
+      parts.push("");
+      parts.push("**Status:** FAILED");
+      for (const failure of qualityGateResult.failures) {
+        parts.push("- **[" + failure.check + "]** " + failure.description);
+      }
+    }
+
+    qaSummary = parts.join("\n");
+  } else if (!qaResult.success) {
+    qaSummary = "## QA Review (QA-Only Re-Run)\n\n" +
+      "> **QA REVIEW INCOMPLETE:** " + (qaResult.error ?? "Unknown QA error") + ". Manual review required.\n\n" +
+      "The QA review subagent could not complete its analysis. Please review the changes manually before merging.";
+  }
+
+  // Step 8: Determine success/failure
+  const qaApproved = qaResult.success && qaResult.verdict?.verdict === "approved";
+  const overallSuccess = qaApproved && qualityGateResult.passed;
+
+  if (overallSuccess) {
+    console.log("");
+    console.log("[qa-only] QA APPROVED + Quality Gate PASSED");
+
+    await updateWorkflowState(state.workflow_id, {
+      status: "complete",
+      error: null,
+    });
+
+    console.log("");
+    console.log("=== QA-Only Re-Run COMPLETE -- Issue #" + issueNumber + " ===");
+
+    return {
+      success: true,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: qaResult.metrics ? {
+        model: qaResult.metrics.model,
+        inputTokens: qaResult.metrics.inputTokens,
+        outputTokens: qaResult.metrics.outputTokens,
+        durationMs: qaResult.metrics.durationMs,
+        costUsd: qaResult.metrics.costUsd,
+        toolsUsed: [],
+      } : null,
+      error: null,
+      qaSummary,
+      fixAttemptsUsed: 0,
+    };
+  } else {
+    // QA rejected or needs revision or quality gate failed
+    const failureReason = !qaResult.success
+      ? "QA review could not complete: " + (qaResult.error ?? "unknown")
+      : qaResult.verdict?.verdict === "rejected"
+        ? "QA rejected the fix"
+        : qaResult.verdict?.verdict === "needs_revision"
+          ? "QA requires revision: " + (qaResult.verdict?.summary ?? "")
+          : !qualityGateResult.passed
+            ? "Quality gate failed: " + qualityGateResult.failures.map(f => f.check).join(", ")
+            : "Unknown failure";
+
+    console.log("");
+    console.log("[qa-only] FAILED: " + failureReason);
+
+    // Post failure findings on the issue (AC3g)
+    postFailureComment(issueNumber, "QA-Only Re-Run: " + failureReason);
+
+    // Add label (AC3g)
+    addHandoffLabel(issueNumber);
+
+    await updateWorkflowState(state.workflow_id, {
+      status: "escalated",
+      error: failureReason,
+    });
+
+    console.log("");
+    console.log("=== QA-Only Re-Run FAILED -- Issue #" + issueNumber + " ===");
+
+    return {
+      success: false,
+      workflowId: state.workflow_id,
+      issueNumber,
+      summary: null,
+      metrics: qaResult.metrics ? {
+        model: qaResult.metrics.model,
+        inputTokens: qaResult.metrics.inputTokens,
+        outputTokens: qaResult.metrics.outputTokens,
+        durationMs: qaResult.metrics.durationMs,
+        costUsd: qaResult.metrics.costUsd,
+        toolsUsed: [],
+      } : null,
+      error: failureReason,
+      qaSummary,
+      fixAttemptsUsed: 0,
+    };
+  }
+}
+
+// ------------------------------------------------------------------
 // Main Workflow
 // ------------------------------------------------------------------
 
 /**
  * Run the bug fix workflow with retry loop (PV2-4.2).
+ *
+ * PV2-4.4: If qaOnly is true, delegates to runQAOnly() which skips
+ * fix generation entirely and runs QA on the existing fix branch.
  *
  * 1. Create workflow state
  * 2. Fetch issue body + triage analysis from GitHub
@@ -308,6 +644,11 @@ function addHandoffLabel(issueNumber: number): void {
  */
 export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
   const { issueNumber, gameRepoPath, dryRun } = input;
+
+  // PV2-4.4 AC8: QA-only mode bypasses the entire retry loop
+  if (input.qaOnly) {
+    return runQAOnly(input);
+  }
 
   console.log("=== PV2-4.2: Bug Fix with Retry Loop ===");
   console.log("Issue: #" + issueNumber);
