@@ -440,6 +440,9 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
     // AC7: Post failure comment on issue (no silent failures)
     postFailureComment(issueNumber, "Retry loop crashed: " + errMsg);
 
+    // AC6, AC7: Label issue on exception path
+    addHandoffLabel(issueNumber);
+
     return {
       success: false,
       workflowId: state.workflow_id,
