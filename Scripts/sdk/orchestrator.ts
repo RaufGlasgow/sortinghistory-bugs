@@ -504,18 +504,20 @@ async function main(): Promise<void> {
       break;
     }
     case "bug-fix": {
-      // Story SDK-BF.1 + PV2-3.3 + PV2-4.2: Bug fix with retry loop
-      // Usage: orchestrator.ts bug-fix --issue <NUM> [--game-repo <path>] [--dry-run]
+      // Story SDK-BF.1 + PV2-3.3 + PV2-4.2 + PV2-4.4: Bug fix with retry loop or QA-only re-run
+      // Usage: orchestrator.ts bug-fix --issue <NUM> [--game-repo <path>] [--dry-run] [--qa-only]
       const issueNumber = parseIssueFlag();
       const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
       const isDryRun = hasFlag("dry-run");
+      const isQaOnly = hasFlag("qa-only");
 
-      console.log("[orchestrator] Bug fix: issue=#" + issueNumber + " game-repo=" + gameRepo + " dry-run=" + isDryRun);
+      console.log("[orchestrator] Bug fix: issue=#" + issueNumber + " game-repo=" + gameRepo + " dry-run=" + isDryRun + " qa-only=" + isQaOnly);
 
       const bugFixResult = await runBugFix({
         issueNumber,
         gameRepoPath: gameRepo,
         dryRun: isDryRun,
+        qaOnly: isQaOnly,
       });
 
       console.log("[orchestrator] Bug fix result: " + (bugFixResult.success ? "success" : "failed"));
