@@ -156,22 +156,36 @@ function fetchIssueContext(issueNumber: number): {
         triageComment = comment.body;
 
         // Try to extract classification from the triage comment
-        const classMatch = comment.body.match(/\*\*Classification:\*\*\s*(\S+)/);
+        // Bold format: **Classification:** gameplay_bug
+        // Table format: | Classification | `gameplay_bug` |
+        const classMatch = comment.body.match(/\*\*Classification:\*\*\s*(\S+)/)
+          ?? comment.body.match(/\|\s*Classification\s*\|\s*`?(\w+)`?\s*\|/);
         if (classMatch) {
           triageClassification = classMatch[1];
         }
 
         // Try to extract severity
-        const sevMatch = comment.body.match(/\*\*Severity:\*\*\s*(\S+)/);
+        // Bold format: **Severity:** P2
+        // Table format: | Severity | `P2` |
+        const sevMatch = comment.body.match(/\*\*Severity:\*\*\s*(\S+)/)
+          ?? comment.body.match(/\|\s*Severity\s*\|\s*`?(\w+)`?\s*\|/);
         if (sevMatch) {
           triageSeverity = sevMatch[1];
         }
 
         // Try to extract confidence
+        // Bold format: **Confidence:** 0.85
+        // Table format: | Confidence | 85% |  (percentage, needs conversion to decimal)
         const confMatch = comment.body.match(/\*\*Confidence:\*\*\s*([\d.]+)/);
         if (confMatch) {
           triageConfidence = parseFloat(confMatch[1]);
           if (isNaN(triageConfidence)) triageConfidence = null;
+        } else {
+          const confTableMatch = comment.body.match(/\|\s*Confidence\s*\|\s*(\d+)%\s*\|/);
+          if (confTableMatch) {
+            triageConfidence = parseInt(confTableMatch[1], 10) / 100;
+            if (isNaN(triageConfidence)) triageConfidence = null;
+          }
         }
 
         // Try to extract reasoning (everything after "**Reasoning:**" until next section)
