@@ -168,7 +168,7 @@ export function determineQAProfile(fileExtensions: string[]): QAProfile {
 
   if (hasCode && hasContent) return "both";
   if (hasCode) return "code";
-  return "content";
+  return "code";  // Safe default: code QA reviews logic correctness for all fix types
 }
 
 /**

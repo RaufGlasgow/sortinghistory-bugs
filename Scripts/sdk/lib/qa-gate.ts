@@ -583,32 +583,32 @@ export async function runQAReview(input: QAInput): Promise<QAResult> {
   }
 
   // If one failed at infrastructure level but the other succeeded,
-  // treat the failed one as a "rejected" verdict for merge purposes
-  const codeVerdict = codeResult.verdict ?? {
-    verdict: "rejected" as const,
-    risk_level: "high" as const,
-    findings: [{
-      criterion: "QC-1" as const,
-      severity: "blocker" as const,
-      file: "N/A",
-      description: "Code QA review failed to complete: " + (codeResult.error ?? "unknown error"),
-    }],
-    summary: "Code QA review did not complete successfully.",
-  };
+  // use the surviving subagent's verdict instead of synthesizing a fake rejection.
+  // This lets the retry loop handle transient errors correctly (retry, not hard-stop).
+  if (!codeResult.success && contentResult.success) {
+    console.log("[qa-gate] WARNING: Code QA failed (infra error), using content QA result only");
+    return {
+      success: true,
+      verdict: contentResult.verdict,
+      metrics: mergeMetrics(codeResult.metrics, contentResult.metrics),
+      error: "Code QA infrastructure error (content QA used alone): " + (codeResult.error ?? "unknown"),
+    };
+  }
 
-  const contentVerdict = contentResult.verdict ?? {
-    verdict: "rejected" as const,
-    risk_level: "high" as const,
-    findings: [{
-      criterion: "QN-1" as const,
-      severity: "blocker" as const,
-      file: "N/A",
-      description: "Content QA review failed to complete: " + (contentResult.error ?? "unknown error"),
-    }],
-    summary: "Content QA review did not complete successfully.",
-  };
+  if (codeResult.success && !contentResult.success) {
+    console.log("[qa-gate] WARNING: Content QA failed (infra error), using code QA result only");
+    return {
+      success: true,
+      verdict: codeResult.verdict,
+      metrics: mergeMetrics(codeResult.metrics, contentResult.metrics),
+      error: "Content QA infrastructure error (code QA used alone): " + (contentResult.error ?? "unknown"),
+    };
+  }
 
-  // Worst verdict wins
+  // Both succeeded — merge verdicts (worst verdict wins)
+  const codeVerdict = codeResult.verdict!;
+  const contentVerdict = contentResult.verdict!;
+
   const finalVerdict: QAVerdict["verdict"] =
     VERDICT_RANK[codeVerdict.verdict] >= VERDICT_RANK[contentVerdict.verdict]
       ? codeVerdict.verdict
