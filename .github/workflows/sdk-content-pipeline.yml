@@ -1,4 +1,5 @@
 name: SDK Content Pipeline
+run-name: "Content #${{ github.event.client_payload.issue_number || 'scheduled' }} (${{ github.event.action || 'manual' }})"
 
 on:
   repository_dispatch:

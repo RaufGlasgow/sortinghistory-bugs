@@ -1,4 +1,5 @@
 name: SDK Bug Fix
+run-name: "Fix #${{ github.event.client_payload.issue_number || inputs.issue_number }} (${{ github.event.client_payload.mode || inputs.mode || 'full' }})"
 
 on:
   repository_dispatch:

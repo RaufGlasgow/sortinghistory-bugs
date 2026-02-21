@@ -1,4 +1,5 @@
 name: Bug Analysis
+run-name: "Triage #${{ github.event.client_payload.issue_number || inputs.issue_number }}"
 
 on:
   repository_dispatch:
