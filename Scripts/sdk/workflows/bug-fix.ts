@@ -44,6 +44,7 @@ import {
 import { runQAReview, type QAInput, type QAResult } from "../lib/qa-gate.js";
 import { runQualityGate } from "../lib/quality-gate.js";
 import { selectModels, determineBugProfile, determineQAProfile } from "../lib/model-router.js";
+import type { TriageData } from "../lib/types.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -134,7 +135,7 @@ function fetchIssueContext(issueNumber: number): {
 
   console.log("[bug-fix] Issue title: " + parsed.title);
 
-  // Fetch comments to find triage/analysis comment
+  // Fetch comments to find triage data
   let triageComment: string | null = null;
   let triageClassification: string | null = null;
   let triageSeverity: string | null = null;
@@ -150,66 +151,37 @@ function fetchIssueContext(issueNumber: number): {
       comments: Array<{ body: string }>;
     };
 
-    // Find the triage classification comment (contains "## Triage Classification")
-    for (const comment of commentsParsed.comments) {
-      if (comment.body.includes("Triage Classification") || comment.body.includes("Bug Analysis")) {
-        triageComment = comment.body;
+    // PV2-6.1: Try machine-readable JSON block first (AC3, AC8)
+    const triageData = extractTriageFromComments(commentsParsed.comments);
 
-        // Try to extract classification from the triage comment
-        // Bold format: **Classification:** gameplay_bug
-        // Table format: | Classification | `gameplay_bug` |
-        const classMatch = comment.body.match(/\*\*Classification:\*\*\s*(\S+)/)
-          ?? comment.body.match(/\|\s*Classification\s*\|\s*`?(\w+)`?\s*\|/);
-        if (classMatch) {
-          triageClassification = classMatch[1];
-        }
-
-        // Try to extract severity
-        // Bold format: **Severity:** P2
-        // Table format: | Severity | `P2` |
-        const sevMatch = comment.body.match(/\*\*Severity:\*\*\s*(\S+)/)
-          ?? comment.body.match(/\|\s*Severity\s*\|\s*`?(\w+)`?\s*\|/);
-        if (sevMatch) {
-          triageSeverity = sevMatch[1];
-        }
-
-        // Try to extract confidence
-        // Bold format: **Confidence:** 0.85
-        // Table format: | Confidence | 85% |  (percentage, needs conversion to decimal)
-        const confMatch = comment.body.match(/\*\*Confidence:\*\*\s*([\d.]+)/);
-        if (confMatch) {
-          triageConfidence = parseFloat(confMatch[1]);
-          if (isNaN(triageConfidence)) triageConfidence = null;
-        } else {
-          const confTableMatch = comment.body.match(/\|\s*Confidence\s*\|\s*(\d+)%\s*\|/);
-          if (confTableMatch) {
-            triageConfidence = parseInt(confTableMatch[1], 10) / 100;
-            if (isNaN(triageConfidence)) triageConfidence = null;
-          }
-        }
-
-        // Try to extract reasoning (everything after "**Reasoning:**" until next section)
-        const reasonMatch = comment.body.match(/\*\*Reasoning:\*\*\s*([\s\S]*?)(?=\n##|\n\*\*|$)/);
-        if (reasonMatch) {
-          triageReasoning = reasonMatch[1].trim();
-        }
-
-        break;
-      }
+    if (triageData) {
+      console.log("[bug-fix] Found machine-readable triage data (JSON block)");
+      triageComment = "JSON triage data";
+      triageClassification = triageData.classification;
+      triageSeverity = triageData.severity;
+      triageConfidence = triageData.confidence;
+      triageReasoning = triageData.reasoning;
+    } else {
+      // PV2-6.1 AC5: Fall back to legacy regex parsing for older issues
+      console.log("[bug-fix] WARNING: No machine-readable triage data found. Falling back to regex comment parsing (legacy issue).");
+      const legacyResult = extractTriageFromCommentsLegacy(commentsParsed.comments);
+      triageComment = legacyResult.triageComment;
+      triageClassification = legacyResult.triageClassification;
+      triageSeverity = legacyResult.triageSeverity;
+      triageConfidence = legacyResult.triageConfidence;
+      triageReasoning = legacyResult.triageReasoning;
     }
 
-    if (triageComment) {
-      console.log("[bug-fix] Found triage/analysis comment");
-      if (triageClassification) {
-        console.log("[bug-fix] Triage classification: " + triageClassification);
-      }
-      if (triageSeverity) {
-        console.log("[bug-fix] Triage severity: " + triageSeverity);
-      }
-      if (triageConfidence !== null) {
-        console.log("[bug-fix] Triage confidence: " + triageConfidence);
-      }
-    } else {
+    if (triageClassification) {
+      console.log("[bug-fix] Triage classification: " + triageClassification);
+    }
+    if (triageSeverity) {
+      console.log("[bug-fix] Triage severity: " + triageSeverity);
+    }
+    if (triageConfidence !== null) {
+      console.log("[bug-fix] Triage confidence: " + triageConfidence);
+    }
+    if (!triageComment) {
       console.log("[bug-fix] No triage/analysis comment found on issue");
     }
   } catch (err: unknown) {
@@ -226,6 +198,99 @@ function fetchIssueContext(issueNumber: number): {
     triageConfidence,
     triageReasoning,
   };
+}
+
+/**
+ * PV2-6.1 AC3, AC8: Extract triage data from the machine-readable JSON block.
+ *
+ * Iterates comments in REVERSE order (most recent first) so re-triage
+ * uses the latest classification, not stale data from the original triage.
+ */
+export function extractTriageFromComments(comments: Array<{ body: string }>): TriageData | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const comment = comments[i];
+    const match = comment.body.match(/<!-- TRIAGE_DATA_START\n```json\n([\s\S]*?)\n```\nTRIAGE_DATA_END -->/);
+    if (match) {
+      try {
+        const data = JSON.parse(match[1]) as Record<string, unknown>;
+        // Validate required fields
+        if (
+          typeof data.classification === "string" && data.classification !== "" &&
+          typeof data.severity === "string" && data.severity !== "" &&
+          typeof data.confidence === "number"
+        ) {
+          return data as unknown as TriageData;
+        }
+      } catch {
+        // Malformed JSON — continue searching older comments
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * PV2-6.1 AC5: Legacy regex-based triage extraction for issues triaged
+ * before the JSON block was introduced.
+ */
+function extractTriageFromCommentsLegacy(comments: Array<{ body: string }>): {
+  triageComment: string | null;
+  triageClassification: string | null;
+  triageSeverity: string | null;
+  triageConfidence: number | null;
+  triageReasoning: string | null;
+} {
+  let triageComment: string | null = null;
+  let triageClassification: string | null = null;
+  let triageSeverity: string | null = null;
+  let triageConfidence: number | null = null;
+  let triageReasoning: string | null = null;
+
+  for (const comment of comments) {
+    if (comment.body.includes("Triage Classification") || comment.body.includes("Bug Analysis")) {
+      triageComment = comment.body;
+
+      // Bold format: **Classification:** gameplay_bug
+      // Table format: | Classification | `gameplay_bug` |
+      const classMatch = comment.body.match(/\*\*Classification:\*\*\s*(\S+)/)
+        ?? comment.body.match(/\|\s*Classification\s*\|\s*`?(\w+)`?\s*\|/);
+      if (classMatch) {
+        triageClassification = classMatch[1];
+      }
+
+      // Bold format: **Severity:** P2
+      // Table format: | Severity | `P2` |
+      const sevMatch = comment.body.match(/\*\*Severity:\*\*\s*(\S+)/)
+        ?? comment.body.match(/\|\s*Severity\s*\|\s*`?(\w+)`?\s*\|/);
+      if (sevMatch) {
+        triageSeverity = sevMatch[1];
+      }
+
+      // Bold format: **Confidence:** 0.85
+      // Table format: | Confidence | 85% |
+      const confMatch = comment.body.match(/\*\*Confidence:\*\*\s*([\d.]+)/);
+      if (confMatch) {
+        triageConfidence = parseFloat(confMatch[1]);
+        if (isNaN(triageConfidence)) triageConfidence = null;
+      } else {
+        const confTableMatch = comment.body.match(/\|\s*Confidence\s*\|\s*(\d+)%\s*\|/);
+        if (confTableMatch) {
+          triageConfidence = parseInt(confTableMatch[1], 10) / 100;
+          if (isNaN(triageConfidence)) triageConfidence = null;
+        }
+      }
+
+      // Reasoning
+      const reasonMatch = comment.body.match(/\*\*Reasoning:\*\*\s*([\s\S]*?)(?=\n##|\n\*\*|$)/);
+      if (reasonMatch) {
+        triageReasoning = reasonMatch[1].trim();
+      }
+
+      break;
+    }
+  }
+
+  return { triageComment, triageClassification, triageSeverity, triageConfidence, triageReasoning };
 }
 
 // ------------------------------------------------------------------

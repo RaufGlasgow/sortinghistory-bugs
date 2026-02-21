@@ -22,6 +22,7 @@ import { ROUTING } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
 import { decideRoute, executeRoute, type RoutingInput } from "../lib/routing.js";
 import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
+import type { TriageData } from "../lib/types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -316,8 +317,8 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
 // Comment builders
 // ---------------------------------------------------------------------------
 
-/** Build the classification result comment (AC4) */
-function buildClassificationComment(triage: TriageResult): string {
+/** Build the classification result comment (AC4, PV2-6.1) */
+export function buildClassificationComment(triage: TriageResult): string {
   // Defensive: fallback to "unknown" if any field is unexpectedly missing
   const classification = triage.classification || "unknown";
   const severity = triage.severity || "unknown";
@@ -325,6 +326,7 @@ function buildClassificationComment(triage: TriageResult): string {
   const reasoning = triage.reasoning || "No reasoning provided";
   const extractedContext = triage.extracted_context ?? {};
 
+  // Human-readable table (unchanged)
   const lines = [
     "## Triage Classification",
     "",
@@ -341,6 +343,29 @@ function buildClassificationComment(triage: TriageResult): string {
     lines.push("");
     lines.push("**Extracted context:** `" + JSON.stringify(extractedContext) + "`");
   }
+
+  // Machine-readable JSON block (PV2-6.1 AC1, AC2)
+  // Inside an HTML comment so it is invisible in the GitHub UI
+  const triageData: TriageData = {
+    classification,
+    severity,
+    confidence,
+    reasoning,
+    extracted_context: {
+      category: typeof extractedContext.category === "string" ? extractedContext.category : null,
+      file_path: typeof extractedContext.file_path === "string" ? extractedContext.file_path : null,
+      event_id: typeof extractedContext.event_id === "string" ? extractedContext.event_id : null,
+      expected_behavior: typeof extractedContext.expected_behavior === "string" ? extractedContext.expected_behavior : null,
+      actual_behavior: typeof extractedContext.actual_behavior === "string" ? extractedContext.actual_behavior : null,
+    },
+  };
+
+  lines.push("");
+  lines.push("<!-- TRIAGE_DATA_START");
+  lines.push("```json");
+  lines.push(JSON.stringify(triageData));
+  lines.push("```");
+  lines.push("TRIAGE_DATA_END -->");
 
   return lines.join("\n");
 }
