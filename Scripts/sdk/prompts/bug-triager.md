@@ -75,12 +75,13 @@ Screenshots are critical for `ui_bug` classification -- a report with a screensh
 
 ## Context Extraction
 
-When the report mentions specific events, dates, categories, or languages:
+Fill the `extracted_context` fields from the bug report text (and screenshots) alone. Do NOT search any files. If a field cannot be determined from the report text, use the string `"unknown"` as the value.
 
-- **For content_error:** Search event files in the game data directory to find the matching event. Extract the category, event_id, and event_title if you can identify them.
-- **For translation_error:** Note the language mentioned. If you can identify the specific event, extract category and event_title.
-- **For ui_bug or gameplay_bug:** Reference the architecture registry at `Scripts/context/architecture-registry.json` to identify relevant Swift files. List them in `relevant_files` and provide an `initial_diagnosis`.
-- **For feature_request:** No context extraction needed.
+- **category:** If the report mentions a game category (e.g., "US History", "Sports History", "Dutch History"), use that. Otherwise `"unknown"`.
+- **file_path:** Always `"unknown"` (you do not have file system access).
+- **event_id:** Always `"unknown"` (you do not have file system access).
+- **expected_behavior:** What the reporter says should happen. If not stated, `"unknown"`.
+- **actual_behavior:** What the reporter says actually happens. If not stated, `"unknown"`.
 
 ## Confidence Rules
 

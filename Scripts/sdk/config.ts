@@ -50,8 +50,8 @@ export const VERIFIER_TOOLS = ["Read", "Glob", "Grep", "Bash"] as const;
 /** Minimal tools for proof workflow — truly read-only, no Bash */
 export const PROOF_TOOLS = ["Read", "Glob", "Grep"] as const;
 
-/** Read-only tools for triage subagent — no Bash needed */
-export const TRIAGE_TOOLS = ["Read", "Glob", "Grep"] as const;
+/** No tools for triage subagent — classify from text + screenshots only (PV2-5.1) */
+export const TRIAGE_TOOLS = [] as const;
 
 /** Read-only tools for QA review subagent — no Write, Edit, or Bash (Story PV2-3.1) */
 export const QA_TOOLS = ["Read", "Glob", "Grep"] as const;

@@ -14,7 +14,7 @@
  * - 1: Failure (subagent error, invalid JSON, missing required fields)
  */
 
-import { MODELS, TRIAGE_TOOLS, PATHS } from "../config.js";
+import { MODELS, TRIAGE_TOOLS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "../lib/subagent.js";
 import { extractJson } from "../lib/json-extract.js";
 import { stripBase64Images } from "../lib/image-extract.js";
@@ -118,10 +118,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   // Images are passed separately as multimodal content blocks (if provided by caller).
   const cleanReportText = stripBase64Images(input.report_text);
 
-  // Build user prompt with report text and context paths
-  const gameDataPath = PATHS.GAME_REPO + "/Data/Events/";
-  const archRegistryPath = "Scripts/context/architecture-registry.json";
-
+  // Build user prompt — classify from text + screenshots only (PV2-5.1: no file searching)
   const userPrompt = [
     "Classify the following bug report for the SortingHistory iOS game.",
     "",
@@ -132,18 +129,9 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
       : "(No screenshots attached)"),
     "\"" + cleanReportText + "\"",
     "",
-    "## Available Context",
-    "- Game event data files are at: " + gameDataPath,
-    "  (Search these files if the report mentions specific historical events, dates, or categories)",
-    "- Architecture registry is at: " + archRegistryPath,
-    "  (Reference this for UI/gameplay bugs to identify relevant Swift source files)",
-    "",
     "## Instructions",
-    "1. Read the bug report carefully",
-    "2. If the report mentions a specific event or date, search the event data files to find matching content",
-    "3. If the report describes a UI or gameplay issue, check the architecture registry for relevant files",
-    "4. Classify the report and return your TRIAGE RESULT as a JSON object with these keys: classification, confidence, severity, reasoning, extracted_context, routing_recommendation",
-    "5. Your final output must be the triage result JSON — NOT the event data you found during investigation",
+    "1. Read the bug report carefully (and examine any attached screenshots)",
+    "2. Classify the report and return your TRIAGE RESULT as a JSON object with these keys: classification, confidence, severity, reasoning, extracted_context, routing_recommendation",
   ].join("\n");
 
   // Spawn Haiku subagent with read-only triage tools
@@ -154,7 +142,7 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     prompt: userPrompt,
     systemPrompt,
     cwd: repoRoot,
-    maxTurns: 20,
+    maxTurns: 5,
     images: input.images,
   });
 
