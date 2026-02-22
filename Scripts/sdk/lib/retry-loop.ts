@@ -71,6 +71,16 @@ const RETRYABLE_ERROR_PATTERNS: readonly string[] = [
 /** HTTP status codes that indicate retryable QA infrastructure errors (AC10d) */
 const RETRYABLE_HTTP_CODES: readonly number[] = [429, 500, 502, 503];
 
+/**
+ * Per-attempt timeout in milliseconds (PV2-6.5 AC4).
+ * Later attempts get more time because they use more capable models with larger context.
+ */
+const ATTEMPT_TIMEOUT_MS: Record<number, number> = {
+  1: 15 * 60 * 1000,  // 15 minutes for attempt 1 (Haiku/Sonnet)
+  2: 20 * 60 * 1000,  // 20 minutes for attempt 2 (Sonnet/Opus)
+  3: 25 * 60 * 1000,  // 25 minutes for attempt 3 (Opus)
+};
+
 // ------------------------------------------------------------------
 // Types
 // ------------------------------------------------------------------
@@ -270,16 +280,33 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
 /**
  * Reset the game repo working tree to discard any changes from a failed attempt.
  * This ensures the next attempt starts from a clean state.
+ * Throws if the reset fails or the working tree is still dirty (PV2-6.5 AC1/AC2).
  */
 function resetGameRepo(gameRepoPath: string): void {
   console.log("[retry-loop] Resetting game repo working tree...");
   try {
     execSync("git checkout -- .", { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
     execSync("git clean -fd", { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
-    console.log("[retry-loop] Game repo reset complete");
+
+    // PV2-6.5 AC1: Verify clean state after reset
+    const status = execSync("git status --porcelain", {
+      cwd: gameRepoPath,
+      encoding: "utf-8",
+      timeout: 5_000,
+    }).trim();
+
+    if (status !== "") {
+      console.error("[retry-loop] ERROR: Game repo still dirty after reset:");
+      console.error(status);
+      throw new Error("Game repo reset incomplete — dirty files remain");
+    }
+
+    console.log("[retry-loop] Game repo reset complete (verified clean)");
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[retry-loop] WARNING: Could not fully reset game repo: " + errMsg);
+    // PV2-6.5 AC2: Re-throw so the retry loop knows this attempt is poisoned
+    console.error("[retry-loop] FATAL: Could not reset game repo: " + errMsg);
+    throw new Error("Game repo reset failed: " + errMsg);
   }
 }
 
@@ -634,8 +661,34 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     console.log("");
 
     // Reset game repo before each attempt (except the first)
+    // PV2-6.5 AC3: Catch reset failure and skip to next attempt
     if (attempt > 1) {
-      resetGameRepo(input.gameRepoPath);
+      try {
+        resetGameRepo(input.gameRepoPath);
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[retry-loop] Reset failed -- skipping attempt " + attempt);
+
+        const logEntry: AttemptLogEntry = {
+          attempt_number: attempt,
+          model: "n/a",
+          approach: "skipped — game repo reset failed",
+          result: "error",
+          error_output: errMsg,
+          timestamp: new Date().toISOString(),
+        };
+        attemptLogs.push(logEntry);
+
+        previousFailures.push({
+          attempt,
+          approach: "skipped — game repo reset failed",
+          result: "error",
+          errorOutput: errMsg,
+          qaFeedback: null,
+        });
+
+        continue;
+      }
     }
 
     // Build the fix prompt with failure context (AC4)
@@ -649,26 +702,42 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     const hooks = buildBugFixHooksConfig(input.gameRepoPath);
     let fixResult: SubagentResult;
 
+    // PV2-6.5 AC4: Per-attempt timeout
+    const attemptTimeoutMs = ATTEMPT_TIMEOUT_MS[attempt] ?? 20 * 60 * 1000;
+    const timeoutMinutes = attemptTimeoutMs / 60_000;
+
     try {
-      fixResult = await spawnSubagent({
-        model: modelSelection.fixModel,
-        tools: [...BUG_FIX_TOOLS],
-        prompt: userPrompt,
-        systemPrompt,
-        hooks,
-        cwd: input.gameRepoPath,
-        maxTurns: modelSelection.fixMaxTurns,
-        images: input.screenshots,
-      });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error("Fix subagent timed out after " + timeoutMinutes + " minutes")),
+          attemptTimeoutMs,
+        ),
+      );
+
+      fixResult = await Promise.race([
+        spawnSubagent({
+          model: modelSelection.fixModel,
+          tools: [...BUG_FIX_TOOLS],
+          prompt: userPrompt,
+          systemPrompt,
+          hooks,
+          cwd: input.gameRepoPath,
+          maxTurns: modelSelection.fixMaxTurns,
+          images: input.screenshots,
+        }),
+        timeoutPromise,
+      ]);
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error("[retry-loop] Fix subagent spawn failed: " + errMsg);
+      const isTimeout = errMsg.includes("timed out after");
+      console.error("[retry-loop] Fix subagent " + (isTimeout ? "timed out" : "spawn failed") + ": " + errMsg);
 
+      // PV2-6.5 AC5/AC6: Log timeout as "timeout" result with error message
       const logEntry: AttemptLogEntry = {
         attempt_number: attempt,
         model: modelSelection.fixModel,
-        approach: "subagent spawn failed",
-        result: "error",
+        approach: isTimeout ? "timed out after " + timeoutMinutes + " minutes" : "subagent spawn failed",
+        result: isTimeout ? "timeout" : "error",
         error_output: errMsg,
         timestamp: new Date().toISOString(),
       };
@@ -676,8 +745,8 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
 
       previousFailures.push({
         attempt,
-        approach: "subagent spawn failed",
-        result: "error",
+        approach: isTimeout ? "timed out after " + timeoutMinutes + " minutes" : "subagent spawn failed",
+        result: isTimeout ? "timeout" : "error",
         errorOutput: errMsg,
         qaFeedback: null,
       });
