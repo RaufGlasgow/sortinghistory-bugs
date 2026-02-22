@@ -202,6 +202,33 @@ jobs:
             } >> $GITHUB_OUTPUT
           fi
 
+      # PV2-6.3: Independent compilation verification (AC1-AC6, AC8)
+      # Runs xcodebuild independently of the subagent's self-report.
+      # Scheme name must match SortingHistory.xcodeproj/xcshareddata/xcschemes/
+      - name: Independent compilation check
+        if: steps.fix.outputs.applied == 'true' && steps.changes.outputs.has_changes == 'true' && env.PIPELINE_MODE == 'full'
+        id: compile-check
+        timeout-minutes: 5
+        working-directory: game-repo
+        run: |
+          echo "=== Independent compilation verification ==="
+          echo "Xcode version: $(xcodebuild -version | head -1)"
+          echo "Xcode path: $(xcode-select -p)"
+
+          if xcodebuild build \
+            -scheme SortingHistory \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet 2>&1; then
+            echo "COMPILE_RESULT=success" >> "$GITHUB_ENV"
+            echo "::notice::Independent compilation check PASSED"
+          else
+            echo "COMPILE_RESULT=failed" >> "$GITHUB_ENV"
+            echo "::error::Independent compilation check FAILED"
+            echo "Subagent reported: ${{ steps.fix.outputs.compilation }}"
+            exit 1
+          fi
+
       # ── Success path (full mode): commit, push, bump version, create PR ──
 
       - name: Commit changes
@@ -336,7 +363,7 @@ jobs:
       - name: Create PR on private repo
         id: create-pr
         if: >-
-          (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true')
+          (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true' && steps.compile-check.outcome == 'success')
           || (env.PIPELINE_MODE == 'qa-only' && steps.fix.outputs.applied == 'true')
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}

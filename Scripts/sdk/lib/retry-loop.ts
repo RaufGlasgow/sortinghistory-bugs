@@ -773,7 +773,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     // --------------------------------------------------
     // Step 4: Check compilation from self-report (AC2)
     // --------------------------------------------------
-    const compilationFailed = fixSummary?.compilation_result !== "success";
+    const compilationFailed = fixSummary?.compilation_result?.toLowerCase() !== "success";
 
     if (compilationFailed) {
       console.log("[retry-loop] Compilation self-report: " + (fixSummary?.compilation_result ?? "unknown") + " -- skipping QA");
