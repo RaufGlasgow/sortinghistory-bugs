@@ -41,7 +41,7 @@ describe("createWorkflowState", () => {
     assert.deepEqual(state.approved_findings, []);
     assert.deepEqual(state.rejected_findings, []);
     assert.equal(state.fix_attempts, 0);
-    assert.equal(state.max_fix_attempts, 2);
+    assert.equal(state.max_fix_attempts, 3);
     assert.deepEqual(state.fix_results, []);
     assert.equal(state.pr_number, null);
     assert.equal(state.error, null);
