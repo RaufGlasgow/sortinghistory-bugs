@@ -1,0 +1,173 @@
+name: Afternoon Fix Review Digest
+on:
+  schedule:
+    - cron: '0 22 * * *'  # 5:00 PM EST / 6:00 PM EDT = 22:00 UTC
+  workflow_dispatch: {}    # Manual trigger for testing
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query open pipeline PRs
+        id: query
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Get all open, non-draft PRs with fix/bug-* branch pattern
+          # Save raw JSON for subsequent steps
+          gh api "repos/RaufGlasgow/Sorting-History/pulls?state=open&per_page=100" \
+            --jq '[.[] | select(.head.ref | startswith("fix/bug-")) | select(.draft == false) | {number, title, head_ref: .head.ref, body, html_url}]' > /tmp/prs.json
+
+          PR_COUNT=$(jq length /tmp/prs.json)
+          echo "pr_count=$PR_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Found $PR_COUNT open pipeline PRs"
+
+      - name: Build and send digest
+        if: steps.query.outputs.pr_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: |
+          PR_COUNT=$(jq length /tmp/prs.json)
+
+          # --- Helper: HTML entity escape ---
+          html_escape() {
+            local text="$1"
+            text="${text//&/&amp;}"
+            text="${text//</&lt;}"
+            text="${text//>/&gt;}"
+            printf '%s' "$text"
+          }
+
+          # --- Helper: extract section from PR body ---
+          # Usage: extract_section "BODY" "## Section Name"
+          extract_section() {
+            local body="$1"
+            local heading="$2"
+            # Get text between the heading and the next ## heading (or end)
+            printf '%s' "$body" | sed -n "/^${heading}/,/^## /{ /^${heading}/d; /^## /d; p; }" | sed '/^$/d'
+          }
+
+          # --- Build per-PR cards ---
+          CARDS=""
+          for i in $(seq 0 $((PR_COUNT - 1))); do
+            PR_NUM=$(jq -r ".[$i].number" /tmp/prs.json)
+            PR_TITLE=$(jq -r ".[$i].title" /tmp/prs.json)
+            PR_BRANCH=$(jq -r ".[$i].head_ref" /tmp/prs.json)
+            PR_BODY=$(jq -r ".[$i].body // \"\"" /tmp/prs.json)
+            PR_URL=$(jq -r ".[$i].html_url" /tmp/prs.json)
+
+            # Extract issue number from branch name fix/bug-{N}
+            ISSUE_NUM=""
+            if echo "$PR_BRANCH" | grep -qE '^fix/bug-[0-9]+'; then
+              ISSUE_NUM=$(echo "$PR_BRANCH" | sed 's/fix\/bug-//')
+            fi
+
+            # Fetch issue title if we have an issue number
+            ISSUE_TITLE=""
+            if [ -n "$ISSUE_NUM" ]; then
+              ISSUE_TITLE=$(gh api "repos/RaufGlasgow/Sorting-History/issues/$ISSUE_NUM" --jq '.title' 2>/dev/null || echo "")
+            fi
+
+            # Check if PR body has ## Bug section (BA-009.2 format)
+            HAS_STRUCTURED_BODY=false
+            if echo "$PR_BODY" | grep -q '^## Bug'; then
+              HAS_STRUCTURED_BODY=true
+            fi
+
+            # Escaped values for HTML
+            SAFE_TITLE=$(html_escape "$PR_TITLE")
+            SAFE_ISSUE_TITLE=$(html_escape "$ISSUE_TITLE")
+
+            if [ "$HAS_STRUCTURED_BODY" = "true" ]; then
+              # Parse structured PR body sections
+              RISK_SECTION=$(printf '%s' "$PR_BODY" | sed -n '/^## Risk/,/^## /{ /^## Risk/d; /^## /d; p; }')
+              RISK_LEVEL=$(printf '%s' "$RISK_SECTION" | grep '^\*\*Level:\*\*' | sed 's/\*\*Level:\*\* *//')
+              RISK_REASON=$(printf '%s' "$RISK_SECTION" | grep '^\*\*Reason:\*\*' | sed 's/\*\*Reason:\*\* *//')
+
+              HOW_TO_TEST=$(printf '%s' "$PR_BODY" | sed -n '/^## How to Test/,/^## /{ /^## How to Test/d; /^## /d; p; }')
+              FILES_CHANGED=$(printf '%s' "$PR_BODY" | sed -n '/^## Files Changed/,/^## /{ /^## Files Changed/d; /^## /d; p; }')
+              BUILD_TESTS=$(printf '%s' "$PR_BODY" | sed -n '/^## Build /,/^## /{ /^## Build/d; /^## /d; p; }')
+
+              FIX_TYPE=$(printf '%s' "$HOW_TO_TEST" | grep '^\*\*Fix type:\*\*' | sed 's/\*\*Fix type:\*\* *//')
+
+              # Escape all parsed content
+              SAFE_RISK_LEVEL=$(html_escape "${RISK_LEVEL:-Unknown}")
+              SAFE_FIX_TYPE=$(html_escape "${FIX_TYPE:-unknown}")
+              SAFE_FILES=$(html_escape "$FILES_CHANGED")
+              SAFE_HOW_TO_TEST=$(html_escape "$HOW_TO_TEST")
+              SAFE_BUILD_TESTS=$(html_escape "${BUILD_TESTS:-See PR for details}")
+
+              # Build bug reference line
+              BUG_LINE=""
+              if [ -n "$ISSUE_NUM" ] && [ -n "$ISSUE_TITLE" ]; then
+                BUG_LINE="Fixes: Bug #${ISSUE_NUM} (${SAFE_ISSUE_TITLE})"
+              elif [ -n "$ISSUE_NUM" ]; then
+                BUG_LINE="Fixes: Bug #${ISSUE_NUM}"
+              fi
+
+              # Build action buttons
+              if [ -n "$ISSUE_NUM" ]; then
+                ACTION_BUTTONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
+              else
+                # No issue number extracted -- omit Reject/Redo, show GitHub link
+                ACTION_BUTTONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
+              fi
+
+              CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;\">PR #${PR_NUM} &mdash; ${SAFE_TITLE}</h3>"
+              if [ -n "$BUG_LINE" ]; then
+                CARD="${CARD}<p style=\"margin:0 0 8px 0;color:#6b7280;font-size:14px;\">${BUG_LINE}</p>"
+              fi
+              CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#374151;\">Type: ${SAFE_FIX_TYPE} | Risk: ${SAFE_RISK_LEVEL}</p>"
+              CARD="${CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">WHAT CHANGED:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_FILES}</pre></div>"
+              CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:13px;color:#374151;\"><strong>BUILD &amp; TESTS:</strong> ${SAFE_BUILD_TESTS}</p>"
+              CARD="${CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">HOW TO TEST:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_HOW_TO_TEST}</pre></div>"
+              CARD="${CARD}<div style=\"margin-top:12px;\">${ACTION_BUTTONS}</div></div>"
+            else
+              # Full-card fallback: no structured body
+              if [ -n "$ISSUE_NUM" ]; then
+                ACTION_BUTTONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
+              else
+                ACTION_BUTTONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
+              fi
+
+              CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;\">PR #${PR_NUM} &mdash; ${SAFE_TITLE}</h3><p style=\"margin:0 0 12px 0;font-size:14px;color:#6b7280;\">See PR for details: <a href=\"${PR_URL}\" style=\"color:#2563eb;\">${PR_URL}</a></p><div style=\"margin-top:12px;\">${ACTION_BUTTONS}</div></div>"
+            fi
+
+            CARDS="${CARDS}${CARD}"
+          done
+
+          # --- Build subject line (singular vs plural) ---
+          if [ "$PR_COUNT" -eq 1 ]; then
+            SUBJECT="SortingHistory: 1 fix ready -- approve or reject"
+          else
+            SUBJECT="SortingHistory: ${PR_COUNT} fixes ready -- approve or reject"
+          fi
+
+          # --- Build full email HTML ---
+          EMAIL_HTML="<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1.0\"></head><body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6;margin:0;padding:16px;\"><div style=\"max-width:600px;margin:0 auto;\"><h2 style=\"color:#111827;font-size:20px;margin-bottom:16px;\">Afternoon Fix Review</h2><p style=\"color:#6b7280;font-size:14px;margin-bottom:16px;\">${PR_COUNT} pipeline fix(es) ready for your review.</p>${CARDS}<p style=\"color:#9ca3af;font-size:12px;margin-top:24px;text-align:center;\">SortingHistory Pipeline &middot; Sent automatically at 5 PM EST</p></div></body></html>"
+
+          # --- Send via Resend ---
+          # Write JSON payload to file to avoid shell quoting issues
+          jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "$SUBJECT" \
+            --arg html "$EMAIL_HTML" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}' > /tmp/email-payload.json
+
+          RESPONSE=$(curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/email-payload.json 2>&1) || {
+              echo "::error::Resend API call failed: $RESPONSE"
+              exit 1
+            }
+
+          echo "Email sent successfully: $RESPONSE"
+
+      - name: Skip notification
+        if: steps.query.outputs.pr_count == '0'
+        run: echo "No open pipeline PRs found. Skipping email."
