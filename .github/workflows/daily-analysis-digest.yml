@@ -112,7 +112,7 @@ jobs:
             COMMENTS_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/comments?sort=created&direction=desc&per_page=50" 2>/dev/null || echo "[]")
 
             # Find the most recent comment containing "## AI Bug Analysis"
-            ANALYSIS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | contains("## AI Bug Analysis"))] | first | .body // ""')
+            ANALYSIS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | (contains("## AI Bug Analysis") or contains("## Triage Classification")))] | first | .body // ""')
 
             ANALYSIS_TEXT=""
             FIX_TEXT=""
@@ -128,10 +128,19 @@ jobs:
             else
               # Extract severity from comment (line starting with **Severity:**)
               COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | xargs)
+              if [ -z "$COMMENT_SEVERITY" ]; then
+                COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Severity\s*\|\s*`\K[^`]+' | head -1 | xargs)
+              fi
               COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | xargs)
+              if [ -z "$COMMENT_TYPE" ]; then
+                COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | xargs)
+              fi
 
               # Extract ### Analysis section (text between ### Analysis and next ###)
               ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Analysis/{found=1; next} /^###/{found=0} found{print}' | xargs)
+              if [ -z "$ANALYSIS_TEXT" ]; then
+                ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Reasoning:\*\*\s*\K.*' | head -1 | xargs)
+              fi
 
               if [ -z "$ANALYSIS_TEXT" ]; then
                 ANALYSIS_TEXT="See analysis on GitHub: ${ISSUE_URL}"

@@ -65,17 +65,41 @@ jobs:
             echo "Issue #${{ env.ISSUE_NUM }} has needs-manual-fix label — pipeline will not run."
             echo "Remove the needs-manual-fix label first if you want to retry."
             echo "blocked=true" >> $GITHUB_OUTPUT
+            echo "block_reason=escalation" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -qE "^(approved|pr-created)$"; then
+            RETRY="${{ github.event.client_payload.retry }}"
+            if [ "$RETRY" != "true" ]; then
+              MATCHED=$(echo "$LABELS" | grep -oE "^(approved|pr-created)$" | head -1)
+              echo "Issue #${{ env.ISSUE_NUM }} already has '$MATCHED' label — skipping to prevent duplicate work."
+              echo "blocked=true" >> $GITHUB_OUTPUT
+              echo "block_reason=idempotency" >> $GITHUB_OUTPUT
+              echo "block_label=$MATCHED" >> $GITHUB_OUTPUT
+            else
+              echo "Retry flag set — allowing run despite progress labels."
+              echo "blocked=false" >> $GITHUB_OUTPUT
+            fi
           else
             echo "blocked=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Post Escalation Block Notice
+      - name: Post Block Notice
         if: steps.guard.outputs.blocked == 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
-          gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
-            --body "## Pipeline Blocked
+          BLOCK_REASON="${{ steps.guard.outputs.block_reason }}"
+          if [ "$BLOCK_REASON" = "idempotency" ]; then
+            BLOCK_LABEL="${{ steps.guard.outputs.block_label }}"
+            gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+              --body "## Pipeline Skipped
+
+          Pipeline skipped — issue already has \`$BLOCK_LABEL\`. Use /reject to retry.
+
+          ---
+          *Posted by automated bug fix pipeline.*"
+          else
+            gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+              --body "## Pipeline Blocked
 
           This issue has the \`needs-manual-fix\` label (max automated attempts exhausted).
 
@@ -83,9 +107,10 @@ jobs:
 
           ---
           *Posted by automated bug fix pipeline.*"
+          fi
 
       - name: Reset Stale Labels (Re-run Resilience)
-        if: steps.guard.outputs.blocked != 'true'
+        if: steps.guard.outputs.blocked != 'true' && github.event.client_payload.retry == true
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -573,16 +598,28 @@ jobs:
           echo "Checking for existing PR on branch $BRANCH..."
           EXISTING_PR=$(gh pr list --head "$BRANCH" --repo RaufGlasgow/Sorting-History --json number -q '.[0].number' 2>/dev/null || true)
           if [ -n "$EXISTING_PR" ]; then
-            echo "Found existing PR #$EXISTING_PR — closing it"
-            gh pr close "$EXISTING_PR" --repo RaufGlasgow/Sorting-History 2>/dev/null || true
-            echo "old_pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
-            echo "Closed existing PR #$EXISTING_PR"
+            RETRY="${{ github.event.client_payload.retry }}"
+            if [ "$RETRY" = "true" ]; then
+              echo "Retry requested — closing existing PR #$EXISTING_PR"
+              gh pr comment "$EXISTING_PR" --repo RaufGlasgow/Sorting-History --body "Superseded by new fix attempt. See new PR when created." 2>/dev/null || true
+              gh pr close "$EXISTING_PR" --repo RaufGlasgow/Sorting-History 2>/dev/null || true
+              echo "old_pr_number=$EXISTING_PR" >> $GITHUB_OUTPUT
+              echo "skip_pipeline=false" >> $GITHUB_OUTPUT
+            else
+              echo "Open PR #$EXISTING_PR exists and this is NOT a retry — skipping pipeline"
+              gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+                --body "Pipeline skipped — open PR already exists (#$EXISTING_PR). Use /reject to retry."
+              echo "old_pr_number=" >> $GITHUB_OUTPUT
+              echo "skip_pipeline=true" >> $GITHUB_OUTPUT
+            fi
           else
             echo "No existing PR found for $BRANCH"
             echo "old_pr_number=" >> $GITHUB_OUTPUT
+            echo "skip_pipeline=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Create Pull Request
+        if: steps.close-old-pr.outputs.skip_pipeline != 'true'
         id: create-pr
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -1041,7 +1078,7 @@ jobs:
           fi
 
       - name: Update Issue Labels
-        if: always()
+        if: always() && steps.close-old-pr.outputs.skip_pipeline != 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |

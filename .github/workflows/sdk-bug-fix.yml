@@ -53,10 +53,42 @@ jobs:
           echo "Validated issue_number: $ISSUE"
           echo "Pipeline mode: ${{ env.PIPELINE_MODE }}"
 
+      - name: Check Idempotency Guard
+        id: guard
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          LABELS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
+          if echo "$LABELS" | grep -qE "^(approved|pr-created)$"; then
+            MATCHED=$(echo "$LABELS" | grep -oE "^(approved|pr-created)$" | head -1)
+            echo "Issue #${{ env.ISSUE_NUM }} already has '$MATCHED' label — skipping to prevent duplicate work."
+            echo "blocked=true" >> $GITHUB_OUTPUT
+            echo "label=$MATCHED" >> $GITHUB_OUTPUT
+          else
+            echo "blocked=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post Idempotency Block Notice
+        if: steps.guard.outputs.blocked == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          BLOCK_LABEL="${{ steps.guard.outputs.label }}"
+          gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --body "## Pipeline Skipped
+
+          Pipeline skipped — issue already has \`$BLOCK_LABEL\`. Use /reject to retry.
+
+          ---
+          *Posted by SDK bug fix pipeline.*"
+
       - name: Checkout public repo (automation scripts + SDK)
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         uses: actions/checkout@v4
 
       - name: Checkout private repo (game source)
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         uses: actions/checkout@v4
         with:
           repository: RaufGlasgow/Sorting-History
@@ -66,18 +98,22 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node.js
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Select Xcode 16.2
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
 
       - name: Install SDK dependencies
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         working-directory: Scripts/sdk
         run: npm ci
 
       - name: Build SDK
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         working-directory: Scripts/sdk
         run: npm run build
 
@@ -85,7 +121,7 @@ jobs:
 
       - name: Create fix branch in game repo (full mode)
         id: branch
-        if: env.PIPELINE_MODE == 'full'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full'
         working-directory: game-repo
         run: |
           BRANCH="fix/sdk-bug-${{ env.ISSUE_NUM }}"
@@ -95,7 +131,7 @@ jobs:
       # PV2-4.4 AC3a: Checkout existing fix branch (qa-only mode)
       - name: Checkout existing fix branch (qa-only mode)
         id: branch-qa
-        if: env.PIPELINE_MODE == 'qa-only'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'qa-only'
         working-directory: game-repo
         run: |
           BRANCH="fix/sdk-bug-${{ env.ISSUE_NUM }}"
@@ -114,6 +150,7 @@ jobs:
 
       - name: Run SDK bug-fix subagent with QA gate
         id: fix
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
         working-directory: Scripts/sdk
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -180,7 +217,7 @@ jobs:
 
       - name: Check for changes in game repo
         id: changes
-        if: env.PIPELINE_MODE == 'full'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full'
         working-directory: game-repo
         run: |
           CHANGED_FILES=$(git diff --name-only)
@@ -206,7 +243,7 @@ jobs:
       # Runs xcodebuild independently of the subagent's self-report.
       # Scheme name must match SortingHistory.xcodeproj/xcshareddata/xcschemes/
       - name: Independent compilation check
-        if: steps.fix.outputs.applied == 'true' && steps.changes.outputs.has_changes == 'true' && env.PIPELINE_MODE == 'full'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.fix.outputs.applied == 'true' && steps.changes.outputs.has_changes == 'true' && env.PIPELINE_MODE == 'full'
         id: compile-check
         timeout-minutes: 5
         working-directory: game-repo
@@ -232,7 +269,7 @@ jobs:
       # ── Success path (full mode): commit, push, bump version, create PR ──
 
       - name: Commit changes
-        if: env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         run: |
           git config user.name "SDK Bug Fix Bot"
@@ -291,7 +328,7 @@ jobs:
       # PV2-4.4 AC4: Skip version bump entirely in qa-only mode
       - name: Bump version (centralized)
         id: bump-version
-        if: env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -301,7 +338,7 @@ jobs:
 
       # PV2-4.4 AC10: Fix git add -A bug — use safe git add pattern for version bump amend
       - name: Amend commit with version bump
-        if: env.PIPELINE_MODE == 'full' && steps.bump-version.outputs.ALPHA_VERSION != ''
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.bump-version.outputs.ALPHA_VERSION != ''
         working-directory: game-repo
         run: |
           # Stage only files with allowed extensions (same pattern as Commit step)
@@ -345,7 +382,7 @@ jobs:
           fi
 
       - name: Push branch (full mode)
-        if: env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true'
         working-directory: game-repo
         run: |
           BRANCH="${{ steps.branch.outputs.name }}"
@@ -363,8 +400,9 @@ jobs:
       - name: Create PR on private repo
         id: create-pr
         if: >-
-          (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true' && steps.compile-check.outcome == 'success')
-          || (env.PIPELINE_MODE == 'qa-only' && steps.fix.outputs.applied == 'true')
+          (steps.guard.outputs.blocked || 'false') != 'true' &&
+          ((env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true' && steps.compile-check.outcome == 'success')
+          || (env.PIPELINE_MODE == 'qa-only' && steps.fix.outputs.applied == 'true'))
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -382,17 +420,33 @@ jobs:
           # Fetch issue title
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${ISSUE_NUM} --jq '.title')
 
-          # Close existing PR for this branch if re-running
+          # BA-010.3: Only close existing PR on retry or manual dispatch
           EXISTING_PR=$(gh pr list --head "$BRANCH" --repo RaufGlasgow/Sorting-History --json number -q '.[0].number' 2>/dev/null || true)
+          OLD_PR_NUMBER=""
           if [ -n "$EXISTING_PR" ]; then
-            echo "Closing existing PR #$EXISTING_PR"
-            gh pr close "$EXISTING_PR" --repo RaufGlasgow/Sorting-History 2>/dev/null || true
+            RETRY="${{ github.event.client_payload.retry }}"
+            IS_MANUAL="${{ github.event_name }}"
+            if [ "$RETRY" = "true" ] || [ "$IS_MANUAL" = "workflow_dispatch" ]; then
+              echo "Closing existing PR #$EXISTING_PR (retry=$RETRY, trigger=$IS_MANUAL)"
+              gh pr comment "$EXISTING_PR" --repo RaufGlasgow/Sorting-History --body "Superseded by new fix attempt. See new PR when created." 2>/dev/null || true
+              gh pr close "$EXISTING_PR" --repo RaufGlasgow/Sorting-History 2>/dev/null || true
+              OLD_PR_NUMBER="$EXISTING_PR"
+            else
+              echo "Open PR #$EXISTING_PR exists and this is NOT a retry — skipping PR creation"
+              gh issue comment --repo RaufGlasgow/Sorting-History "${ISSUE_NUM}" \
+                --body "Pipeline skipped — open PR already exists (#$EXISTING_PR). Use /reject to retry."
+              exit 0
+            fi
           fi
 
           # Build PR body file (uses --body-file to avoid shell backtick issues)
           PR_BODY_FILE="/tmp/pr-body-${ISSUE_NUM}.md"
 
           {
+            if [ -n "$OLD_PR_NUMBER" ]; then
+              echo "> **Re-run:** Replaces PR #$OLD_PR_NUMBER"
+              echo ""
+            fi
             if [ "$MODE" = "qa-only" ]; then
               echo "## SDK Bug Fix (QA-Only Re-Run)"
               echo ""
@@ -490,7 +544,7 @@ jobs:
 
       # PV2-3.3 AC11: Post QA review comment on the issue
       - name: Post QA review comment on issue
-        if: steps.fix.outputs.has_qa_summary == 'true'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.fix.outputs.has_qa_summary == 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -501,7 +555,7 @@ jobs:
           fi
 
       - name: Post success comment on issue
-        if: steps.create-pr.outputs.pr_url != ''
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -531,7 +585,7 @@ jobs:
           gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" -F /tmp/success-comment.md
 
       - name: Label issue with fix-generated
-        if: steps.create-pr.outputs.pr_url != ''
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -540,7 +594,7 @@ jobs:
 
       # PV2-4.4 AC3f: Remove escalation labels on qa-only success
       - name: Remove escalation labels (qa-only success)
-        if: env.PIPELINE_MODE == 'qa-only' && steps.create-pr.outputs.pr_url != ''
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'qa-only' && steps.create-pr.outputs.pr_url != ''
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
@@ -553,7 +607,7 @@ jobs:
       # ── Failure path: label + comment ──
 
       - name: Handle failure - no changes
-        if: always() && (steps.fix.outputs.applied != 'true' || (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes != 'true'))
+        if: always() && (steps.guard.outputs.blocked || 'false') != 'true' && (steps.fix.outputs.applied != 'true' || (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes != 'true'))
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
