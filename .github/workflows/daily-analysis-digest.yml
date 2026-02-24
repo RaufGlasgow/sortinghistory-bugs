@@ -86,6 +86,13 @@ jobs:
             TITLE=$(echo "$ISSUE_JSON" | jq -r '.title // "Unknown"')
             CREATED_AT=$(echo "$ISSUE_JSON" | jq -r '.created_at // ""')
             ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.html_url // ""')
+            BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
+
+            # Extract "Actual behavior" from bug report body
+            ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -3 | tr '\n' ' ' | xargs)
+            if [ -z "$ACTUAL_BEHAVIOR" ]; then
+              ACTUAL_BEHAVIOR=""
+            fi
 
             # Extract severity and type from issue labels
             SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
@@ -153,6 +160,7 @@ jobs:
             SAFE_ANALYSIS=$(html_escape "$ANALYSIS_TEXT")
             SAFE_FIX=$(html_escape "$FIX_TEXT")
             SAFE_DATE=$(html_escape "$FILED_DATE")
+            SAFE_ACTUAL=$(html_escape "$ACTUAL_BEHAVIOR")
 
             # Build action URLs
             APPROVE_URL="https://pipeline.sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
@@ -162,6 +170,9 @@ jobs:
             # Build card HTML
             CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
             CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+            if [ -n "$SAFE_ACTUAL" ]; then
+              CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+            fi
             CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
             CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
             CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
