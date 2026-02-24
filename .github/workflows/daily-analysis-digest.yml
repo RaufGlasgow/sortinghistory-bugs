@@ -77,6 +77,9 @@ jobs:
 
           # Build bug cards
           BUG_CARDS=""
+          ANALYZED_COUNT=0
+          PENDING_COUNT=0
+          PENDING_NUMS=""
 
           for NUM in $ISSUE_LIST; do
             echo "Processing issue #${NUM}..."
@@ -117,9 +120,11 @@ jobs:
             COMMENT_TYPE=""
 
             if [ -z "$ANALYSIS_COMMENT" ]; then
-              # No analysis comment found
-              ANALYSIS_TEXT="Analysis pending -- no AI analysis available yet."
-              FIX_TEXT=""
+              # No analysis — skip this bug from the digest, track it separately
+              PENDING_COUNT=$((PENDING_COUNT + 1))
+              PENDING_NUMS="${PENDING_NUMS} #${NUM}"
+              echo "Skipping issue #${NUM} — no AI analysis yet."
+              continue
             else
               # Extract severity from comment (line starting with **Severity:**)
               COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | xargs)
@@ -190,20 +195,41 @@ jobs:
             CARD="${CARD}</div></div>"
 
             BUG_CARDS="${BUG_CARDS}${CARD}"
+            ANALYZED_COUNT=$((ANALYZED_COUNT + 1))
           done
 
+          # If no analyzed bugs, skip sending (but log pending ones)
+          if [ "$ANALYZED_COUNT" -eq 0 ] && [ "$PENDING_COUNT" -eq 0 ]; then
+            echo "No bugs to report."
+            echo "skip_send=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$ANALYZED_COUNT" -eq 0 ] && [ "$PENDING_COUNT" -gt 0 ]; then
+            echo "${PENDING_COUNT} bugs awaiting analysis, none ready for review. Skipping email."
+            echo "skip_send=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Subject line: singular vs plural
-          if [ "$ISSUE_COUNT" -eq 1 ]; then
+          if [ "$ANALYZED_COUNT" -eq 1 ]; then
             SUBJECT="SortingHistory: 1 bug analyzed -- review needed"
           else
-            SUBJECT="SortingHistory: ${ISSUE_COUNT} bugs analyzed -- review needed"
+            SUBJECT="SortingHistory: ${ANALYZED_COUNT} bugs analyzed -- review needed"
+          fi
+
+          # Build pending notice if any
+          PENDING_NOTICE=""
+          if [ "$PENDING_COUNT" -gt 0 ]; then
+            PENDING_NOTICE="<div style=\"margin-bottom:20px;padding:12px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;font-size:13px;color:#6d4c00;\">${PENDING_COUNT} bug(s) still awaiting AI analysis (${PENDING_NUMS} ) &mdash; they will appear here once analyzed.</div>"
           fi
 
           # Full email HTML
           EMAIL_HTML="<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
           EMAIL_HTML="${EMAIL_HTML}<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#fff;\">"
           EMAIL_HTML="${EMAIL_HTML}<h2 style=\"margin:0 0 4px 0;font-size:20px;color:#1a1a1a;\">Morning Bug Digest</h2>"
-          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ISSUE_COUNT} bug(s) waiting for your review</p>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ANALYZED_COUNT} bug(s) ready for your review</p>"
+          EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
           EMAIL_HTML="${EMAIL_HTML}${BUG_CARDS}"
           EMAIL_HTML="${EMAIL_HTML}<p style=\"margin-top:24px;font-size:12px;color:#999;text-align:center;\">SortingHistory Pipeline &bull; <a href=\"https://github.com/RaufGlasgow/Sorting-History/issues\" style=\"color:#0366d6;\">View all issues on GitHub</a></p>"
           EMAIL_HTML="${EMAIL_HTML}</body></html>"
@@ -211,10 +237,11 @@ jobs:
           # Write to files for the send step
           echo "$SUBJECT" > /tmp/email_subject.txt
           echo "$EMAIL_HTML" > /tmp/email_body.html
-          echo "Email built with ${ISSUE_COUNT} bugs."
+          echo "skip_send=false" >> "$GITHUB_OUTPUT"
+          echo "Email built with ${ANALYZED_COUNT} analyzed bugs, ${PENDING_COUNT} pending."
 
       - name: Send via Resend
-        if: steps.query.outputs.issue_count != '0'
+        if: steps.query.outputs.issue_count != '0' && steps.build.outputs.skip_send != 'true'
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
