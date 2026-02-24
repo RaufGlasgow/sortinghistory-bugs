@@ -1,0 +1,227 @@
+name: Morning Analysis Digest
+
+on:
+  schedule:
+    - cron: '0 14 * * *'  # 9:00 AM EST / 10:00 AM EDT = 14:00 UTC
+  workflow_dispatch: {}    # Manual trigger for testing
+
+jobs:
+  send-digest:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+
+    steps:
+      - name: Query issues needing review
+        id: query
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Query both labels separately, then deduplicate
+          ISSUES_HR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-human-review&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ISSUES_TR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-triage&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+
+          # Combine, deduplicate, remove blank lines
+          ALL_NUMBERS=$(printf '%s\n%s\n' "$ISSUES_HR" "$ISSUES_TR" | sort -un | grep -v '^$' || true)
+
+          if [ -z "$ALL_NUMBERS" ]; then
+            echo "No issues found with needs-human-review or needs-triage labels."
+            echo "issue_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Filter out issues that already have approved or pr-created labels
+          FILTERED=""
+          for NUM in $ALL_NUMBERS; do
+            LABELS=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/labels" --jq '.[].name' 2>/dev/null || echo "")
+            if echo "$LABELS" | grep -qE '^(approved|pr-created)$'; then
+              echo "Skipping issue #${NUM} (has approved or pr-created label)"
+              continue
+            fi
+            FILTERED="${FILTERED}${NUM}\n"
+          done
+
+          FILTERED=$(printf '%b' "$FILTERED" | grep -v '^$' || true)
+
+          if [ -z "$FILTERED" ]; then
+            echo "All issues already approved or have PRs."
+            echo "issue_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COUNT=$(echo "$FILTERED" | wc -l | tr -d ' ')
+          echo "Found ${COUNT} issues needing review."
+          echo "issue_count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+          # Store issue numbers as space-separated list
+          ISSUE_LIST=$(echo "$FILTERED" | tr '\n' ' ' | xargs)
+          echo "issue_list=${ISSUE_LIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Build digest email
+        if: steps.query.outputs.issue_count != '0'
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          ISSUE_LIST: ${{ steps.query.outputs.issue_list }}
+          ISSUE_COUNT: ${{ steps.query.outputs.issue_count }}
+        run: |
+          # Function to escape HTML entities
+          html_escape() {
+            local text="$1"
+            text="${text//&/&amp;}"
+            text="${text//</&lt;}"
+            text="${text//>/&gt;}"
+            printf '%s' "$text"
+          }
+
+          # Build bug cards
+          BUG_CARDS=""
+
+          for NUM in $ISSUE_LIST; do
+            echo "Processing issue #${NUM}..."
+
+            # Fetch issue details
+            ISSUE_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}" 2>/dev/null || echo "{}")
+            TITLE=$(echo "$ISSUE_JSON" | jq -r '.title // "Unknown"')
+            CREATED_AT=$(echo "$ISSUE_JSON" | jq -r '.created_at // ""')
+            ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.html_url // ""')
+
+            # Extract severity and type from issue labels
+            SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
+            TYPE=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(. != "from-app" and . != "needs-human-review" and . != "needs-triage" and . != "needs-review" and (startswith("P") | not))] | first // "Unknown"')
+
+            # Format date as "Mon DD"
+            if [ -n "$CREATED_AT" ] && [ "$CREATED_AT" != "null" ]; then
+              FILED_DATE=$(date -d "$CREATED_AT" '+%b %d' 2>/dev/null || echo "$CREATED_AT" | cut -c1-10)
+            else
+              FILED_DATE="Unknown"
+            fi
+
+            # Fetch comments (newest first)
+            COMMENTS_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/comments?sort=created&direction=desc&per_page=50" 2>/dev/null || echo "[]")
+
+            # Find the most recent comment containing "## AI Bug Analysis"
+            ANALYSIS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | contains("## AI Bug Analysis"))] | first | .body // ""')
+
+            ANALYSIS_TEXT=""
+            FIX_TEXT=""
+            COMMENT_SEVERITY=""
+            COMMENT_TYPE=""
+
+            if [ -z "$ANALYSIS_COMMENT" ]; then
+              # No analysis comment found
+              ANALYSIS_TEXT="Analysis pending -- no AI analysis available yet."
+              FIX_TEXT=""
+            else
+              # Extract severity from comment (line starting with **Severity:**)
+              COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | xargs)
+              COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | xargs)
+
+              # Extract ### Analysis section (text between ### Analysis and next ###)
+              ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Analysis/{found=1; next} /^###/{found=0} found{print}' | xargs)
+
+              if [ -z "$ANALYSIS_TEXT" ]; then
+                ANALYSIS_TEXT="See analysis on GitHub: ${ISSUE_URL}"
+              else
+                # Truncate to 500 chars
+                if [ ${#ANALYSIS_TEXT} -gt 500 ]; then
+                  ANALYSIS_TEXT="${ANALYSIS_TEXT:0:500}..."
+                fi
+              fi
+
+              # Extract recommended fix: text after **Description:** in ### Suggested Fix section
+              FIX_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Suggested Fix/{found=1} found && /^\*\*Description:\*\*/{sub(/^\*\*Description:\*\*\s*/, ""); print; found=0}')
+
+              if [ -z "$FIX_TEXT" ]; then
+                FIX_TEXT="See analysis on GitHub: ${ISSUE_URL}"
+              fi
+            fi
+
+            # Use comment severity/type if available, fall back to label
+            if [ -n "$COMMENT_SEVERITY" ] && [ "$COMMENT_SEVERITY" != "" ]; then
+              SEVERITY="$COMMENT_SEVERITY"
+            fi
+            if [ -n "$COMMENT_TYPE" ] && [ "$COMMENT_TYPE" != "" ]; then
+              TYPE="$COMMENT_TYPE"
+            fi
+
+            # HTML-escape all user-generated content
+            SAFE_TITLE=$(html_escape "$TITLE")
+            SAFE_SEVERITY=$(html_escape "$SEVERITY")
+            SAFE_TYPE=$(html_escape "$TYPE")
+            SAFE_ANALYSIS=$(html_escape "$ANALYSIS_TEXT")
+            SAFE_FIX=$(html_escape "$FIX_TEXT")
+            SAFE_DATE=$(html_escape "$FILED_DATE")
+
+            # Build action URLs
+            APPROVE_URL="https://pipeline.sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
+            REJECT_URL="https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${NUM}&token=${AUTH_TOKEN}"
+            INFO_URL="https://pipeline.sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
+
+            # Build card HTML
+            CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
+            CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+            CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
+            CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
+            CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
+
+            if [ -n "$FIX_TEXT" ]; then
+              CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">RECOMMENDED FIX:</p>"
+              CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
+            fi
+
+            # Action buttons — large tap targets (min 44px height, generous padding)
+            CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
+            CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
+            CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+            CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
+            CARD="${CARD}</div></div>"
+
+            BUG_CARDS="${BUG_CARDS}${CARD}"
+          done
+
+          # Subject line: singular vs plural
+          if [ "$ISSUE_COUNT" -eq 1 ]; then
+            SUBJECT="SortingHistory: 1 bug analyzed -- review needed"
+          else
+            SUBJECT="SortingHistory: ${ISSUE_COUNT} bugs analyzed -- review needed"
+          fi
+
+          # Full email HTML
+          EMAIL_HTML="<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
+          EMAIL_HTML="${EMAIL_HTML}<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#fff;\">"
+          EMAIL_HTML="${EMAIL_HTML}<h2 style=\"margin:0 0 4px 0;font-size:20px;color:#1a1a1a;\">Morning Bug Digest</h2>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ISSUE_COUNT} bug(s) waiting for your review</p>"
+          EMAIL_HTML="${EMAIL_HTML}${BUG_CARDS}"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin-top:24px;font-size:12px;color:#999;text-align:center;\">SortingHistory Pipeline &bull; <a href=\"https://github.com/RaufGlasgow/Sorting-History/issues\" style=\"color:#0366d6;\">View all issues on GitHub</a></p>"
+          EMAIL_HTML="${EMAIL_HTML}</body></html>"
+
+          # Write to files for the send step
+          echo "$SUBJECT" > /tmp/email_subject.txt
+          echo "$EMAIL_HTML" > /tmp/email_body.html
+          echo "Email built with ${ISSUE_COUNT} bugs."
+
+      - name: Send via Resend
+        if: steps.query.outputs.issue_count != '0'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: |
+          SUBJECT=$(cat /tmp/email_subject.txt)
+          BODY=$(cat /tmp/email_body.html)
+
+          # Build JSON payload using jq to handle escaping properly
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "$SUBJECT" \
+            --arg html "$BODY" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || { echo "::error::Resend API call failed"; exit 1; }
+
+          echo "Digest email sent successfully."
