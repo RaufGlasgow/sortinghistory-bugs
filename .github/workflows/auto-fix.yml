@@ -587,8 +587,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
-          # Fetch issue title via API
+          # BA-009.2: Fetch issue title and body via API
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }} --jq '.title')
+          ISSUE_BODY=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }} --jq '.body | split("\n")[:3] | join("\n")')
 
           # Check if this is a re-run (old PR was closed)
           OLD_PR="${{ steps.close-old-pr.outputs.old_pr_number }}"
@@ -611,73 +612,52 @@ jobs:
           TESTINST_EOF
           TEST_INSTRUCTIONS=$(cat /tmp/test_instructions.txt)
 
-          # BA-008.5: Read RCA fields via quoted heredocs (safe from backtick substitution)
-          cat > /tmp/fix_strategy.txt <<'STRATEGY_EOF'
-          ${{ needs.create-fix.outputs.fix_strategy }}
-          STRATEGY_EOF
-          FIX_STRATEGY=$(cat /tmp/fix_strategy.txt)
+          # BA-009.2: Determine fix type and risk level
+          FIX_TYPE="${{ needs.create-fix.outputs.fix_type }}"
+          BUILD_OUTCOME="${{ needs.test-fix.outputs.build_outcome }}"
+          TEST_OUTCOME="${{ needs.test-fix.outputs.test_outcome }}"
 
-          cat > /tmp/rca_root_cause.txt <<'RCACAUSE_EOF'
-          ${{ needs.create-fix.outputs.rca_root_cause }}
-          RCACAUSE_EOF
-          RCA_ROOT_CAUSE=$(cat /tmp/rca_root_cause.txt)
+          case "$FIX_TYPE" in
+            content)
+              RISK_LEVEL="Low"
+              RISK_REASON="JSON data change only"
+              ;;
+            code)
+              RISK_LEVEL="Medium"
+              RISK_REASON="Changes application logic"
+              ;;
+            ux)
+              RISK_LEVEL="Medium"
+              RISK_REASON="Changes user interface"
+              ;;
+            *)
+              RISK_LEVEL="High"
+              RISK_REASON="Fix type undetermined"
+              ;;
+          esac
 
-          cat > /tmp/rca_mechanism.txt <<'RCAMECH_EOF'
-          ${{ needs.create-fix.outputs.rca_mechanism }}
-          RCAMECH_EOF
-          RCA_MECHANISM=$(cat /tmp/rca_mechanism.txt)
-
-          BUILD_URL="${{ needs.test-fix.outputs.build_url }}"
-
-          PR_BODY="## Automated Bug Fix
-          ${REPLACES_NOTE}
-          Fixes #${{ env.ISSUE_NUM }}
-
-          **Type:** ${{ needs.create-fix.outputs.fix_type }}
-
-          ### Changes Made
-          $FIX_SUMMARY"
-
-          # BA-008.5: Append Fix Strategy and RCA sections (only if RCA succeeded)
-          if [ -n "$FIX_STRATEGY" ]; then
-            PR_BODY="$PR_BODY
-
-          ### Fix Strategy
-          <!-- STRATEGY: $FIX_STRATEGY -->
-          $FIX_STRATEGY
-
-          ### Root Cause Analysis
-          **Root Cause:** $RCA_ROOT_CAUSE
-          **Mechanism:** $RCA_MECHANISM"
+          # Elevate to High if tests failed
+          if [ "$TEST_OUTCOME" != "success" ] && [ "$BUILD_OUTCOME" == "success" ]; then
+            RISK_LEVEL="High"
+            RISK_REASON="$RISK_REASON (tests failed)"
+          elif [ "$BUILD_OUTCOME" != "success" ]; then
+            RISK_LEVEL="High"
+            RISK_REASON="$RISK_REASON (build failed)"
           fi
 
-          # BA-008.9: Append QA iteration info
-          QA_ITERS="${{ needs.create-fix.outputs.qa_iterations }}"
-          QA_APPROVED="${{ needs.create-fix.outputs.qa_approved_iteration }}"
-          if [ -n "$QA_APPROVED" ] && [ "$QA_APPROVED" != "" ]; then
-            PR_BODY="$PR_BODY
+          # BA-009.2: Get filtered file list from the PR branch diff
+          BRANCH="fix/bug-${{ env.ISSUE_NUM }}"
+          FILES_CHANGED=$(gh api repos/RaufGlasgow/Sorting-History/compare/main...$BRANCH --jq '[.files[].filename | select(test("DerivedData|.DS_Store|.plist$") | not)] | join("\n")')
 
-          ### QA Review
-          **QA iterations:** ${QA_ITERS:-1}, approved on iteration ${QA_APPROVED}"
-          fi
-
-          if [ -n "$BUILD_URL" ]; then
-            PR_BODY="$PR_BODY
-
-          ### Download Build
-          **[Download Build (.app.zip)]($BUILD_URL)** — install on simulator:
-          \`\`\`bash
-          unzip SortingHistory-fix-${{ env.ISSUE_NUM }}.zip
-          xcrun simctl install booted \"Sorting History.app\"
-          xcrun simctl launch booted com.raul.sortinghistory.877348
-          \`\`\`"
-          fi
-
+          # BA-009.2: Build How to Test section with fallback templates
           if [ -n "$TEST_INSTRUCTIONS" ]; then
-            PR_BODY="$PR_BODY
-
-          ### How to Test
-          $TEST_INSTRUCTIONS"
+            HOW_TO_TEST="$TEST_INSTRUCTIONS"
+          elif [ "$FIX_TYPE" == "content" ]; then
+            HOW_TO_TEST="Open the app, navigate to the affected category, and verify the content displays correctly."
+          elif [ "$FIX_TYPE" == "ux" ]; then
+            HOW_TO_TEST="Open the app, navigate to the affected screen. Verify the visual change matches the fix description."
+          else
+            HOW_TO_TEST="Manual testing required. Review the changed files and verify the fix."
           fi
 
           # BA-008.9: Embed inner_loop_failures in PR body for outer retry consumption
@@ -688,20 +668,42 @@ jobs:
           <!-- INNER_LOOP_FAILURES: $INNER_FAILURES -->"
           fi
 
-          PR_BODY="$PR_BODY
+          # BA-009.2: Assemble PR body with 6 structured sections
+          cat > /tmp/pr_body.md <<PRBODY_EOF
+          ## Bug
+          ${REPLACES_NOTE}
+          **Issue:** #${{ env.ISSUE_NUM }} — ${ISSUE_TITLE}
+          ${ISSUE_BODY}
 
-          ### Rejection Instructions
-          If this fix doesn't work, post a comment **on this PR** with:
-          \`\`\`
-          /reject Describe what's still broken
-          \`\`\`
-          **What happens after rejection:**
-          - Attempt 1: Pipeline automatically retries with a different approach. New PR in ~10 minutes.
-          - Final attempt: Pipeline escalates — adds \`needs-manual-fix\` label to the issue.
+          ## Fix
+          ${FIX_SUMMARY}
+
+          ## Files Changed
+          ${FILES_CHANGED}
+
+          ## Risk
+          **Level:** ${RISK_LEVEL}
+          **Reason:** ${RISK_REASON}
+
+          ## How to Test
+          **Fix type:** ${FIX_TYPE}
+          **Steps:**
+          1. ${HOW_TO_TEST}
+          **Expected result:** The bug described in issue #${{ env.ISSUE_NUM }} is resolved.
+
+          ## Build & Tests
+          **Build:** ${BUILD_OUTCOME:-not run}
+          **Tests:** ${TEST_OUTCOME:-not run}
 
           ---
-          *This PR was automatically created by the bug fix system.*
-          *All fixes require manual review and merge.*${INNER_FAILURES_SECTION}"
+          Fixes #${{ env.ISSUE_NUM }}
+
+          *If this fix doesn't work, post a comment on this PR with:*
+          \`\`\`
+          /reject Describe what's still broken
+          \`\`\`${INNER_FAILURES_SECTION}
+          PRBODY_EOF
+          PR_BODY=$(cat /tmp/pr_body.md)
 
           # Determine attempt number for title
           ATTEMPT="${{ github.event.client_payload.attempt || '1' }}"

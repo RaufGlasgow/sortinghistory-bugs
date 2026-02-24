@@ -2758,6 +2758,18 @@ async function main() {
           setOutput('fact_check_concern', factCheck.concern || 'Unverified');
         }
       }
+
+      // BA-009.2: Emit test_instructions for content fixes
+      if (success && result.filePath) {
+        const category = path.basename(result.filePath, '.json').replace(/_[a-z]{2}$/, '').replace(/([A-Z])/g, ' $1').trim();
+        if (result.eventTitle && result.changes) {
+          const changedFields = Object.keys(result.changes).map(k => `${k}: ${result.changes[k].to}`).join(', ');
+          setOutput('test_instructions', `Open the app, navigate to ${category}, find event '${result.eventTitle}', verify ${changedFields}`);
+        } else {
+          setOutput('test_instructions', `Open the app, navigate to ${category}, verify the content displays correctly`);
+        }
+        setOutput('modified_files', result.filePath);
+      }
     } else {
       // All non-content bugs (code, ux, other) route to Claude Opus 4.5
       // for intelligent fix generation
