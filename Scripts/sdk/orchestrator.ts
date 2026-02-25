@@ -460,7 +460,7 @@ async function main(): Promise<void> {
           filePath,
           category,
           correctionsLogPath,
-          repoRoot: gameRepoPath,
+          repoRoot: process.cwd(),
           dryRun: !noDryRun,  // AC8: --no-dry-run explicitly sets dryRun: false
           issue_number: issueNumber,  // AC9: pass issue_number
         };
