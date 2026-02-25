@@ -293,9 +293,9 @@ async function runAutomatedGates(
     const raw = fs.readFileSync(filePath, "utf-8");
     categoryData = JSON.parse(raw) as CategoryFile;
   } catch (err: unknown) {
-    console.error("[content-verify] Could not read events file: " + filePath);
-    console.error("Error: " + (err instanceof Error ? err.message : String(err)));
-    process.exit(1);
+    const msg = "[content-verify] Could not read events file: " + filePath + " — " + (err instanceof Error ? err.message : String(err));
+    console.error(msg);
+    throw new Error(msg);
   }
 
   // Inherit file-level category onto events that don't have their own category field
@@ -397,26 +397,18 @@ async function runAutomatedGates(
 // Phase 2: AI verification via Haiku subagent
 // ------------------------------------------------------------------
 
-async function runAiVerification(
+/** Maximum events per AI verification batch to avoid context overflow */
+const AI_BATCH_SIZE = 100;
+
+/**
+ * Run AI verification on a single batch of events.
+ */
+async function runAiVerificationBatch(
   events: GameEvent[],
+  systemPrompt: string,
   repoRoot: string,
+  batchLabel: string,
 ): Promise<AiVerificationResponse> {
-  if (events.length === 0) {
-    return { events_checked: 0, events_passed: 0, events_failed: 0, results: [] };
-  }
-
-  // Load system prompt
-  const promptPath = path.join(repoRoot, "Scripts", "sdk", "prompts", "content-verifier.md");
-  let systemPrompt: string;
-  try {
-    systemPrompt = fs.readFileSync(promptPath, "utf-8");
-  } catch (err: unknown) {
-    console.error("[content-verify] Could not read system prompt at " + promptPath);
-    console.error("Error: " + (err instanceof Error ? err.message : String(err)));
-    process.exit(1);
-  }
-
-  // Build user prompt with the events to verify
   // Strip _planted_error fields before sending to subagent
   const cleanEvents = events.map(e => {
     const clean = { ...e };
@@ -444,7 +436,7 @@ async function runAiVerification(
     "Output ONLY a JSON object with the verification results. No markdown, no explanation, just raw JSON.",
   ].join("\n");
 
-  console.log("[content-verify] Spawning Haiku subagent for " + events.length + " events");
+  console.log("[content-verify] " + batchLabel + ": spawning Haiku subagent for " + events.length + " events");
 
   const result: SubagentResult = await spawnSubagent({
     model: MODELS.VERIFIER,
@@ -457,19 +449,16 @@ async function runAiVerification(
 
   // If AI verification failed, return empty results (automated gates still valid)
   if (!result.success) {
-    console.warn("[content-verify] AI subagent failed (automated results still valid): " + result.error);
+    console.warn("[content-verify] " + batchLabel + ": AI subagent failed (automated results still valid): " + result.error);
     return { events_checked: events.length, events_passed: events.length, events_failed: 0, results: [] };
   }
 
   if (result.usedWriteTools) {
-    console.error("[content-verify] AI subagent used write tools (read-only violation)");
-    console.error("Tools used: " + result.toolsUsed.join(", "));
-    process.exit(1);
+    throw new Error("[content-verify] " + batchLabel + ": AI subagent used write tools (read-only violation). Tools: " + result.toolsUsed.join(", "));
   }
 
   if (!result.responseText) {
-    console.error("[content-verify] No response text from AI subagent");
-    process.exit(1);
+    throw new Error("[content-verify] " + batchLabel + ": No response text from AI subagent");
   }
 
   // Parse AI response
@@ -478,14 +467,12 @@ async function runAiVerification(
     const jsonText = extractJson(result.responseText, "events_checked");
     aiResponse = JSON.parse(jsonText) as AiVerificationResponse;
   } catch (err: unknown) {
-    console.error("[content-verify] Could not parse AI response as JSON");
-    console.error("Raw response: " + result.responseText);
-    console.error("Parse error: " + (err instanceof Error ? err.message : String(err)));
-    process.exit(1);
+    const parseErr = err instanceof Error ? err.message : String(err);
+    throw new Error("[content-verify] " + batchLabel + ": Could not parse AI response as JSON: " + parseErr + ". Raw (first 500 chars): " + (result.responseText ?? "").slice(0, 500));
   }
 
   // Log metrics
-  console.log("[content-verify] AI verification complete");
+  console.log("[content-verify] " + batchLabel + ": AI verification complete");
   console.log("  Model: " + (result.model ?? MODELS.VERIFIER));
   console.log("  Session ID: " + result.sessionId);
   console.log("  Input tokens: " + result.inputTokens);
@@ -495,6 +482,53 @@ async function runAiVerification(
   console.log("  Tools used: [" + result.toolsUsed.join(", ") + "]");
 
   return aiResponse;
+}
+
+async function runAiVerification(
+  events: GameEvent[],
+  repoRoot: string,
+): Promise<AiVerificationResponse> {
+  if (events.length === 0) {
+    return { events_checked: 0, events_passed: 0, events_failed: 0, results: [] };
+  }
+
+  // Load system prompt (once, shared across all batches)
+  const promptPath = path.join(repoRoot, "Scripts", "sdk", "prompts", "content-verifier.md");
+  let systemPrompt: string;
+  try {
+    systemPrompt = fs.readFileSync(promptPath, "utf-8");
+  } catch (err: unknown) {
+    const msg = "[content-verify] Could not read system prompt at " + promptPath + " — " + (err instanceof Error ? err.message : String(err));
+    console.error(msg);
+    throw new Error(msg);
+  }
+
+  // Split into batches to avoid context overflow
+  const batches: GameEvent[][] = [];
+  for (let i = 0; i < events.length; i += AI_BATCH_SIZE) {
+    batches.push(events.slice(i, i + AI_BATCH_SIZE));
+  }
+
+  if (batches.length > 1) {
+    console.log("[content-verify] Splitting " + events.length + " events into " + batches.length + " batches of up to " + AI_BATCH_SIZE);
+  }
+
+  // Run each batch sequentially and merge results
+  const merged: AiVerificationResponse = { events_checked: 0, events_passed: 0, events_failed: 0, results: [] };
+
+  for (let i = 0; i < batches.length; i++) {
+    const batchLabel = batches.length > 1 ? "Batch " + (i + 1) + "/" + batches.length : "Single batch";
+    const batchResult = await runAiVerificationBatch(batches[i], systemPrompt, repoRoot, batchLabel);
+
+    merged.events_checked += batchResult.events_checked;
+    merged.events_passed += batchResult.events_passed;
+    merged.events_failed += batchResult.events_failed;
+    if (batchResult.results) {
+      merged.results.push(...batchResult.results);
+    }
+  }
+
+  return merged;
 }
 
 // ------------------------------------------------------------------
