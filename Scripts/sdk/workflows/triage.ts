@@ -20,8 +20,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ROUTING } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
-import { decideRoute, executeRoute, type RoutingInput } from "../lib/routing.js";
+import { decideRoute, executeRoute, type RoutingInput, type RoutingAction } from "../lib/routing.js";
 import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
+import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing-log.js";
 import type { TriageData } from "../lib/types.js";
 
 // ---------------------------------------------------------------------------
@@ -275,6 +276,9 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   // Normal routing
   const routingAction = decideRoute(routingInput);
 
+  // Log routing decision (BA-011 Story 1.3: between decideRoute and executeRoute)
+  logRoutingDecision(buildLogEntry(issueNumber, triageResult, routingAction));
+
   // Execute the routing action
   // Note: For content_error dispatch, routing.ts now applies sdk-routed + content-error
   // labels automatically via the issue_labels field on the dispatch action (HIGH-4 fix).
@@ -368,6 +372,40 @@ export function buildClassificationComment(triage: TriageResult): string {
   lines.push("TRIAGE_DATA_END -->");
 
   return lines.join("\n");
+}
+
+/** Build routing decision log entry (BA-011 Story 1.3) */
+function buildLogEntry(
+  issueNumber: number,
+  triage: TriageResult,
+  action: RoutingAction,
+): RoutingDecisionLogEntry {
+  // Determine which gate fired
+  let gate: RoutingDecisionLogEntry["gate"] = "classification_route";
+  let labels: string[] = [];
+
+  if (action.type === "skip") {
+    gate = "idempotency";
+  } else if (action.type === "label" || action.type === "label_and_state") {
+    labels = action.labels;
+    if (labels.includes(ROUTING.LABEL_LOW_CONFIDENCE)) {
+      gate = "confidence";
+    } else if (labels.includes(ROUTING.LABEL_UNKNOWN_CLASSIFICATION)) {
+      gate = "unknown_classification";
+    }
+  } else if (action.type === "dispatch" && action.issue_labels) {
+    labels = action.issue_labels.labels;
+  }
+
+  return {
+    ts: new Date().toISOString(),
+    issue: issueNumber,
+    cls: triage.classification,
+    conf: triage.confidence,
+    action: action.type,
+    labels,
+    gate,
+  };
 }
 
 /** Build the routing action comment (AC4) */

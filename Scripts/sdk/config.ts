@@ -36,6 +36,8 @@ export const PATHS = {
   ARCHIVE_DIR: process.env.SDK_ARCHIVE_DIR ?? "state/archive",
   /** Private game repo checked out by Actions */
   GAME_REPO: process.env.SDK_GAME_REPO ?? "game-repo",
+  /** Routing decision log directory (BA-011 NFR4: public repo, JSONL format) */
+  ROUTING_LOG_DIR: process.env.SDK_ROUTING_LOG_DIR ?? "state/routing-log",
 };
 
 /** Workflow limits from Architecture Section 4.1 */
