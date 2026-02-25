@@ -1,0 +1,513 @@
+import { execSync } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { PATHS, ROUTING } from "./config.js";
+import { createWorkflowState, updateWorkflowState, loadWorkflowState, findWorkflowByIssue, } from "./lib/state.js";
+import { getSession, removeSession } from "./lib/session.js";
+import { buildHooksConfig } from "./lib/hooks.js";
+import { runProof } from "./workflows/proof.js";
+import { runPauseResumeProof, runPausePhase1, runResumePhase2, } from "./workflows/pause-resume-proof.js";
+import { runTriageTest } from "./workflows/triage-test.js";
+import { runRoutingTest } from "./workflows/routing-test.js";
+import { runResumeByIssueTest } from "./workflows/resume-test.js";
+import { decideRoute, executeRoute } from "./lib/routing.js";
+import { runContentVerify } from "./workflows/content-verify.js";
+import { runContentVerifyTest } from "./workflows/content-verify-test.js";
+import { runContentFix } from "./workflows/content-fix.js";
+import { runContentFixTest } from "./workflows/content-fix-test.js";
+import { runContentE2E, resumeContentE2E, } from "./workflows/content-e2e.js";
+import { runContentE2ETest } from "./workflows/content-e2e-test.js";
+import { runRealTriage } from "./workflows/triage.js";
+import { runBugFix } from "./workflows/bug-fix.js";
+import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
+/**
+ * Parse a named flag from process.argv.
+ * Supports: `--flag value` syntax.
+ * Returns the value as a string, or null if not found.
+ */
+function parseFlag(flagName) {
+    const args = process.argv;
+    for (let i = 3; i < args.length; i++) {
+        if (args[i] === "--" + flagName && i + 1 < args.length) {
+            return args[i + 1];
+        }
+    }
+    return null;
+}
+/**
+ * Check for the presence of a boolean flag (e.g., --no-dry-run).
+ * Returns true if the flag is present.
+ */
+function hasFlag(flagName) {
+    return process.argv.includes("--" + flagName, 3);
+}
+/**
+ * Parse and validate --issue flag as a positive integer (AC7, AC8, AC12).
+ * Exits with error if invalid.
+ */
+function parseIssueFlag() {
+    const issueStr = parseFlag("issue");
+    if (!issueStr) {
+        console.error("Command requires --issue <number> flag");
+        console.error("Usage: orchestrator.ts <command> --issue 42");
+        process.exit(1);
+    }
+    // AC8/AC13: Validate as numeric to prevent injection
+    if (!/^\d+$/.test(issueStr)) {
+        console.error("Invalid --issue value: \"" + issueStr + "\". Must be a positive integer.");
+        process.exit(1);
+    }
+    const issueNumber = parseInt(issueStr, 10);
+    if (issueNumber <= 0 || !Number.isFinite(issueNumber)) {
+        console.error("Invalid --issue value: " + issueNumber + ". Must be a positive integer.");
+        process.exit(1);
+    }
+    return issueNumber;
+}
+/**
+ * Parse and validate --action flag for resume command (AC12).
+ * Must be "approve" or "reject".
+ */
+function parseActionFlag() {
+    const actionStr = parseFlag("action");
+    if (!actionStr) {
+        console.error("resume requires --action <approve|reject> flag");
+        console.error("Usage: orchestrator.ts resume --issue 42 --action approve");
+        process.exit(1);
+    }
+    if (actionStr !== "approve" && actionStr !== "reject") {
+        console.error("Invalid --action value: \"" + actionStr + "\". Must be 'approve' or 'reject'.");
+        process.exit(1);
+    }
+    return actionStr;
+}
+/**
+ * Parse and validate --category flag for content-e2e command.
+ * Must be a known category name.
+ */
+function parseCategoryFlag() {
+    const category = parseFlag("category");
+    if (!category) {
+        console.error("content-e2e requires --category <name> flag");
+        console.error("Usage: orchestrator.ts content-e2e --category \"US History\" --issue 42 --no-dry-run");
+        process.exit(1);
+    }
+    if (!isKnownCategory(category)) {
+        console.error("Unknown category: \"" + category + "\"");
+        console.error("Valid categories: " + allCategoryNames().join(", "));
+        process.exit(1);
+    }
+    return category;
+}
+/** Start a new workflow. Creates state file, spawns initial subagent. */
+async function runWorkflow(params) {
+    const state = await createWorkflowState(params.type, params.trigger, params.category);
+    console.log(`[orchestrator] Created workflow ${state.workflow_id} (${params.type})`);
+    // Hooks config applies to all subagent sessions
+    const _hooks = buildHooksConfig();
+    // Workflow-specific logic implemented in later stories:
+    // - Story 2.1: content verification
+    // - Story 3.1: translation verification
+    // - Story 4.1: bug triage
+    console.log(`[orchestrator] Workflow ${state.workflow_id} — not yet implemented for ${params.type}`);
+}
+/** Resume a paused workflow after human approval/rejection (legacy JSON path). */
+async function resumeWorkflow(params) {
+    let workflowId = params.workflowId;
+    // Resolve workflowId from issueNumber if not provided directly
+    if (!workflowId && params.issueNumber) {
+        const foundState = await findWorkflowByIssue(params.issueNumber);
+        if (!foundState) {
+            console.error(`[orchestrator] No workflow found for issue #${params.issueNumber}`);
+            process.exit(1);
+        }
+        workflowId = foundState.workflow_id;
+        console.log(`[orchestrator] Resolved issue #${params.issueNumber} -> ${workflowId}`);
+    }
+    if (!workflowId) {
+        console.error("[orchestrator] resume requires workflowId or issueNumber");
+        process.exit(1);
+    }
+    const session = await getSession(workflowId);
+    if (!session) {
+        console.error(`[orchestrator] No paused session found for ${workflowId}`);
+        process.exit(1);
+    }
+    const state = await loadWorkflowState(workflowId);
+    if (!state) {
+        console.error(`[orchestrator] No state file found for ${workflowId}`);
+        process.exit(1);
+    }
+    console.log(`[orchestrator] Resuming ${workflowId} with action=${params.action}`);
+    if (params.action === "reject") {
+        await updateWorkflowState(workflowId, {
+            status: "complete",
+            rejected_findings: state.findings,
+        });
+        await removeSession(workflowId);
+        console.log(`[orchestrator] Workflow ${workflowId} rejected and closed`);
+        return;
+    }
+    // Approval flow — Story 1.5 proves pause/resume, Story 2.3 implements full pipeline
+    console.log(`[orchestrator] Resume with SDK session ${session.session_id} — not yet implemented`);
+}
+/** Query the status of a workflow */
+async function getStatus(workflowId) {
+    const state = await loadWorkflowState(workflowId);
+    if (!state) {
+        console.log(`[orchestrator] Workflow ${workflowId} not found`);
+        return;
+    }
+    console.log(JSON.stringify({
+        workflow_id: state.workflow_id,
+        status: state.status,
+        type: state.workflow_type,
+        findings: state.findings.length,
+        fix_attempts: state.fix_attempts,
+        updated_at: state.updated_at,
+    }, null, 2));
+}
+/**
+ * Post a comment on a GitHub issue in the private repo.
+ * Uses --body-file to avoid shell backtick command substitution eating markdown code spans.
+ */
+function postIssueComment(issueNumber, comment) {
+    const repo = ROUTING.PRIVATE_REPO;
+    const tmpFile = join(tmpdir(), "gh-comment-" + issueNumber + "-" + Date.now() + ".md");
+    try {
+        writeFileSync(tmpFile, comment, "utf-8");
+        execSync("gh issue comment " + issueNumber + " --repo " + repo + " --body-file " + tmpFile, { encoding: "utf-8", timeout: 30_000 });
+        console.log("[orchestrator] Comment posted on " + repo + "#" + issueNumber);
+    }
+    catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[orchestrator] WARNING: Failed to post comment: " + errMsg);
+    }
+    finally {
+        try {
+            unlinkSync(tmpFile);
+        }
+        catch { /* cleanup best-effort */ }
+    }
+}
+/** Entry point — invoked from GitHub Actions or CLI */
+async function main() {
+    const command = process.argv[2];
+    const payload = process.argv[3];
+    if (!command) {
+        console.error("Usage: orchestrator.ts <run|resume|status|proof|triage|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test|bug-fix> <payload>");
+        process.exit(1);
+    }
+    switch (command) {
+        case "run": {
+            if (!payload) {
+                console.error("run requires a JSON payload: {type, category?, trigger}");
+                process.exit(1);
+            }
+            const params = JSON.parse(payload);
+            await runWorkflow(params);
+            break;
+        }
+        case "resume": {
+            // Story 2.4b (AC4, AC12): Flag-based resume command
+            // Usage: orchestrator.ts resume --issue <number> --action <approve|reject>
+            // Also supports legacy JSON payload for backward compatibility
+            if (hasFlag("issue") || hasFlag("action")) {
+                // Flag-based path (AC12)
+                const issueNumber = parseIssueFlag();
+                const action = parseActionFlag();
+                console.log("[orchestrator] Resume via flags: issue=#" + issueNumber + " action=" + action);
+                // Look up the workflow by issue number (AC14)
+                const foundState = await findWorkflowByIssue(issueNumber);
+                if (!foundState) {
+                    console.error("[orchestrator] No paused workflow found for issue #" + issueNumber);
+                    // AC14: Post comment on issue about missing workflow
+                    postIssueComment(issueNumber, "## Resume Failed\n\n" +
+                        "No paused workflow found for this issue. " +
+                        "It may have already been completed or was never started.");
+                    process.exit(1);
+                }
+                // Call resumeContentE2E (AC2, AC4)
+                const result = await resumeContentE2E(foundState.workflow_id, { action }, { dryRun: false });
+                console.log("[orchestrator] Resume result: " + result.status);
+                if (result.error) {
+                    console.error("[orchestrator] Error: " + result.error);
+                }
+                if (result.prNumber) {
+                    console.log("[orchestrator] PR: #" + result.prNumber);
+                }
+                // Post result comment on the issue
+                if (result.status === "complete" && result.prNumber) {
+                    postIssueComment(issueNumber, "## Content Fix Complete\n\n" +
+                        "PR #" + result.prNumber + " created with " +
+                        result.approvedFindings + " finding(s) fixed.\n\n" +
+                        "**Workflow:** `" + result.workflowId + "`");
+                }
+                else if (result.status === "escalated") {
+                    postIssueComment(issueNumber, "## Content Fix Escalated\n\n" +
+                        "The content fix could not be completed automatically.\n\n" +
+                        "**Error:** " + (result.error ?? "Unknown") + "\n" +
+                        "**Workflow:** `" + result.workflowId + "`\n\n" +
+                        "Manual intervention is required.");
+                }
+                else if (result.status === "complete" && action === "reject") {
+                    postIssueComment(issueNumber, "## Findings Rejected\n\n" +
+                        "All findings have been rejected. Workflow closed.\n\n" +
+                        "**Workflow:** `" + result.workflowId + "`");
+                }
+                break;
+            }
+            // Legacy JSON payload path
+            if (!payload) {
+                console.error("resume requires --issue and --action flags, or a JSON payload");
+                console.error("Usage: orchestrator.ts resume --issue 42 --action approve");
+                process.exit(1);
+            }
+            const params = JSON.parse(payload);
+            await resumeWorkflow(params);
+            break;
+        }
+        case "status": {
+            if (!payload) {
+                console.error("status requires a workflow ID");
+                process.exit(1);
+            }
+            await getStatus(payload);
+            break;
+        }
+        case "proof": {
+            // Story 1.3: Haiku read-only proof — spawns a subagent to read a game event file
+            await runProof();
+            break;
+        }
+        case "pause-resume": {
+            // Story 1.5: Combined pause/resume proof (both phases sequentially)
+            await runPauseResumeProof();
+            break;
+        }
+        case "pause": {
+            // Story 1.5: Phase 1 only (pause — for testing phases independently)
+            const workflowId = await runPausePhase1();
+            console.log(workflowId);
+            break;
+        }
+        case "resume-test": {
+            // Story 1.5: Phase 2 only (resume — for testing phases independently)
+            if (!payload) {
+                console.error("resume-test requires a workflow ID as the second argument");
+                process.exit(1);
+            }
+            await runResumePhase2(payload);
+            break;
+        }
+        case "triage-test": {
+            // Story 4.1: Run all 7 triage fixtures and validate classification + severity
+            await runTriageTest();
+            break;
+        }
+        case "route": {
+            // Story 4.2: Route a triage result — expects JSON payload with RoutingInput fields
+            if (!payload) {
+                console.error("route requires a JSON payload: {classification, severity, confidence, extracted_context, issue_number, existing_labels?}");
+                process.exit(1);
+            }
+            const routingInput = JSON.parse(payload);
+            const action = decideRoute(routingInput);
+            const dryRun = process.env.DRY_RUN === "true";
+            await executeRoute(action, dryRun);
+            break;
+        }
+        case "routing-test": {
+            // Story 4.2: Run all 9 routing fixtures — pure logic test, $0.00 cost
+            await runRoutingTest();
+            break;
+        }
+        case "resume-by-issue-test": {
+            // Story 4.3: Resume-by-issue lookup test — pure logic, $0.00 cost
+            await runResumeByIssueTest();
+            break;
+        }
+        case "content-verify": {
+            // Story 2.1: Content verifier — runs automated + AI gates on a category file
+            if (!payload) {
+                console.error("content-verify requires a JSON payload: {filePath, category?}");
+                process.exit(1);
+            }
+            const cvInput = JSON.parse(payload);
+            await runContentVerify(cvInput);
+            break;
+        }
+        case "content-verify-test": {
+            // Story 2.1: Content verifier test — runs fixtures and validates error detection
+            await runContentVerifyTest();
+            break;
+        }
+        case "content-fix": {
+            // Story 2.2: Content fixer — applies fixes to events based on verifier findings
+            if (!payload) {
+                console.error("content-fix requires a JSON payload: {findings, correctionsLogPath, repoRoot?}");
+                process.exit(1);
+            }
+            const cfInput = JSON.parse(payload);
+            await runContentFix(cfInput);
+            break;
+        }
+        case "content-fix-test": {
+            // Story 2.2: Content fixer test — fixes 3 findings, re-verifies, validates logs
+            await runContentFixTest();
+            break;
+        }
+        case "content-e2e": {
+            // Story 2.3 + 2.4b: Content E2E orchestration
+            // Supports both flag-based (CI) and JSON payload (legacy/test) modes
+            if (hasFlag("category") || hasFlag("issue") || hasFlag("no-dry-run")) {
+                // Flag-based path for CI (Story 2.4b AC5)
+                const category = parseCategoryFlag();
+                const issueNumber = parseIssueFlag();
+                const noDryRun = hasFlag("no-dry-run");
+                // Resolve workspace root (GITHUB_WORKSPACE in CI, two levels up from Scripts/sdk locally)
+                const workspaceRoot = process.env.GITHUB_WORKSPACE ?? resolve(process.cwd(), "../..");
+                // Resolve file path from category
+                const gameRepoPath = PATHS.GAME_REPO;
+                const filePath = categoryToFilePath(category, gameRepoPath);
+                if (!filePath) {
+                    console.error("Could not resolve file path for category: " + category);
+                    postIssueComment(issueNumber, "## Pipeline Error\n\nCould not resolve file path for category: `" + category + "`.\n\nThis bug needs manual review.");
+                    process.exit(1);
+                }
+                const correctionsLogPath = gameRepoPath + "/Data/corrections/corrections-log.json";
+                const e2eInput = {
+                    filePath,
+                    category,
+                    correctionsLogPath,
+                    repoRoot: workspaceRoot,
+                    dryRun: !noDryRun, // AC8: --no-dry-run explicitly sets dryRun: false
+                    issue_number: issueNumber, // AC9: pass issue_number
+                };
+                let result;
+                try {
+                    result = await runContentE2E(e2eInput);
+                }
+                catch (err) {
+                    const errMsg = err instanceof Error ? err.message : String(err);
+                    console.error("[orchestrator] content-e2e failed: " + errMsg);
+                    postIssueComment(issueNumber, "## Pipeline Error\n\n" +
+                        "Content verification failed unexpectedly.\n\n" +
+                        "**Error:** `" + errMsg + "`\n\n" +
+                        "Check the [workflow run](https://github.com/RaufGlasgow/sortinghistory-bugs/actions) for details.\n\n" +
+                        "This bug needs manual review.");
+                    process.exit(1);
+                }
+                // Post findings summary on the issue if we paused
+                if (result.status === "awaiting_approval") {
+                    const findingsText = result.totalFindings + " finding(s) detected.";
+                    postIssueComment(issueNumber, "## Content Verification Complete\n\n" +
+                        findingsText + "\n\n" +
+                        "**Workflow:** `" + result.workflowId + "`\n\n" +
+                        "Comment `approve` to fix, or `reject` to dismiss.");
+                }
+                break;
+            }
+            // Legacy JSON payload path
+            if (!payload) {
+                console.error("content-e2e requires flags (--category, --issue, --no-dry-run) or a JSON payload");
+                process.exit(1);
+            }
+            const e2eInput = JSON.parse(payload);
+            const e2eApproval = e2eInput.approval;
+            await runContentE2E(e2eInput, e2eApproval);
+            break;
+        }
+        case "content-e2e-test": {
+            // Story 2.3: Content E2E test — happy path + escalation tests
+            await runContentE2ETest();
+            break;
+        }
+        case "triage": {
+            // Story 2.4a: Real triage command — fetches issue from private repo, classifies, routes
+            const issueNumber = parseIssueFlag();
+            await runRealTriage({ issueNumber });
+            break;
+        }
+        case "bug-fix": {
+            // Story SDK-BF.1 + PV2-3.3 + PV2-4.2 + PV2-4.4: Bug fix with retry loop or QA-only re-run
+            // Usage: orchestrator.ts bug-fix --issue <NUM> [--game-repo <path>] [--dry-run] [--qa-only]
+            const issueNumber = parseIssueFlag();
+            const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
+            const isDryRun = hasFlag("dry-run");
+            const isQaOnly = hasFlag("qa-only");
+            console.log("[orchestrator] Bug fix: issue=#" + issueNumber + " game-repo=" + gameRepo + " dry-run=" + isDryRun + " qa-only=" + isQaOnly);
+            const bugFixResult = await runBugFix({
+                issueNumber,
+                gameRepoPath: gameRepo,
+                dryRun: isDryRun,
+                qaOnly: isQaOnly,
+            });
+            console.log("[orchestrator] Bug fix result: " + (bugFixResult.success ? "success" : "failed"));
+            console.log("[orchestrator] Fix attempts used: " + bugFixResult.fixAttemptsUsed);
+            if (bugFixResult.error) {
+                console.error("[orchestrator] Error: " + bugFixResult.error);
+            }
+            if (bugFixResult.summary) {
+                console.log("[orchestrator] Files modified: " + bugFixResult.summary.files_modified.length);
+                console.log("[orchestrator] Compilation: " + bugFixResult.summary.compilation_result);
+                console.log("[orchestrator] Confidence: " + bugFixResult.summary.confidence);
+            }
+            // PV2-3.3 AC10: Write QA summary to temp file for YAML to read
+            if (bugFixResult.qaSummary) {
+                const qaSummaryFile = join(gameRepo, "..", "qa-summary.md");
+                try {
+                    writeFileSync(qaSummaryFile, bugFixResult.qaSummary, "utf-8");
+                    console.log("[orchestrator] QA summary written to: " + qaSummaryFile);
+                }
+                catch (writeErr) {
+                    const writeMsg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+                    console.log("[orchestrator] WARNING: Could not write QA summary file: " + writeMsg);
+                }
+            }
+            // Post result comment on the issue (includes QA summary and attempt count)
+            if (bugFixResult.success && bugFixResult.summary) {
+                const attemptNote = bugFixResult.fixAttemptsUsed > 1
+                    ? " (succeeded on attempt " + bugFixResult.fixAttemptsUsed + ")"
+                    : "";
+                const commentParts = [
+                    "## Bug Fix Applied" + attemptNote,
+                    "",
+                    "**Summary:** " + bugFixResult.summary.fix_summary,
+                    "**Files modified:** " + bugFixResult.summary.files_modified.length,
+                    "**Compilation:** " + bugFixResult.summary.compilation_result,
+                    "**Confidence:** " + bugFixResult.summary.confidence,
+                    "**Attempts:** " + bugFixResult.fixAttemptsUsed,
+                    "",
+                    "**Workflow:** `" + bugFixResult.workflowId + "`",
+                ];
+                if (bugFixResult.qaSummary) {
+                    commentParts.push("");
+                    commentParts.push("---");
+                    commentParts.push("");
+                    commentParts.push(bugFixResult.qaSummary);
+                }
+                postIssueComment(issueNumber, commentParts.join("\n"));
+            }
+            // Note: failure comments are now posted by bug-fix.ts (PV2-4.2 AC7)
+            // No need to duplicate here
+            // PV2-4.2 AC5: Output attempt number for YAML PR title
+            if (bugFixResult.fixAttemptsUsed > 1) {
+                console.log("[orchestrator] Retry needed: attempt " + bugFixResult.fixAttemptsUsed);
+            }
+            // Exit with code 1 on failure so YAML correctly detects applied=false
+            if (!bugFixResult.success) {
+                process.exit(1);
+            }
+            break;
+        }
+        default:
+            console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test, bug-fix`);
+            process.exit(1);
+    }
+}
+main().catch((err) => {
+    console.error("[orchestrator] Fatal error:", err);
+    process.exit(1);
+});

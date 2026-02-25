@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { MODELS, PATHS, ROUTING, type WorkflowType } from "./config.js";
 import {
   createWorkflowState,
@@ -446,11 +446,15 @@ async function main(): Promise<void> {
         const issueNumber = parseIssueFlag();
         const noDryRun = hasFlag("no-dry-run");
 
+        // Resolve workspace root (GITHUB_WORKSPACE in CI, two levels up from Scripts/sdk locally)
+        const workspaceRoot = process.env.GITHUB_WORKSPACE ?? resolve(process.cwd(), "../..");
+
         // Resolve file path from category
         const gameRepoPath = PATHS.GAME_REPO;
         const filePath = categoryToFilePath(category, gameRepoPath);
         if (!filePath) {
           console.error("Could not resolve file path for category: " + category);
+          postIssueComment(issueNumber, "## Pipeline Error\n\nCould not resolve file path for category: `" + category + "`.\n\nThis bug needs manual review.");
           process.exit(1);
         }
 
@@ -460,12 +464,27 @@ async function main(): Promise<void> {
           filePath,
           category,
           correctionsLogPath,
-          repoRoot: process.cwd(),
+          repoRoot: workspaceRoot,
           dryRun: !noDryRun,  // AC8: --no-dry-run explicitly sets dryRun: false
           issue_number: issueNumber,  // AC9: pass issue_number
         };
 
-        const result = await runContentE2E(e2eInput);
+        let result;
+        try {
+          result = await runContentE2E(e2eInput);
+        } catch (err: unknown) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.error("[orchestrator] content-e2e failed: " + errMsg);
+          postIssueComment(
+            issueNumber,
+            "## Pipeline Error\n\n" +
+              "Content verification failed unexpectedly.\n\n" +
+              "**Error:** `" + errMsg + "`\n\n" +
+              "Check the [workflow run](https://github.com/RaufGlasgow/sortinghistory-bugs/actions) for details.\n\n" +
+              "This bug needs manual review.",
+          );
+          process.exit(1);
+        }
 
         // Post findings summary on the issue if we paused
         if (result.status === "awaiting_approval") {
