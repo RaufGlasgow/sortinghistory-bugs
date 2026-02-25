@@ -1,8 +1,8 @@
 /**
  * Routing Test Fixtures
  *
- * 11 test fixtures covering all routing paths + idempotency skip + category fallback.
- * Updated for SDK-BF.3: ui_bug and gameplay_bug now label-only (wait for /approve).
+ * Test fixtures covering all routing paths + idempotency skip + category fallback.
+ * Updated for BA-011: Gate 2 unknown classification → safe label (not throw).
  * Used by the routing-test harness (pure logic tests, no API calls, $0.00 cost).
  */
 
@@ -223,6 +223,80 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
       labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P4", ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- BA-011 Gate 2 fixtures: unknown/invalid classifications → safe label ---
+
+  // --- route-gate2-unknown: completely unknown classification → safe label (S1) ---
+  {
+    id: "route-gate2-unknown",
+    description: "Unknown classification 'banana_error' → safe label (Gate 2)",
+    input: {
+      classification: "banana_error",
+      severity: "P1",
+      confidence: 0.9,
+      extracted_context: {},
+      issue_number: 999,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-gate2-empty-string: empty string classification → safe label (TEA edge case) ---
+  {
+    id: "route-gate2-empty-string",
+    description: "Empty string classification → safe label (Gate 2)",
+    input: {
+      classification: "",
+      severity: "P2",
+      confidence: 0.8,
+      extracted_context: {},
+      issue_number: 1000,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-gate2-whitespace: whitespace-padded classification → safe label (TEA edge case) ---
+  {
+    id: "route-gate2-whitespace",
+    description: "Whitespace-padded ' content_error ' → safe label (case-sensitive, no trimming)",
+    input: {
+      classification: " content_error ",
+      severity: "P2",
+      confidence: 0.9,
+      extracted_context: {},
+      issue_number: 1001,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-gate2-wrong-casing: wrong casing classification → safe label (TEA edge case) ---
+  {
+    id: "route-gate2-wrong-casing",
+    description: "Wrong casing 'Content_Error' → safe label (case-sensitive match)",
+    input: {
+      classification: "Content_Error",
+      severity: "P2",
+      confidence: 0.85,
+      extracted_context: {},
+      issue_number: 1002,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
     },
   },
 ];

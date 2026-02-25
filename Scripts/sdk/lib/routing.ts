@@ -15,7 +15,7 @@
  * github.token CANNOT trigger repository_dispatch (proven lesson — CLAUDE.md rule).
  */
 
-import { ROUTING, type WorkflowType } from "../config.js";
+import { ROUTING, CLASSIFICATION_SET, type Classification, type WorkflowType } from "../config.js";
 import { createWorkflowState } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -84,7 +84,11 @@ export type RoutingAction = DispatchAction | LabelAction | LabelAndStateAction |
  * This is a PURE function: no I/O, no API calls, no randomness.
  * Returns a RoutingAction describing what to do.
  *
- * Throws on unknown classification (defensive).
+ * 2-gate system (BA-011):
+ *   Gate 2: Unknown classification → safe label (S1)
+ *   Route: Known classification → routeByClassification()
+ *
+ * Gate 1 (confidence) added in Story 1.2.
  */
 export function decideRoute(input: RoutingInput): RoutingAction {
   // Idempotency: skip if already routed (AC-10)
@@ -96,7 +100,29 @@ export function decideRoute(input: RoutingInput): RoutingAction {
     };
   }
 
-  switch (input.classification) {
+  // Gate 2 (BA-011 S1): Unknown classification → safe label, never crash
+  if (!CLASSIFICATION_SET.has(input.classification)) {
+    console.log("[routing] Gate 2: Unknown classification \"" + input.classification + "\" for issue #" + input.issue_number + " — safe label fallback");
+    return {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      issue_number: input.issue_number,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+    };
+  }
+
+  return routeByClassification(input.classification as Classification, input);
+}
+
+/**
+ * Route a known classification to its action (ARCH-5).
+ *
+ * Uses TypeScript exhaustive switch with `never` assertion —
+ * adding a classification to CLASSIFICATIONS without a case here
+ * causes a compile error.
+ */
+function routeByClassification(classification: Classification, input: RoutingInput): RoutingAction {
+  switch (classification) {
     case "content_error": {
       // AC-1: dispatch sdk-content-verify to public repo
       // HIGH-4 fix: also apply sdk-routed + content-error labels on the private repo issue
@@ -147,7 +173,6 @@ export function decideRoute(input: RoutingInput): RoutingAction {
 
     case "ui_bug": {
       // SDK-BF.3 AC1: ALL ui_bug severities → label with classification + severity, wait for /approve
-      // Triage classifies and labels only. Fix dispatch happens via /approve webhook command.
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
@@ -186,12 +211,18 @@ export function decideRoute(input: RoutingInput): RoutingAction {
       };
     }
 
-    default:
-      throw new Error(
-        "Unknown classification: \"" + input.classification + "\". " +
-        "Cannot route issue #" + input.issue_number + ". " +
-        "Valid classifications: content_error, content_category_error, translation_error, ui_bug, gameplay_bug, feature_request, needs_human_review"
-      );
+    default: {
+      // Exhaustive check — TypeScript will error if a Classification case is missing
+      const _exhaustive: never = classification;
+      // This line should be unreachable. If somehow reached at runtime, safe fallback.
+      console.error("[routing] Exhaustive check failed for: " + String(_exhaustive));
+      return {
+        type: "label",
+        repo: ROUTING.PRIVATE_REPO,
+        issue_number: input.issue_number,
+        labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+      };
+    }
   }
 }
 

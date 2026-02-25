@@ -62,6 +62,25 @@ export const FIXER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as 
 /** Read-write tools for bug fix subagents (Swift + JSON via buildBugFixHooksConfig) */
 export const BUG_FIX_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] as const;
 
+/** Canonical classification list — single source of truth (BA-011 AC1).
+ *  Adding a classification requires changes in exactly 4 files:
+ *  config.ts, bug-triager.md, routing.ts, routing-fixtures.ts (NFR14). */
+export const CLASSIFICATIONS = [
+  "content_error",
+  "content_category_error",
+  "translation_error",
+  "ui_bug",
+  "gameplay_bug",
+  "feature_request",
+  "needs_human_review",
+] as const;
+
+/** Union type of all valid classifications */
+export type Classification = (typeof CLASSIFICATIONS)[number];
+
+/** Set for O(1) membership checks — derived from CLASSIFICATIONS (AC1) */
+export const CLASSIFICATION_SET: ReadonlySet<string> = new Set(CLASSIFICATIONS);
+
 /** Routing constants — repos, labels, dispatch event types (Story 4.2) */
 export const ROUTING = {
   /** GitHub repos */
@@ -84,4 +103,6 @@ export const ROUTING = {
   LABEL_FEATURE_REQUEST: "feature-request",
   LABEL_NEEDS_HUMAN_REVIEW: "needs-human-review",
   LABEL_NEEDS_TRIAGE: "needs-triage",
+  /** BA-011: Labels for unknown/unrecognized classifications */
+  LABEL_UNKNOWN_CLASSIFICATION: "unknown-classification",
 } as const;

@@ -1,15 +1,13 @@
 /**
- * Story 4.2: Routing Test Harness
+ * Routing Test Harness
  *
- * Validates all 9 routing fixtures by running them through decideRoute()
+ * Validates all routing fixtures by running them through decideRoute()
  * and comparing the returned RoutingAction against expected values.
  *
  * Pure logic test — NO Anthropic API calls, NO GitHub API calls.
  * Cost: $0.00
  *
- * Also validates:
- * - decideRoute() throws on unknown classification (defensive)
- * - DRY_RUN mode logs but does not execute
+ * BA-011 update: unknown classifications now return safe label (not throw).
  *
  * Exit codes:
  * - 0: All tests pass
@@ -18,6 +16,7 @@
 
 import { ROUTING_FIXTURES, type RoutingFixture, type ExpectedAction } from "../tests/routing-fixtures.js";
 import { decideRoute, executeRoute, type RoutingAction } from "../lib/routing.js";
+import { ROUTING } from "../config.js";
 
 interface TestResult {
   fixture: RoutingFixture;
@@ -155,24 +154,32 @@ export async function runRoutingTest(): Promise<void> {
     console.log("");
   }
 
-  // --- Additional test: unknown classification throws (defensive) ---
-  console.log("--- extra-1: unknown classification throws ---");
-  let unknownThrew = false;
+  // --- Additional test: unknown classification returns safe label (BA-011 Gate 2) ---
+  console.log("--- extra-1: unknown classification returns safe label (Gate 2) ---");
+  let unknownSafeLabel = false;
   try {
-    decideRoute({
+    const unknownResult = decideRoute({
       classification: "banana_error",
       severity: "P1",
       confidence: 0.9,
       extracted_context: {},
       issue_number: 999,
     });
+    // Should return label action with needs-human-review + unknown-classification + sdk-routed
+    if (unknownResult.type === "label" &&
+        unknownResult.labels.includes(ROUTING.LABEL_NEEDS_HUMAN_REVIEW) &&
+        unknownResult.labels.includes(ROUTING.LABEL_UNKNOWN_CLASSIFICATION) &&
+        unknownResult.labels.includes(ROUTING.LABEL_ROUTED)) {
+      unknownSafeLabel = true;
+    }
   } catch {
-    unknownThrew = true;
+    // Should NOT throw anymore
+    unknownSafeLabel = false;
   }
-  if (unknownThrew) {
-    console.log("[extra-1] PASS: decideRoute threw on unknown classification");
+  if (unknownSafeLabel) {
+    console.log("[extra-1] PASS: decideRoute returned safe label for unknown classification");
   } else {
-    console.log("[extra-1] FAIL: decideRoute did NOT throw on unknown classification");
+    console.log("[extra-1] FAIL: decideRoute did NOT return safe label for unknown classification");
   }
   console.log("");
 
@@ -203,7 +210,7 @@ export async function runRoutingTest(): Promise<void> {
   console.log("=== Routing Test Suite Summary ===");
   const passCount = results.filter(r => r.passed).length;
   const failCount = results.length - passCount;
-  const extraPassCount = (unknownThrew ? 1 : 0) + (dryRunPassed ? 1 : 0);
+  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0);
   const extraFailCount = 2 - extraPassCount;
   const totalPass = passCount + extraPassCount;
   const totalFail = failCount + extraFailCount;
@@ -214,7 +221,7 @@ export async function runRoutingTest(): Promise<void> {
     const detail = r.errors.length > 0 ? " (" + r.errors.join("; ") + ")" : "";
     console.log("  " + r.fixture.id + ": " + status + detail);
   }
-  console.log("  extra-1: " + (unknownThrew ? "PASS" : "FAIL"));
+  console.log("  extra-1: " + (unknownSafeLabel ? "PASS" : "FAIL"));
   console.log("  extra-2: " + (dryRunPassed ? "PASS" : "FAIL"));
 
   console.log("");
