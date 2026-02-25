@@ -57,10 +57,10 @@ User asking for something that doesn't exist in the current app. Not a bug.
 - "I'd love to see a timer mode"
 
 ### needs_human_review
-Use this classification ONLY when:
-- Your confidence is below 0.7, OR
+Use this classification when:
 - The report could legitimately fit multiple categories, OR
-- The report is too vague to classify
+- The report is too vague to classify, OR
+- You genuinely cannot determine the bug type
 
 ## Severity Scale
 
@@ -93,9 +93,12 @@ Fill the `extracted_context` fields from the bug report text (and screenshots) a
 
 ## Confidence Rules
 
+Report your actual confidence honestly for whatever classification you choose. The routing system handles low-confidence results automatically — you do NOT need to change your classification based on confidence.
+
 - If you are highly certain of the classification: confidence >= 0.9
 - If you are fairly certain but there's some ambiguity: confidence 0.7-0.89
-- If your confidence is below 0.7: you MUST classify as `needs_human_review`
+- If you are unsure but have a best guess: confidence 0.4-0.69
+- If you are guessing: confidence < 0.4
 - If the report could legitimately be two different types: classify as `needs_human_review`
 
 ## Output Format

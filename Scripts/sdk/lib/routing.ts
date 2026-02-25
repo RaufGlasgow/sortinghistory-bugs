@@ -15,7 +15,7 @@
  * github.token CANNOT trigger repository_dispatch (proven lesson — CLAUDE.md rule).
  */
 
-import { ROUTING, CLASSIFICATION_SET, type Classification, type WorkflowType } from "../config.js";
+import { ROUTING, CLASSIFICATION_SET, CONFIDENCE_THRESHOLD, type Classification, type WorkflowType } from "../config.js";
 import { createWorkflowState } from "./state.js";
 
 // ---------------------------------------------------------------------------
@@ -84,11 +84,10 @@ export type RoutingAction = DispatchAction | LabelAction | LabelAndStateAction |
  * This is a PURE function: no I/O, no API calls, no randomness.
  * Returns a RoutingAction describing what to do.
  *
- * 2-gate system (BA-011):
+ * 3-gate system (BA-011):
+ *   Gate 1: Low confidence → safe label (S4, AC3)
  *   Gate 2: Unknown classification → safe label (S1)
  *   Route: Known classification → routeByClassification()
- *
- * Gate 1 (confidence) added in Story 1.2.
  */
 export function decideRoute(input: RoutingInput): RoutingAction {
   // Idempotency: skip if already routed (AC-10)
@@ -97,6 +96,18 @@ export function decideRoute(input: RoutingInput): RoutingAction {
       type: "skip",
       reason: "already routed, skipping issue #" + input.issue_number,
       issue_number: input.issue_number,
+    };
+  }
+
+  // Gate 1 (BA-011 S4): Low confidence → safe label, cheapest action
+  // Strictly less-than: 0.70 passes, 0.69 is blocked (FR6)
+  if (input.confidence < CONFIDENCE_THRESHOLD) {
+    console.log("[routing] Gate 1: Low confidence " + input.confidence.toFixed(2) + " (threshold " + CONFIDENCE_THRESHOLD + ") for issue #" + input.issue_number + " — safe label fallback");
+    return {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      issue_number: input.issue_number,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
     };
   }
 

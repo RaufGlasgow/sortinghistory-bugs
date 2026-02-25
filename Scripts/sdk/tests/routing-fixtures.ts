@@ -136,13 +136,14 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
   },
 
   // --- route-7: needs_human_review -> label needs-human-review (AC-7) ---
+  // Note: confidence raised to 0.75 so this tests the classification route, not the confidence gate
   {
     id: "route-7",
     description: "needs_human_review routes to manual triage queue",
     input: {
       classification: "needs_human_review",
       severity: "P3",
-      confidence: 0.5,
+      confidence: 0.75,
       extracted_context: {},
       issue_number: 48,
     },
@@ -297,6 +298,100 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
       labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- BA-011 Gate 1 fixtures: low confidence → safe label ---
+
+  // --- route-gate1-low-conf: confidence 0.69 → safe label (strictly less than 0.7) ---
+  {
+    id: "route-gate1-low-conf",
+    description: "content_error with confidence 0.69 → safe label (Gate 1: below 0.7)",
+    input: {
+      classification: "content_error",
+      severity: "P2",
+      confidence: 0.69,
+      extracted_context: { category: "US History" },
+      issue_number: 200,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-gate1-boundary: confidence 0.70 → routes normally (boundary test) ---
+  {
+    id: "route-gate1-boundary",
+    description: "content_error with confidence 0.70 → routes normally (exactly at threshold)",
+    input: {
+      classification: "content_error",
+      severity: "P2",
+      confidence: 0.70,
+      extracted_context: { category: "US History" },
+      issue_number: 201,
+    },
+    expected: {
+      type: "dispatch",
+      event_type: ROUTING.DISPATCH_CONTENT_VERIFY,
+      repo: ROUTING.PUBLIC_REPO,
+      payload_keys: ["workflow_type", "category", "issue_number"],
+      payload_values: { workflow_type: "content_verification", category: "US History", issue_number: 201 },
+    },
+  },
+
+  // --- gate1-fires-before-gate2: unknown classification + low confidence → Gate 1 (not Gate 2) ---
+  {
+    id: "gate1-fires-before-gate2",
+    description: "Unknown 'banana_error' with confidence 0.3 → Gate 1 (low-confidence, NOT unknown-classification)",
+    input: {
+      classification: "banana_error",
+      severity: "P1",
+      confidence: 0.3,
+      extracted_context: {},
+      issue_number: 202,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-gate1-exactly-zero: confidence 0.0 → safe label ---
+  {
+    id: "route-gate1-exactly-zero",
+    description: "confidence 0.0 → safe label (Gate 1)",
+    input: {
+      classification: "ui_bug",
+      severity: "P3",
+      confidence: 0.0,
+      extracted_context: {},
+      issue_number: 203,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-gate1-exactly-one: confidence 1.0 → routes normally ---
+  {
+    id: "route-gate1-exactly-one",
+    description: "feature_request with confidence 1.0 → routes normally",
+    input: {
+      classification: "feature_request",
+      severity: "P4",
+      confidence: 1.0,
+      extracted_context: {},
+      issue_number: 204,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_FEATURE_REQUEST, ROUTING.LABEL_ROUTED],
     },
   },
 ];

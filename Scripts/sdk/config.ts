@@ -81,6 +81,11 @@ export type Classification = (typeof CLASSIFICATIONS)[number];
 /** Set for O(1) membership checks — derived from CLASSIFICATIONS (AC1) */
 export const CLASSIFICATION_SET: ReadonlySet<string> = new Set(CLASSIFICATIONS);
 
+/** Confidence threshold for routing gate (BA-011 FR6, FR25).
+ *  Strictly less-than comparison: 0.70 passes, 0.69 is blocked.
+ *  Change this single constant to adjust — no routing logic or prompt changes needed. */
+export const CONFIDENCE_THRESHOLD = 0.7;
+
 /** Routing constants — repos, labels, dispatch event types (Story 4.2) */
 export const ROUTING = {
   /** GitHub repos */
@@ -105,4 +110,6 @@ export const ROUTING = {
   LABEL_NEEDS_TRIAGE: "needs-triage",
   /** BA-011: Labels for unknown/unrecognized classifications */
   LABEL_UNKNOWN_CLASSIFICATION: "unknown-classification",
+  /** BA-011: Label for low-confidence classifications (below CONFIDENCE_THRESHOLD) */
+  LABEL_LOW_CONFIDENCE: "low-confidence",
 } as const;
