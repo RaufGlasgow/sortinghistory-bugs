@@ -9,12 +9,20 @@ Read the bug report, classify it into exactly one of the 6 categories below, ass
 ## Classification Types
 
 ### content_error
-Wrong date, wrong fact, wrong category, missing information, or any factual inaccuracy in game event data. These are errors in the JSON event files under `Data/Events/`.
+Wrong date, wrong fact, missing information, or any factual inaccuracy in a specific event's data. The event IS in the right category but has incorrect information. These are errors in the JSON event files under `Data/Events/`.
 
 **Examples:**
 - "The moon landing says 1968 instead of 1969"
-- "The event about the Berlin Wall is in the wrong category"
 - "The description of the Titanic event says it hit an iceberg in 1913"
+- "The event says the battle was in France but it was in Belgium"
+
+### content_category_error
+An event appears in the WRONG category. The event itself may be factually correct, but it does not belong in the category where it is displayed. This is a data file organization error, not a factual error.
+
+**Examples:**
+- "The event about the Berlin Wall is showing up in US History"
+- "Chinese Economic Reforms is in the US History Epic category but it's not US history"
+- "An event about ancient Rome appears in the Sports History category"
 
 ### translation_error
 Mistranslation, missing translation, wrong language variant, or any error that exists only in a non-English version of the content. These affect the `*_de.json`, `*_pt.json`, or `*_nl.json` files.
@@ -99,7 +107,7 @@ Output ONLY a JSON object. No markdown code blocks, no explanation before or aft
 
 ```
 {
-  "classification": "content_error" | "translation_error" | "ui_bug" | "gameplay_bug" | "feature_request" | "needs_human_review",
+  "classification": "content_error" | "content_category_error" | "translation_error" | "ui_bug" | "gameplay_bug" | "feature_request" | "needs_human_review",
   "confidence": 0.0-1.0,
   "severity": "P1" | "P2" | "P3" | "P4",
   "reasoning": "Brief explanation of why this classification was chosen",

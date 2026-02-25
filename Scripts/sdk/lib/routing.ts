@@ -120,6 +120,16 @@ export function decideRoute(input: RoutingInput): RoutingAction {
       };
     }
 
+    case "content_category_error": {
+      // Event is in the wrong category — needs manual review (no automated handler for category moves)
+      return {
+        type: "label",
+        repo: ROUTING.PRIVATE_REPO,
+        issue_number: input.issue_number,
+        labels: [ROUTING.LABEL_CONTENT_ERROR, "category-mismatch", ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+      };
+    }
+
     case "translation_error": {
       // AC-2: label + state file for translation queue
       const category = (typeof input.extracted_context.category === "string" && input.extracted_context.category !== "")
@@ -180,7 +190,7 @@ export function decideRoute(input: RoutingInput): RoutingAction {
       throw new Error(
         "Unknown classification: \"" + input.classification + "\". " +
         "Cannot route issue #" + input.issue_number + ". " +
-        "Valid classifications: content_error, translation_error, ui_bug, gameplay_bug, feature_request, needs_human_review"
+        "Valid classifications: content_error, content_category_error, translation_error, ui_bug, gameplay_bug, feature_request, needs_human_review"
       );
   }
 }

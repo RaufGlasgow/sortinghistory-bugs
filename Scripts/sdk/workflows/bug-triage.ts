@@ -42,6 +42,7 @@ export interface TriageInput {
 /** Valid classification values */
 const VALID_CLASSIFICATIONS = new Set([
   "content_error",
+  "content_category_error",
   "translation_error",
   "ui_bug",
   "gameplay_bug",
