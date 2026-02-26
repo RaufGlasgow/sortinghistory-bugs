@@ -518,8 +518,15 @@ async function main(): Promise<void> {
     }
     case "triage": {
       // Story 2.4a: Real triage command — fetches issue from private repo, classifies, routes
+      // BA-010.9: Read rejection feedback from environment (passed by bug-analysis.yml for re-analyze)
       const issueNumber = parseIssueFlag();
-      await runRealTriage({ issueNumber });
+      const rejectionReason = process.env.REJECTION_REASON || undefined;
+      const previousClassification = process.env.PREVIOUS_CLASSIFICATION || undefined;
+      if (rejectionReason) {
+        console.log("[orchestrator] Re-triage with feedback: " + rejectionReason);
+        console.log("[orchestrator] Previous classification: " + (previousClassification || "unknown"));
+      }
+      await runRealTriage({ issueNumber, rejectionReason, previousClassification });
       break;
     }
     case "bug-fix": {

@@ -3,7 +3,7 @@ run-name: "Triage #${{ github.event.client_payload.issue_number || inputs.issue_
 
 on:
   repository_dispatch:
-    types: [analyze]
+    types: [analyze, re-analyze]
   workflow_dispatch:
     inputs:
       issue_number:
@@ -45,11 +45,11 @@ jobs:
           fi
 
       - name: Checkout public repo (automation scripts + SDK)
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' || github.event.action == 're-analyze'
         uses: actions/checkout@v4
 
       - name: Checkout private repo (game source for codebase reading)
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' || github.event.action == 're-analyze'
         uses: actions/checkout@v4
         with:
           repository: RaufGlasgow/Sorting-History
@@ -57,23 +57,23 @@ jobs:
           path: game-repo
 
       - name: Setup Node.js
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' || github.event.action == 're-analyze'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install SDK dependencies
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' || github.event.action == 're-analyze'
         working-directory: Scripts/sdk
         run: npm ci
 
       - name: Build SDK TypeScript
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' || github.event.action == 're-analyze'
         working-directory: Scripts/sdk
         run: npm run build
 
       - name: Run SDK triage
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' || github.event.action == 're-analyze'
         working-directory: Scripts/sdk
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -81,5 +81,7 @@ jobs:
           PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          REJECTION_REASON: ${{ github.event.client_payload.rejection_reason || '' }}
+          PREVIOUS_CLASSIFICATION: ${{ github.event.client_payload.previous_classification || '' }}
         run: node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
         timeout-minutes: 5

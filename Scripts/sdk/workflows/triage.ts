@@ -34,6 +34,10 @@ import type { TriageData } from "../lib/types.js";
 export interface RealTriageInput {
   /** GitHub issue number on the private repo */
   issueNumber: number;
+  /** BA-010.9: Rejection reason from a previous triage that was rejected by the user */
+  rejectionReason?: string;
+  /** BA-010.9: Previous classification that was rejected */
+  previousClassification?: string;
 }
 
 /** Result from the real triage command */
@@ -128,7 +132,12 @@ function postIssueComment(issueNumber: number, comment: string): void {
  */
 export async function runRealTriage(input: RealTriageInput): Promise<RealTriageResult> {
   const issueNumber = input.issueNumber;
-  console.log("=== Story 2.4a: Real Triage — Issue #" + issueNumber + " ===");
+  const isRetriage = !!input.rejectionReason;
+  console.log("=== " + (isRetriage ? "BA-010.9: Re-Triage" : "Story 2.4a: Real Triage") + " — Issue #" + issueNumber + " ===");
+  if (isRetriage) {
+    console.log("Rejection reason: " + input.rejectionReason);
+    console.log("Previous classification: " + (input.previousClassification || "unknown"));
+  }
   console.log("");
 
   // --------------------------------------------------
@@ -154,8 +163,8 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
     process.exit(1);
   }
 
-  // Check idempotency: skip if already routed
-  if (issueData.labels.includes(ROUTING.LABEL_ROUTED)) {
+  // Check idempotency: skip if already routed (bypass for re-triage — BA-010.9)
+  if (issueData.labels.includes(ROUTING.LABEL_ROUTED) && !isRetriage) {
     console.log("[triage] Issue #" + issueNumber + " already has `" + ROUTING.LABEL_ROUTED + "` label — skipping");
     return {
       issueNumber,
@@ -171,6 +180,9 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
       error: null,
     };
   }
+  if (isRetriage) {
+    console.log("[triage] BA-010.9: Bypassing idempotency check for re-triage");
+  }
 
   // --------------------------------------------------
   // Step 2: Classify with Haiku
@@ -179,7 +191,18 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   console.log("--- Classifying issue #" + issueNumber + " ---");
 
   // Build report text from issue title + body
-  const reportText = issueData.title + "\n\n" + issueData.body;
+  // BA-010.9: Prepend rejection feedback when re-triaging
+  let reportText = issueData.title + "\n\n" + issueData.body;
+  if (isRetriage && input.rejectionReason) {
+    const feedbackBlock = [
+      "IMPORTANT: A previous classification of \"" + (input.previousClassification || "unknown") + "\" was rejected by the project owner.",
+      "Their feedback: \"" + input.rejectionReason + "\"",
+      "Please reconsider the classification in light of this feedback. The previous classification may have been wrong.",
+      "",
+    ].join("\n");
+    reportText = feedbackBlock + reportText;
+    console.log("[triage] BA-010.9: Prepended rejection feedback to report text");
+  }
 
   // Extract screenshots BEFORE stripping them — triage needs to see visual bugs
   const extractedImages = extractBase64Images(reportText);
@@ -217,6 +240,48 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
 
   const classificationComment = buildClassificationComment(triageResult);
   postIssueComment(issueNumber, classificationComment);
+
+  // --------------------------------------------------
+  // BA-010.9: Same-classification escalation + label cleanup for re-triage
+  // --------------------------------------------------
+  if (isRetriage) {
+    // Remove re-triaging label, add re-triaged for audit trail
+    try {
+      execSync(
+        "gh issue edit " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --remove-label re-triaging --add-label re-triaged",
+        { encoding: "utf-8", timeout: 15_000 },
+      );
+      console.log("[triage] BA-010.9: Removed re-triaging label, added re-triaged");
+    } catch (labelErr: unknown) {
+      const labelErrMsg = labelErr instanceof Error ? labelErr.message : String(labelErr);
+      console.error("[triage] WARNING: Label cleanup failed: " + labelErrMsg);
+    }
+
+    // Check if re-triage produced the same classification — escalate if so
+    if (input.previousClassification && triageResult.classification === input.previousClassification) {
+      console.log("[triage] BA-010.9: Re-triage produced same classification (" + triageResult.classification + ") — escalating");
+      postIssueComment(
+        issueNumber,
+        "## Re-Triage Escalation\n\n" +
+          "Re-triage produced the same classification (`" + triageResult.classification + "`) as the rejected triage.\n" +
+          "Escalating to manual review.\n\n" +
+          "**Rejection feedback:** " + (input.rejectionReason || "none"),
+      );
+      try {
+        execSync(
+          "gh issue edit " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --add-label needs-human-review",
+          { encoding: "utf-8", timeout: 15_000 },
+        );
+      } catch { /* best effort */ }
+
+      return {
+        issueNumber,
+        triage: triageResult,
+        routed: false,
+        error: null,
+      };
+    }
+  }
 
   // --------------------------------------------------
   // Step 4: Route based on classification (AC2)
