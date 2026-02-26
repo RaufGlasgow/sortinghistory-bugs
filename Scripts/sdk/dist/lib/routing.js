@@ -14,8 +14,9 @@
  * CRITICAL: Uses PRIVATE_REPO_PAT for all GitHub API calls.
  * github.token CANNOT trigger repository_dispatch (proven lesson — CLAUDE.md rule).
  */
-import { ROUTING } from "../config.js";
+import { ROUTING, CLASSIFICATION_SET, CONFIDENCE_THRESHOLD } from "../config.js";
 import { createWorkflowState } from "./state.js";
+import { generateTriageHandoff, buildFallbackHandoffComment } from "./handoff-generator.js";
 // ---------------------------------------------------------------------------
 // Pure routing decision function
 // ---------------------------------------------------------------------------
@@ -25,7 +26,10 @@ import { createWorkflowState } from "./state.js";
  * This is a PURE function: no I/O, no API calls, no randomness.
  * Returns a RoutingAction describing what to do.
  *
- * Throws on unknown classification (defensive).
+ * 3-gate system (BA-011):
+ *   Gate 1: Low confidence → safe label (S4, AC3)
+ *   Gate 2: Unknown classification → safe label (S1)
+ *   Route: Known classification → routeByClassification()
  */
 export function decideRoute(input) {
     // Idempotency: skip if already routed (AC-10)
@@ -36,7 +40,38 @@ export function decideRoute(input) {
             issue_number: input.issue_number,
         };
     }
-    switch (input.classification) {
+    // Gate 1 (BA-011 S4): Low confidence → safe label, cheapest action
+    // Strictly less-than: 0.70 passes, 0.69 is blocked (FR6)
+    if (input.confidence < CONFIDENCE_THRESHOLD) {
+        console.log("[routing] Gate 1: Low confidence " + input.confidence.toFixed(2) + " (threshold " + CONFIDENCE_THRESHOLD + ") for issue #" + input.issue_number + " — safe label fallback");
+        return {
+            type: "label",
+            repo: ROUTING.PRIVATE_REPO,
+            issue_number: input.issue_number,
+            labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
+        };
+    }
+    // Gate 2 (BA-011 S1): Unknown classification → safe label, never crash
+    if (!CLASSIFICATION_SET.has(input.classification)) {
+        console.log("[routing] Gate 2: Unknown classification \"" + input.classification + "\" for issue #" + input.issue_number + " — safe label fallback");
+        return {
+            type: "label",
+            repo: ROUTING.PRIVATE_REPO,
+            issue_number: input.issue_number,
+            labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+        };
+    }
+    return routeByClassification(input.classification, input);
+}
+/**
+ * Route a known classification to its action (ARCH-5).
+ *
+ * Uses TypeScript exhaustive switch with `never` assertion —
+ * adding a classification to CLASSIFICATIONS without a case here
+ * causes a compile error.
+ */
+function routeByClassification(classification, input) {
+    switch (classification) {
         case "content_error": {
             // AC-1: dispatch sdk-content-verify to public repo
             // HIGH-4 fix: also apply sdk-routed + content-error labels on the private repo issue
@@ -68,6 +103,15 @@ export function decideRoute(input) {
                 labels: [ROUTING.LABEL_CONTENT_ERROR, "category-mismatch", ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
             };
         }
+        case "content_duplicate": {
+            // BA-011: Duplicate event — needs human review to decide which copy to keep
+            return {
+                type: "label",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_CONTENT_DUPLICATE, ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+            };
+        }
         case "translation_error": {
             // AC-2: label + state file for translation queue
             const category = (typeof input.extracted_context.category === "string" && input.extracted_context.category !== "")
@@ -84,7 +128,6 @@ export function decideRoute(input) {
         }
         case "ui_bug": {
             // SDK-BF.3 AC1: ALL ui_bug severities → label with classification + severity, wait for /approve
-            // Triage classifies and labels only. Fix dispatch happens via /approve webhook command.
             return {
                 type: "label",
                 repo: ROUTING.PRIVATE_REPO,
@@ -99,6 +142,61 @@ export function decideRoute(input) {
                 repo: ROUTING.PRIVATE_REPO,
                 issue_number: input.issue_number,
                 labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
+            };
+        }
+        case "performance_issue": {
+            // BA-011: Needs code analysis/profiling — handoff to developer
+            if (!input.issue_title || !input.issue_body) {
+                // Defensive: if issue data not provided, fall back to label-only (TEA recommendation)
+                console.log("[routing] handoff_to_dev for performance_issue missing issue_title/issue_body — falling back to label-only");
+                return {
+                    type: "label",
+                    repo: ROUTING.PRIVATE_REPO,
+                    issue_number: input.issue_number,
+                    labels: [ROUTING.LABEL_PERFORMANCE_ISSUE, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+                };
+            }
+            return {
+                type: "handoff_to_dev",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_PERFORMANCE_ISSUE, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+                triage_data: {
+                    classification: "performance_issue",
+                    confidence: input.confidence,
+                    severity: input.severity,
+                    reasoning: input.reasoning ?? "",
+                    extracted_context: input.extracted_context,
+                    issue_title: input.issue_title,
+                    issue_body: input.issue_body,
+                },
+            };
+        }
+        case "crash_bug": {
+            // BA-011: Needs investigation — handoff to developer
+            if (!input.issue_title || !input.issue_body) {
+                console.log("[routing] handoff_to_dev for crash_bug missing issue_title/issue_body — falling back to label-only");
+                return {
+                    type: "label",
+                    repo: ROUTING.PRIVATE_REPO,
+                    issue_number: input.issue_number,
+                    labels: [ROUTING.LABEL_CRASH_BUG, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+                };
+            }
+            return {
+                type: "handoff_to_dev",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_CRASH_BUG, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+                triage_data: {
+                    classification: "crash_bug",
+                    confidence: input.confidence,
+                    severity: input.severity,
+                    reasoning: input.reasoning ?? "",
+                    extracted_context: input.extracted_context,
+                    issue_title: input.issue_title,
+                    issue_body: input.issue_body,
+                },
             };
         }
         case "feature_request": {
@@ -119,10 +217,18 @@ export function decideRoute(input) {
                 labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
             };
         }
-        default:
-            throw new Error("Unknown classification: \"" + input.classification + "\". " +
-                "Cannot route issue #" + input.issue_number + ". " +
-                "Valid classifications: content_error, content_category_error, translation_error, ui_bug, gameplay_bug, feature_request, needs_human_review");
+        default: {
+            // Exhaustive check — TypeScript will error if a Classification case is missing
+            const _exhaustive = classification;
+            // This line should be unreachable. If somehow reached at runtime, safe fallback.
+            console.error("[routing] Exhaustive check failed for: " + String(_exhaustive));
+            return {
+                type: "label",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_UNKNOWN_CLASSIFICATION, ROUTING.LABEL_ROUTED],
+            };
+        }
     }
 }
 // ---------------------------------------------------------------------------
@@ -180,6 +286,35 @@ async function githubLabel(repo, issueNumber, labels) {
     }
     console.log("[routing] Applied labels [" + labels.join(", ") + "] to " + repo + "#" + issueNumber);
 }
+/** POST a comment on a GitHub issue (BA-011 AC5: same auth as githubLabel/githubDispatch).
+ *  Uses AbortController with 30s timeout per NFR10. */
+async function githubPostComment(repo, issueNumber, body) {
+    const token = getGitHubToken();
+    const url = "https://api.github.com/repos/" + repo + "/issues/" + issueNumber + "/comments";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    try {
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + token,
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ body }),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const responseBody = await response.text();
+            throw new Error("GitHub comment failed: " + response.status + " " + response.statusText + " — " + responseBody);
+        }
+        console.log("[routing] Posted comment on " + repo + "#" + issueNumber);
+    }
+    finally {
+        clearTimeout(timeoutId);
+    }
+}
 // ---------------------------------------------------------------------------
 // Route executor (side-effect layer)
 // ---------------------------------------------------------------------------
@@ -219,6 +354,12 @@ export async function executeRoute(action, dryRun) {
                 console.log("[routing]   category: " + action.category);
             }
         }
+        else if (action.type === "handoff_to_dev") {
+            console.log("[routing]   repo: " + action.repo);
+            console.log("[routing]   issue_number: " + action.issue_number);
+            console.log("[routing]   labels: [" + action.labels.join(", ") + "]");
+            console.log("[routing]   triage_data.classification: " + action.triage_data.classification);
+        }
         return;
     }
     switch (action.type) {
@@ -237,5 +378,68 @@ export async function executeRoute(action, dryRun) {
             await createWorkflowState(action.workflow_type, "dispatch", action.category, action.issue_number);
             console.log("[routing] Created workflow state for " + action.workflow_type + " (issue #" + action.issue_number + ")");
             break;
+        case "handoff_to_dev": {
+            // BA-011 Story 3.1: Generate handoff, post comment, apply labels
+            await githubLabel(action.repo, action.issue_number, action.labels);
+            // Generate structured handoff document
+            let handoffMarkdown;
+            try {
+                const handoffInput = {
+                    issueNumber: action.issue_number,
+                    issueTitle: action.triage_data.issue_title,
+                    issueBody: action.triage_data.issue_body,
+                    classification: action.triage_data.classification,
+                    confidence: action.triage_data.confidence,
+                    severity: action.triage_data.severity,
+                    reasoning: action.triage_data.reasoning,
+                    extractedContext: action.triage_data.extracted_context,
+                };
+                handoffMarkdown = generateTriageHandoff(handoffInput);
+            }
+            catch (genErr) {
+                // AC3: Generation failed → apply handoff-generation-failed label + fallback comment
+                const genErrMsg = genErr instanceof Error ? genErr.message : String(genErr);
+                console.error("[routing] Handoff generation failed for issue #" + action.issue_number + ": " + genErrMsg);
+                try {
+                    await githubLabel(action.repo, action.issue_number, ["handoff-generation-failed"]);
+                }
+                catch { /* best-effort label */ }
+                const fallback = buildFallbackHandoffComment(action.triage_data.classification, action.triage_data.confidence, action.triage_data.severity, action.triage_data.reasoning, genErrMsg);
+                try {
+                    await githubPostComment(action.repo, action.issue_number, fallback);
+                }
+                catch { /* best-effort fallback comment */ }
+                break;
+            }
+            // Post handoff comment with single retry (AC4)
+            try {
+                await githubPostComment(action.repo, action.issue_number, handoffMarkdown);
+            }
+            catch (postErr) {
+                const postErrMsg = postErr instanceof Error ? postErr.message : String(postErr);
+                console.error("[routing] Handoff comment post failed (attempt 1) for issue #" + action.issue_number + ": " + postErrMsg);
+                // Retry once
+                try {
+                    await githubPostComment(action.repo, action.issue_number, handoffMarkdown);
+                    console.log("[routing] Handoff comment posted on retry for issue #" + action.issue_number);
+                }
+                catch (retryErr) {
+                    // Both attempts failed — apply delivery-failed label + fallback
+                    const retryErrMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                    console.error("[routing] Handoff comment retry also failed for issue #" + action.issue_number + ": " + retryErrMsg);
+                    try {
+                        await githubLabel(action.repo, action.issue_number, ["delivery-failed"]);
+                    }
+                    catch { /* best-effort label */ }
+                    const fallback = buildFallbackHandoffComment(action.triage_data.classification, action.triage_data.confidence, action.triage_data.severity, action.triage_data.reasoning, "Comment delivery failed after 2 attempts: " + retryErrMsg);
+                    try {
+                        await githubPostComment(action.repo, action.issue_number, fallback);
+                    }
+                    catch { /* best-effort — if this also fails, the labels are the signal */ }
+                }
+            }
+            console.log("[routing] Handoff-to-dev complete for issue #" + action.issue_number);
+            break;
+        }
     }
 }

@@ -13,22 +13,14 @@
  * - 0: Success (valid triage result returned)
  * - 1: Failure (subagent error, invalid JSON, missing required fields)
  */
-import { MODELS, TRIAGE_TOOLS } from "../config.js";
+import { MODELS, TRIAGE_TOOLS, CLASSIFICATION_SET } from "../config.js";
 import { spawnSubagent } from "../lib/subagent.js";
 import { extractJson } from "../lib/json-extract.js";
 import { stripBase64Images } from "../lib/image-extract.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
-/** Valid classification values */
-const VALID_CLASSIFICATIONS = new Set([
-    "content_error",
-    "content_category_error",
-    "translation_error",
-    "ui_bug",
-    "gameplay_bug",
-    "feature_request",
-    "needs_human_review",
-]);
+/** Valid classification values — imported from config.ts (BA-011 AC1: single source of truth) */
+const VALID_CLASSIFICATIONS = CLASSIFICATION_SET;
 /** Valid severity values */
 const VALID_SEVERITIES = new Set(["P1", "P2", "P3", "P4"]);
 /**

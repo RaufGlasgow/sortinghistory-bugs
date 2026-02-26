@@ -24,6 +24,12 @@ export interface RoutingInput {
     issue_number: number;
     /** Labels already on the issue — used for idempotency check */
     existing_labels?: string[];
+    /** Issue title — needed for handoff_to_dev routes (BA-011 Story 2.4) */
+    issue_title?: string;
+    /** Issue body — needed for handoff_to_dev routes (BA-011 Story 2.4) */
+    issue_body?: string;
+    /** Triage reasoning — needed for handoff_to_dev routes */
+    reasoning?: string;
 }
 /** Dispatch action — triggers a repository_dispatch event */
 interface DispatchAction {
@@ -60,14 +66,33 @@ interface SkipAction {
     reason: string;
     issue_number: number;
 }
-export type RoutingAction = DispatchAction | LabelAction | LabelAndStateAction | SkipAction;
+/** Handoff-to-dev action — generates structured handoff and posts to private repo (BA-011 ARCH-2) */
+interface HandoffAction {
+    type: "handoff_to_dev";
+    repo: string;
+    issue_number: number;
+    labels: string[];
+    triage_data: {
+        classification: string;
+        confidence: number;
+        severity: string;
+        reasoning: string;
+        extracted_context: Record<string, unknown>;
+        issue_title: string;
+        issue_body: string;
+    };
+}
+export type RoutingAction = DispatchAction | LabelAction | LabelAndStateAction | SkipAction | HandoffAction;
 /**
  * Decide the routing action for a triage result.
  *
  * This is a PURE function: no I/O, no API calls, no randomness.
  * Returns a RoutingAction describing what to do.
  *
- * Throws on unknown classification (defensive).
+ * 3-gate system (BA-011):
+ *   Gate 1: Low confidence → safe label (S4, AC3)
+ *   Gate 2: Unknown classification → safe label (S1)
+ *   Route: Known classification → routeByClassification()
  */
 export declare function decideRoute(input: RoutingInput): RoutingAction;
 /**
