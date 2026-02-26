@@ -18,6 +18,7 @@ import { ROUTING_FIXTURES, type RoutingFixture, type ExpectedAction } from "../t
 import { decideRoute, executeRoute, type RoutingAction } from "../lib/routing.js";
 import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing-log.js";
 import { ROUTING, CLASSIFICATIONS, PATHS } from "../config.js";
+import { runContractTest } from "../tests/contract-test.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -402,12 +403,72 @@ export async function runRoutingTest(): Promise<void> {
   }
   console.log("");
 
+  // --- Additional test: contract test — all classifications in 4 files (BA-011 Story 2.2) ---
+  console.log("--- extra-9: contract test — all classifications present in 4 files ---");
+  let contractTestPassed = false;
+  try {
+    // runContractTest() calls process.exit(1) on failure, so we need to catch that.
+    // Instead, we'll test the same logic inline to avoid process.exit in a sub-call.
+    // Import the checks from contract-test and run them directly.
+    const { ROUTING_FIXTURES: allFixtures } = await import("../tests/routing-fixtures.js");
+
+    const envRootC = process.env.GITHUB_WORKSPACE ?? process.env.SDK_REPO_ROOT;
+    let repoRootC = envRootC ?? process.cwd();
+    if (!envRootC && repoRootC.includes(path.join("Scripts", "sdk"))) {
+      repoRootC = repoRootC.split(path.join("Scripts", "sdk"))[0];
+    }
+
+    const contractErrors: string[] = [];
+
+    // Check 1: routing.ts cases
+    const routingSource = fs.readFileSync(path.join(repoRootC, "Scripts", "sdk", "lib", "routing.ts"), "utf-8");
+    for (const cls of CLASSIFICATIONS) {
+      if (!routingSource.includes('case "' + cls + '":')) {
+        contractErrors.push("Missing case in routing.ts for: " + cls);
+      }
+    }
+
+    // Check 2: routing fixtures
+    const fixtureClassifications = new Set(allFixtures.map((f: { input: { classification: string } }) => f.input.classification));
+    for (const cls of CLASSIFICATIONS) {
+      if (!fixtureClassifications.has(cls)) {
+        contractErrors.push("Missing fixture in routing-fixtures.ts for: " + cls);
+      }
+    }
+
+    // Check 3: prompt headings
+    const promptSource = fs.readFileSync(path.join(repoRootC, "Scripts", "sdk", "prompts", "bug-triager.md"), "utf-8");
+    for (const cls of CLASSIFICATIONS) {
+      if (!promptSource.includes("### " + cls)) {
+        contractErrors.push("Missing ### heading in bug-triager.md for: " + cls);
+      }
+    }
+
+    // Check 4: triage validator
+    const triageSource = fs.readFileSync(path.join(repoRootC, "Scripts", "sdk", "workflows", "bug-triage.ts"), "utf-8");
+    if (!triageSource.includes("CLASSIFICATION_SET")) {
+      contractErrors.push("bug-triage.ts does not reference CLASSIFICATION_SET");
+    }
+
+    if (contractErrors.length === 0) {
+      contractTestPassed = true;
+      console.log("[extra-9] PASS: All " + CLASSIFICATIONS.length + " classifications present in all 4 files");
+    } else {
+      for (const err of contractErrors) {
+        console.log("[extra-9] FAIL: " + err);
+      }
+    }
+  } catch (err: unknown) {
+    console.log("[extra-9] FAIL: Contract test error: " + (err instanceof Error ? err.message : String(err)));
+  }
+  console.log("");
+
   // --- Summary ---
   console.log("=== Routing Test Suite Summary ===");
   const passCount = results.filter(r => r.passed).length;
   const failCount = results.length - passCount;
-  const extraCount = 8;
-  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0);
+  const extraCount = 9;
+  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0);
   const extraFailCount = extraCount - extraPassCount;
   const totalPass = passCount + extraPassCount;
   const totalFail = failCount + extraFailCount;
@@ -426,6 +487,7 @@ export async function runRoutingTest(): Promise<void> {
   console.log("  extra-6: " + (logNoSensitivePassed ? "PASS" : "FAIL"));
   console.log("  extra-7: " + (routingPureCheckPassed ? "PASS" : "FAIL"));
   console.log("  extra-8: " + (allGatesValid ? "PASS" : "FAIL"));
+  console.log("  extra-9: " + (contractTestPassed ? "PASS" : "FAIL"));
 
   console.log("");
   console.log("Results: " + totalPass + "/" + totalTests + " passed, " + totalFail + " failed");

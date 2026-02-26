@@ -228,6 +228,24 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     },
   },
 
+  // --- route-content-category-error: content_category_error → label (manual review) ---
+  {
+    id: "route-content-category-error",
+    description: "content_category_error routes to label (needs human review for category move)",
+    input: {
+      classification: "content_category_error",
+      severity: "P2",
+      confidence: 0.85,
+      extracted_context: { category: "US History", event_title: "Chinese Economic Reforms" },
+      issue_number: 55,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_CONTENT_ERROR, "category-mismatch", ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+    },
+  },
+
   // --- BA-011 Story 2.1: 3 new classification fixtures ---
 
   // --- route-content-duplicate: content_duplicate → label (no automation) ---

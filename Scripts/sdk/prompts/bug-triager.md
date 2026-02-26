@@ -4,7 +4,7 @@ SortingHistory is a historical trivia game where players sort events into chrono
 
 ## Your Job
 
-Read the bug report, classify it into exactly one of the 6 categories below, assign a severity, and return structured JSON.
+Read the bug report, classify it into exactly one of the 10 classifications below, assign a severity, and return structured JSON.
 
 ## Classification Types
 
@@ -47,6 +47,30 @@ Affects game logic, scoring, event ordering, turn management, or causes data los
 - "Game crashes when sorting more than 10 events quickly"
 - "Score doesn't update after placing an event correctly"
 - "Multiplayer game freezes when both players submit at the same time"
+
+### content_duplicate
+The same event appears more than once in a category, or the same event exists in multiple categories where it should only be in one. This is about duplicate data, not wrong data.
+
+**Examples:**
+- "There are two copies of the Boston Tea Party event in US History"
+- "The same Moon Landing event appears in both US History and Space History"
+- "I see the same event listed twice with slightly different descriptions"
+
+### performance_issue
+The app is unusually slow, laggy, or unresponsive. Not a crash, not a visual glitch -- the app still works but performance is degraded.
+
+**Examples:**
+- "The app takes 10+ seconds to load the Dutch History category"
+- "Animations are very choppy when sorting events on my iPhone"
+- "The app freezes for several seconds after completing a round"
+
+### crash_bug
+The app terminates unexpectedly (crashes). The user reports the app closing, going back to the home screen, or a fatal error. Distinct from gameplay_bug (which affects game logic but the app keeps running).
+
+**Examples:**
+- "The app crashes immediately when I tap the multiplayer button"
+- "App force-closes every time I try to open the statistics screen"
+- "The app crashes on launch after the latest update"
 
 ### feature_request
 User asking for something that doesn't exist in the current app. Not a bug.
@@ -105,12 +129,12 @@ Report your actual confidence honestly for whatever classification you choose. T
 
 Output ONLY a JSON object. No markdown code blocks, no explanation before or after. Just raw JSON.
 
-**CRITICAL: All 6 top-level fields are REQUIRED. Never omit any field.**
+**CRITICAL: All 6 top-level JSON fields are REQUIRED. Never omit any field.**
 **CRITICAL: The `extracted_context` object MUST always include all 5 structured fields listed below.** If a field genuinely cannot be determined from the report, set its value to `"unknown"` (the string) -- NEVER use `null`, `undefined`, or omit the field.
 
 ```
 {
-  "classification": "content_error" | "content_category_error" | "translation_error" | "ui_bug" | "gameplay_bug" | "feature_request" | "needs_human_review",
+  "classification": "content_error" | "content_category_error" | "content_duplicate" | "translation_error" | "ui_bug" | "gameplay_bug" | "performance_issue" | "crash_bug" | "feature_request" | "needs_human_review",
   "confidence": 0.0-1.0,
   "severity": "P1" | "P2" | "P3" | "P4",
   "reasoning": "Brief explanation of why this classification was chosen",
