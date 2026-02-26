@@ -2,7 +2,7 @@ name: Morning Analysis Digest
 
 on:
   schedule:
-    - cron: '0 11 * * *'  # 11:00 AM WET (Portugal) = 11:00 UTC
+    - cron: '30 11 * * *'  # 11:30 AM WET (Portugal) = 11:30 UTC
   workflow_dispatch: {}    # Manual trigger for testing
 
 jobs:
