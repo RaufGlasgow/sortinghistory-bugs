@@ -109,7 +109,7 @@ jobs:
           echo "issue_count=${COUNT}" >> "$GITHUB_OUTPUT"
 
           # Store issue numbers as space-separated list
-          ISSUE_LIST=$(echo "$FILTERED" | tr '\n' ' ' | xargs)
+          ISSUE_LIST=$(echo "$FILTERED" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           echo "issue_list=${ISSUE_LIST}" >> "$GITHUB_OUTPUT"
 
       - name: Build digest email
@@ -161,7 +161,7 @@ jobs:
             BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
 
             # Extract "Actual behavior" from bug report body
-            ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -3 | tr '\n' ' ' | xargs)
+            ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
             if [ -z "$ACTUAL_BEHAVIOR" ]; then
               ACTUAL_BEHAVIOR=""
             fi
@@ -202,19 +202,19 @@ jobs:
               continue
             else
               # Extract severity from comment (line starting with **Severity:**)
-              COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | xargs)
+              COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               if [ -z "$COMMENT_SEVERITY" ]; then
-                COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Severity\s*\|\s*`\K[^`]+' | head -1 | xargs)
+                COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Severity\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               fi
-              COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | xargs)
+              COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               if [ -z "$COMMENT_TYPE" ]; then
-                COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | xargs)
+                COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               fi
 
               # Extract ### Analysis section (text between ### Analysis and next ###)
-              ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Analysis/{found=1; next} /^###/{found=0} found{print}' | xargs)
+              ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Analysis/{found=1; next} /^###/{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               if [ -z "$ANALYSIS_TEXT" ]; then
-                ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Reasoning:\*\*\s*\K.*' | head -1 | xargs)
+                ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Reasoning:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               fi
 
               if [ -z "$ANALYSIS_TEXT" ]; then
