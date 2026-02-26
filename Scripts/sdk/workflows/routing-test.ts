@@ -463,12 +463,173 @@ export async function runRoutingTest(): Promise<void> {
   }
   console.log("");
 
+  // --- Additional test: prompt has positive AND negative examples per classification (Story 2.3 AC1) ---
+  console.log("--- extra-10: prompt has positive AND negative examples per classification ---");
+  let promptExamplesPassed = true;
+  {
+    const promptExPath = path.join(resolvedRoot, "Scripts", "sdk", "prompts", "bug-triager.md");
+    try {
+      const promptExText = fs.readFileSync(promptExPath, "utf-8");
+      for (const cls of CLASSIFICATIONS) {
+        const headingIdx = promptExText.indexOf("### " + cls);
+        if (headingIdx === -1) {
+          console.log("[extra-10] FAIL: Missing ### " + cls + " heading");
+          promptExamplesPassed = false;
+          continue;
+        }
+        // Find the section text between this heading and the next ### or ## heading
+        const afterHeading = promptExText.slice(headingIdx);
+        const nextHeading = afterHeading.indexOf("\n##", 5); // Skip past the current heading
+        const sectionText = nextHeading > 0 ? afterHeading.slice(0, nextHeading) : afterHeading;
+
+        // Check for positive examples (contains "This IS" or example lines after heading)
+        const hasPositive = sectionText.includes("**This IS " + cls + ":**") || sectionText.includes("**Use " + cls + " when:**") || sectionText.includes("**Examples that need human review:**");
+        // Check for negative examples (contains "This is NOT" or "is NOT")
+        const hasNegative = sectionText.includes("**This is NOT " + cls + ":**") || sectionText.includes("is NOT " + cls);
+
+        if (!hasPositive) {
+          console.log("[extra-10] FAIL: " + cls + " missing positive examples");
+          promptExamplesPassed = false;
+        }
+        if (!hasNegative && cls !== "needs_human_review") {
+          // needs_human_review doesn't need negative examples (it IS the catch-all)
+          console.log("[extra-10] FAIL: " + cls + " missing negative examples");
+          promptExamplesPassed = false;
+        }
+      }
+      if (promptExamplesPassed) {
+        console.log("[extra-10] PASS: All classifications have positive and negative examples");
+      }
+    } catch (err: unknown) {
+      console.log("[extra-10] SKIP: Could not read prompt: " + (err instanceof Error ? err.message : String(err)));
+      promptExamplesPassed = true;
+    }
+  }
+  console.log("");
+
+  // --- Additional test: prompt has cost-awareness section (Story 2.3 AC3) ---
+  console.log("--- extra-11: prompt has cost-awareness section ---");
+  let costAwarenessPassed = false;
+  {
+    const promptCostPath = path.join(resolvedRoot, "Scripts", "sdk", "prompts", "bug-triager.md");
+    try {
+      const promptCostText = fs.readFileSync(promptCostPath, "utf-8");
+      const hasCostSection = promptCostText.includes("## Cost Awareness") || promptCostText.includes("## Cost-Awareness");
+      const hasCheapest = promptCostText.includes("cheap") || promptCostText.includes("cheapest") || promptCostText.includes("safest");
+      const hasNeedsHumanDefault = promptCostText.includes("needs_human_review") && (promptCostText.includes("when in doubt") || promptCostText.includes("When in doubt"));
+      if (hasCostSection && hasCheapest && hasNeedsHumanDefault) {
+        costAwarenessPassed = true;
+        console.log("[extra-11] PASS: Cost-awareness section present with safe-default guidance");
+      } else {
+        const missing: string[] = [];
+        if (!hasCostSection) missing.push("## Cost Awareness heading");
+        if (!hasCheapest) missing.push("cheapest/safest guidance");
+        if (!hasNeedsHumanDefault) missing.push("needs_human_review default when in doubt");
+        console.log("[extra-11] FAIL: Missing: " + missing.join(", "));
+      }
+    } catch (err: unknown) {
+      console.log("[extra-11] SKIP: Could not read prompt: " + (err instanceof Error ? err.message : String(err)));
+      costAwarenessPassed = true;
+    }
+  }
+  console.log("");
+
+  // --- Additional test: prompt has no vendor-specific features (Story 2.3 AC4, NFR11) ---
+  console.log("--- extra-12: prompt has no vendor-specific features ---");
+  let vendorFreePassed = false;
+  {
+    const promptVendorPath = path.join(resolvedRoot, "Scripts", "sdk", "prompts", "bug-triager.md");
+    try {
+      const promptVendorText = fs.readFileSync(promptVendorPath, "utf-8");
+      const vendorPatterns = [
+        { pattern: /<\/?system>/i, name: "<system> tags" },
+        { pattern: /<\/?human>/i, name: "<human> tags" },
+        { pattern: /<\/?assistant>/i, name: "<assistant> tags" },
+        { pattern: /\{"role":\s*"system"/i, name: "OpenAI role format" },
+        { pattern: /\{"type":\s*"function"/i, name: "OpenAI function calling" },
+        { pattern: /<anthr/i, name: "Anthropic-specific tags" },
+      ];
+      const found: string[] = [];
+      for (const { pattern, name } of vendorPatterns) {
+        if (pattern.test(promptVendorText)) {
+          found.push(name);
+        }
+      }
+      if (found.length === 0) {
+        vendorFreePassed = true;
+        console.log("[extra-12] PASS: No vendor-specific features found in prompt");
+      } else {
+        console.log("[extra-12] FAIL: Vendor-specific features found: " + found.join(", "));
+      }
+    } catch (err: unknown) {
+      console.log("[extra-12] SKIP: Could not read prompt: " + (err instanceof Error ? err.message : String(err)));
+      vendorFreePassed = true;
+    }
+  }
+  console.log("");
+
+  // --- Additional test: prompt does not contain "6 categories" or "6 classifications" (Story 2.3) ---
+  console.log("--- extra-13: prompt classification count updated (no '6 categories') ---");
+  let countUpdatedPassed = false;
+  {
+    const promptCountPath = path.join(resolvedRoot, "Scripts", "sdk", "prompts", "bug-triager.md");
+    try {
+      const promptCountText = fs.readFileSync(promptCountPath, "utf-8");
+      const hasOldCount = promptCountText.includes("6 categories") || promptCountText.includes("6 classifications") || promptCountText.includes("7 categories") || promptCountText.includes("7 classifications");
+      if (!hasOldCount) {
+        countUpdatedPassed = true;
+        console.log("[extra-13] PASS: Prompt does not contain outdated classification count");
+      } else {
+        console.log("[extra-13] FAIL: Prompt still contains old count (6 or 7 categories/classifications)");
+      }
+    } catch (err: unknown) {
+      console.log("[extra-13] SKIP: Could not read prompt: " + (err instanceof Error ? err.message : String(err)));
+      countUpdatedPassed = true;
+    }
+  }
+  console.log("");
+
+  // --- Additional test: crash_bug vs gameplay_bug boundary explicit in prompt (Story 2.3 AC6) ---
+  console.log("--- extra-14: crash_bug vs gameplay_bug boundary is explicit ---");
+  let boundaryPassed = false;
+  {
+    const promptBoundaryPath = path.join(resolvedRoot, "Scripts", "sdk", "prompts", "bug-triager.md");
+    try {
+      const promptBoundaryText = fs.readFileSync(promptBoundaryPath, "utf-8");
+      // crash_bug section should mention gameplay_bug as a negative example
+      const crashSection = promptBoundaryText.slice(promptBoundaryText.indexOf("### crash_bug"));
+      const nextFromCrash = crashSection.indexOf("\n### ", 5);
+      const crashText = nextFromCrash > 0 ? crashSection.slice(0, nextFromCrash) : crashSection;
+      const crashMentionsGameplay = crashText.includes("gameplay_bug");
+
+      // gameplay_bug section should mention crash_bug as a negative example
+      const gameplaySection = promptBoundaryText.slice(promptBoundaryText.indexOf("### gameplay_bug"));
+      const nextFromGameplay = gameplaySection.indexOf("\n### ", 5);
+      const gameplayText = nextFromGameplay > 0 ? gameplaySection.slice(0, nextFromGameplay) : gameplaySection;
+      const gameplayMentionsCrash = gameplayText.includes("crash_bug");
+
+      if (crashMentionsGameplay && gameplayMentionsCrash) {
+        boundaryPassed = true;
+        console.log("[extra-14] PASS: crash_bug and gameplay_bug cross-reference each other in negative examples");
+      } else {
+        const missing: string[] = [];
+        if (!crashMentionsGameplay) missing.push("crash_bug section doesn't mention gameplay_bug");
+        if (!gameplayMentionsCrash) missing.push("gameplay_bug section doesn't mention crash_bug");
+        console.log("[extra-14] FAIL: " + missing.join("; "));
+      }
+    } catch (err: unknown) {
+      console.log("[extra-14] SKIP: Could not read prompt: " + (err instanceof Error ? err.message : String(err)));
+      boundaryPassed = true;
+    }
+  }
+  console.log("");
+
   // --- Summary ---
   console.log("=== Routing Test Suite Summary ===");
   const passCount = results.filter(r => r.passed).length;
   const failCount = results.length - passCount;
-  const extraCount = 9;
-  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0);
+  const extraCount = 14;
+  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0);
   const extraFailCount = extraCount - extraPassCount;
   const totalPass = passCount + extraPassCount;
   const totalFail = failCount + extraFailCount;
@@ -488,6 +649,11 @@ export async function runRoutingTest(): Promise<void> {
   console.log("  extra-7: " + (routingPureCheckPassed ? "PASS" : "FAIL"));
   console.log("  extra-8: " + (allGatesValid ? "PASS" : "FAIL"));
   console.log("  extra-9: " + (contractTestPassed ? "PASS" : "FAIL"));
+  console.log("  extra-10: " + (promptExamplesPassed ? "PASS" : "FAIL"));
+  console.log("  extra-11: " + (costAwarenessPassed ? "PASS" : "FAIL"));
+  console.log("  extra-12: " + (vendorFreePassed ? "PASS" : "FAIL"));
+  console.log("  extra-13: " + (countUpdatedPassed ? "PASS" : "FAIL"));
+  console.log("  extra-14: " + (boundaryPassed ? "PASS" : "FAIL"));
 
   console.log("");
   console.log("Results: " + totalPass + "/" + totalTests + " passed, " + totalFail + " failed");
