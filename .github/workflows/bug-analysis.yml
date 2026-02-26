@@ -79,5 +79,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
         run: node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
         timeout-minutes: 5

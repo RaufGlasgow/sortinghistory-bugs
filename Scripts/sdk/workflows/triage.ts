@@ -23,6 +23,7 @@ import { runTriage, type TriageResult } from "./bug-triage.js";
 import { decideRoute, executeRoute, type RoutingInput, type RoutingAction } from "../lib/routing.js";
 import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
 import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing-log.js";
+import { shouldSendEmail, sendActionNeededEmail } from "../lib/notification.js";
 import type { TriageData } from "../lib/types.js";
 
 // ---------------------------------------------------------------------------
@@ -305,7 +306,30 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   }
 
   // --------------------------------------------------
-  // Step 5: Post routing comment (AC4)
+  // Step 5: Send real-time email if action needed (BA-010.6)
+  // Fire-and-forget: await but catch all errors
+  // --------------------------------------------------
+  if (shouldSendEmail(routingAction)) {
+    try {
+      await sendActionNeededEmail(
+        {
+          issueNumber,
+          issueTitle: issueData.title,
+          classification: triageResult.classification,
+          confidence: triageResult.confidence,
+          severity: triageResult.severity,
+          reasoning: triageResult.reasoning,
+        },
+        routingAction,
+      );
+    } catch (emailErr: unknown) {
+      const emailErrMsg = emailErr instanceof Error ? emailErr.message : String(emailErr);
+      console.error("[triage] WARNING: Action email failed (non-fatal): " + emailErrMsg);
+    }
+  }
+
+  // --------------------------------------------------
+  // Step 6: Post routing comment (AC4)
   // --------------------------------------------------
   const routingComment = buildRoutingComment(triageResult, routingAction);
   postIssueComment(issueNumber, routingComment);
