@@ -1,15 +1,25 @@
-name: Morning Analysis Digest
+# TEMPORARY: 3x daily schedule for active testing phase.
+# Scale back to 1-2x daily once BA-010.6 (real-time alerts) is proven reliable.
+
+name: Pipeline Digest
 
 on:
   schedule:
-    - cron: '30 11 * * *'  # 11:30 AM WET (Portugal) = 11:30 UTC
+    - cron: '0 10 * * *'   # 10:00 AM Lisbon (winter UTC+0)
+    - cron: '0 14 * * *'   # 2:00 PM Lisbon
+    - cron: '0 18 * * *'   # 6:00 PM Lisbon
   workflow_dispatch: {}    # Manual trigger for testing
+
+concurrency:
+  group: pipeline-digest
+  cancel-in-progress: false
 
 jobs:
   send-digest:
     runs-on: ubuntu-latest
     permissions:
       issues: read
+      pull-requests: read
 
     steps:
       - name: Checkout repo
@@ -82,6 +92,7 @@ jobs:
           if [ -z "$ALL_NUMBERS" ]; then
             echo "No issues found with needs-human-review or needs-triage labels."
             echo "issue_count=0" >> "$GITHUB_OUTPUT"
+            echo "issue_list=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -101,6 +112,7 @@ jobs:
           if [ -z "$FILTERED" ]; then
             echo "All issues already approved or have PRs."
             echo "issue_count=0" >> "$GITHUB_OUTPUT"
+            echo "issue_list=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -112,14 +124,27 @@ jobs:
           ISSUE_LIST=$(echo "$FILTERED" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           echo "issue_list=${ISSUE_LIST}" >> "$GITHUB_OUTPUT"
 
+      - name: Query open pipeline PRs
+        id: query_prs
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Get all open, non-draft PRs with fix/bug-* or fix/sdk-bug-* branch pattern
+          gh api "repos/RaufGlasgow/Sorting-History/pulls?state=open&per_page=100" \
+            --jq '[.[] | select(.head.ref | (startswith("fix/bug-") or startswith("fix/sdk-bug-"))) | select(.draft == false) | {number, title, head_ref: .head.ref, body, html_url}]' > /tmp/prs.json
+
+          PR_COUNT=$(jq length /tmp/prs.json)
+          echo "pr_count=$PR_COUNT" >> "$GITHUB_OUTPUT"
+          echo "Found $PR_COUNT open pipeline PRs"
+
       - name: Build digest email
-        if: steps.query.outputs.issue_count != '0'
         id: build
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
           ISSUE_LIST: ${{ steps.query.outputs.issue_list }}
           ISSUE_COUNT: ${{ steps.query.outputs.issue_count }}
+          PR_COUNT: ${{ steps.query_prs.outputs.pr_count }}
           CONFIDENCE_JSON: ${{ steps.confidence.outputs.confidence_json }}
         run: |
           # Function to escape HTML entities
@@ -144,163 +169,248 @@ jobs:
             echo "$display"
           }
 
-          # Build bug cards
+          # =============================================
+          # Section 1: Bugs Awaiting Review
+          # =============================================
           BUG_CARDS=""
           ANALYZED_COUNT=0
           PENDING_COUNT=0
           PENDING_NUMS=""
 
-          for NUM in $ISSUE_LIST; do
-            echo "Processing issue #${NUM}..."
+          if [ -n "$ISSUE_LIST" ] && [ "$ISSUE_COUNT" != "0" ]; then
+            for NUM in $ISSUE_LIST; do
+              echo "Processing issue #${NUM}..."
 
-            # Fetch issue details
-            ISSUE_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}" 2>/dev/null || echo "{}")
-            TITLE=$(echo "$ISSUE_JSON" | jq -r '.title // "Unknown"')
-            CREATED_AT=$(echo "$ISSUE_JSON" | jq -r '.created_at // ""')
-            ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.html_url // ""')
-            BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
+              # Fetch issue details
+              ISSUE_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}" 2>/dev/null || echo "{}")
+              TITLE=$(echo "$ISSUE_JSON" | jq -r '.title // "Unknown"')
+              CREATED_AT=$(echo "$ISSUE_JSON" | jq -r '.created_at // ""')
+              ISSUE_URL=$(echo "$ISSUE_JSON" | jq -r '.html_url // ""')
+              BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
 
-            # Extract "Actual behavior" from bug report body
-            ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            if [ -z "$ACTUAL_BEHAVIOR" ]; then
-              ACTUAL_BEHAVIOR=""
-            fi
-
-            # Extract severity and type from issue labels
-            SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
-            TYPE=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(. != "from-app" and . != "needs-human-review" and . != "needs-triage" and . != "needs-review" and (startswith("P") | not))] | first // "Unknown"')
-
-            # BA-011 Story 3.3: Overlay confidence from routing log
-            CONF_DISPLAY=$(get_confidence_display "$NUM")
-            if [ -n "$CONF_DISPLAY" ]; then
-              TYPE="$CONF_DISPLAY"
-            fi
-
-            # Format date as "Mon DD"
-            if [ -n "$CREATED_AT" ] && [ "$CREATED_AT" != "null" ]; then
-              FILED_DATE=$(date -d "$CREATED_AT" '+%b %d' 2>/dev/null || echo "$CREATED_AT" | cut -c1-10)
-            else
-              FILED_DATE="Unknown"
-            fi
-
-            # Fetch comments (newest first)
-            COMMENTS_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/comments?sort=created&direction=desc&per_page=50" 2>/dev/null || echo "[]")
-
-            # Find the most recent comment containing "## AI Bug Analysis"
-            ANALYSIS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | (contains("## AI Bug Analysis") or contains("## Triage Classification")))] | first | .body // ""')
-
-            ANALYSIS_TEXT=""
-            FIX_TEXT=""
-            COMMENT_SEVERITY=""
-            COMMENT_TYPE=""
-
-            if [ -z "$ANALYSIS_COMMENT" ]; then
-              # No analysis — skip this bug from the digest, track it separately
-              PENDING_COUNT=$((PENDING_COUNT + 1))
-              PENDING_NUMS="${PENDING_NUMS} #${NUM}"
-              echo "Skipping issue #${NUM} — no AI analysis yet."
-              continue
-            else
-              # Extract severity from comment (line starting with **Severity:**)
-              COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-              if [ -z "$COMMENT_SEVERITY" ]; then
-                COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Severity\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-              fi
-              COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-              if [ -z "$COMMENT_TYPE" ]; then
-                COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              # Extract "Actual behavior" from bug report body
+              ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              if [ -z "$ACTUAL_BEHAVIOR" ]; then
+                ACTUAL_BEHAVIOR=""
               fi
 
-              # Extract ### Analysis section (text between ### Analysis and next ###)
-              ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Analysis/{found=1; next} /^###/{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-              if [ -z "$ANALYSIS_TEXT" ]; then
-                ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Reasoning:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              # Extract severity and type from issue labels
+              SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
+              TYPE=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(. != "from-app" and . != "needs-human-review" and . != "needs-triage" and . != "needs-review" and (startswith("P") | not))] | first // "Unknown"')
+
+              # BA-011 Story 3.3: Overlay confidence from routing log
+              CONF_DISPLAY=$(get_confidence_display "$NUM")
+              if [ -n "$CONF_DISPLAY" ]; then
+                TYPE="$CONF_DISPLAY"
               fi
 
-              if [ -z "$ANALYSIS_TEXT" ]; then
-                ANALYSIS_TEXT="See analysis on GitHub: ${ISSUE_URL}"
+              # Format date as "Mon DD"
+              if [ -n "$CREATED_AT" ] && [ "$CREATED_AT" != "null" ]; then
+                FILED_DATE=$(date -d "$CREATED_AT" '+%b %d' 2>/dev/null || echo "$CREATED_AT" | cut -c1-10)
               else
-                # Truncate to 500 chars
-                if [ ${#ANALYSIS_TEXT} -gt 500 ]; then
-                  ANALYSIS_TEXT="${ANALYSIS_TEXT:0:500}..."
+                FILED_DATE="Unknown"
+              fi
+
+              # Fetch comments (newest first)
+              COMMENTS_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/comments?sort=created&direction=desc&per_page=50" 2>/dev/null || echo "[]")
+
+              # Find the most recent comment containing "## AI Bug Analysis"
+              ANALYSIS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | (contains("## AI Bug Analysis") or contains("## Triage Classification")))] | first | .body // ""')
+
+              ANALYSIS_TEXT=""
+              FIX_TEXT=""
+              COMMENT_SEVERITY=""
+              COMMENT_TYPE=""
+
+              if [ -z "$ANALYSIS_COMMENT" ]; then
+                # No analysis — skip this bug from the digest, track it separately
+                PENDING_COUNT=$((PENDING_COUNT + 1))
+                PENDING_NUMS="${PENDING_NUMS} #${NUM}"
+                echo "Skipping issue #${NUM} — no AI analysis yet."
+                continue
+              else
+                # Extract severity from comment (line starting with **Severity:**)
+                COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [ -z "$COMMENT_SEVERITY" ]; then
+                  COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Severity\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                fi
+                COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [ -z "$COMMENT_TYPE" ]; then
+                  COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                fi
+
+                # Extract ### Analysis section (text between ### Analysis and next ###)
+                ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Analysis/{found=1; next} /^###/{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                if [ -z "$ANALYSIS_TEXT" ]; then
+                  ANALYSIS_TEXT=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Reasoning:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                fi
+
+                if [ -z "$ANALYSIS_TEXT" ]; then
+                  ANALYSIS_TEXT="See analysis on GitHub: ${ISSUE_URL}"
+                else
+                  # Truncate to 500 chars
+                  if [ ${#ANALYSIS_TEXT} -gt 500 ]; then
+                    ANALYSIS_TEXT="${ANALYSIS_TEXT:0:500}..."
+                  fi
+                fi
+
+                # Extract recommended fix: text after **Description:** in ### Suggested Fix section
+                FIX_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Suggested Fix/{found=1} found && /^\*\*Description:\*\*/{sub(/^\*\*Description:\*\*\s*/, ""); print; found=0}')
+
+                if [ -z "$FIX_TEXT" ]; then
+                  FIX_TEXT="See analysis on GitHub: ${ISSUE_URL}"
                 fi
               fi
 
-              # Extract recommended fix: text after **Description:** in ### Suggested Fix section
-              FIX_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Suggested Fix/{found=1} found && /^\*\*Description:\*\*/{sub(/^\*\*Description:\*\*\s*/, ""); print; found=0}')
-
-              if [ -z "$FIX_TEXT" ]; then
-                FIX_TEXT="See analysis on GitHub: ${ISSUE_URL}"
+              # Use comment severity/type if available, fall back to label
+              if [ -n "$COMMENT_SEVERITY" ] && [ "$COMMENT_SEVERITY" != "" ]; then
+                SEVERITY="$COMMENT_SEVERITY"
               fi
-            fi
+              if [ -n "$COMMENT_TYPE" ] && [ "$COMMENT_TYPE" != "" ]; then
+                TYPE="$COMMENT_TYPE"
+              fi
 
-            # Use comment severity/type if available, fall back to label
-            if [ -n "$COMMENT_SEVERITY" ] && [ "$COMMENT_SEVERITY" != "" ]; then
-              SEVERITY="$COMMENT_SEVERITY"
-            fi
-            if [ -n "$COMMENT_TYPE" ] && [ "$COMMENT_TYPE" != "" ]; then
-              TYPE="$COMMENT_TYPE"
-            fi
+              # HTML-escape all user-generated content
+              SAFE_TITLE=$(html_escape "$TITLE")
+              SAFE_SEVERITY=$(html_escape "$SEVERITY")
+              SAFE_TYPE=$(html_escape "$TYPE")
+              SAFE_ANALYSIS=$(html_escape "$ANALYSIS_TEXT")
+              SAFE_FIX=$(html_escape "$FIX_TEXT")
+              SAFE_DATE=$(html_escape "$FILED_DATE")
+              SAFE_ACTUAL=$(html_escape "$ACTUAL_BEHAVIOR")
 
-            # HTML-escape all user-generated content
-            SAFE_TITLE=$(html_escape "$TITLE")
-            SAFE_SEVERITY=$(html_escape "$SEVERITY")
-            SAFE_TYPE=$(html_escape "$TYPE")
-            SAFE_ANALYSIS=$(html_escape "$ANALYSIS_TEXT")
-            SAFE_FIX=$(html_escape "$FIX_TEXT")
-            SAFE_DATE=$(html_escape "$FILED_DATE")
-            SAFE_ACTUAL=$(html_escape "$ACTUAL_BEHAVIOR")
+              # Build action URLs
+              APPROVE_URL="https://pipeline.sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
+              REJECT_URL="https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${NUM}&token=${AUTH_TOKEN}"
+              INFO_URL="https://pipeline.sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
 
-            # Build action URLs
-            APPROVE_URL="https://pipeline.sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
-            REJECT_URL="https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${NUM}&token=${AUTH_TOKEN}"
-            INFO_URL="https://pipeline.sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
+              # Build card HTML
+              CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
+              CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+              if [ -n "$SAFE_ACTUAL" ]; then
+                CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+              fi
+              CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
+              CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
+              CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
 
-            # Build card HTML
-            CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
-            CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
-            if [ -n "$SAFE_ACTUAL" ]; then
-              CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
-            fi
-            CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
-            CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
-            CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
+              if [ -n "$FIX_TEXT" ]; then
+                CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">RECOMMENDED FIX:</p>"
+                CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
+              fi
 
-            if [ -n "$FIX_TEXT" ]; then
-              CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">RECOMMENDED FIX:</p>"
-              CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
-            fi
+              # Action buttons — large tap targets (min 44px height, generous padding)
+              CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
+              CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
+              CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+              CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
+              CARD="${CARD}</div></div>"
 
-            # Action buttons — large tap targets (min 44px height, generous padding)
-            CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
-            CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
-            CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
-            CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
-            CARD="${CARD}</div></div>"
-
-            BUG_CARDS="${BUG_CARDS}${CARD}"
-            ANALYZED_COUNT=$((ANALYZED_COUNT + 1))
-          done
-
-          # If no analyzed bugs, skip sending (but log pending ones)
-          if [ "$ANALYZED_COUNT" -eq 0 ] && [ "$PENDING_COUNT" -eq 0 ]; then
-            echo "No bugs to report."
-            echo "skip_send=true" >> "$GITHUB_OUTPUT"
-            exit 0
+              BUG_CARDS="${BUG_CARDS}${CARD}"
+              ANALYZED_COUNT=$((ANALYZED_COUNT + 1))
+            done
           fi
 
-          if [ "$ANALYZED_COUNT" -eq 0 ] && [ "$PENDING_COUNT" -gt 0 ]; then
-            echo "${PENDING_COUNT} bugs awaiting analysis, none ready for review. Skipping email."
-            echo "skip_send=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          # =============================================
+          # Section 2: PRs Ready for Review
+          # (merged from daily-fix-digest.yml — BA-010.8 AC2)
+          # =============================================
+          PR_CARDS=""
+          ACTUAL_PR_COUNT=0
+
+          if [ "$PR_COUNT" != "0" ]; then
+            for i in $(seq 0 $((PR_COUNT - 1))); do
+              PR_NUM=$(jq -r ".[$i].number" /tmp/prs.json)
+              PR_TITLE=$(jq -r ".[$i].title" /tmp/prs.json)
+              PR_BRANCH=$(jq -r ".[$i].head_ref" /tmp/prs.json)
+              PR_BODY=$(jq -r ".[$i].body // \"\"" /tmp/prs.json)
+              PR_URL=$(jq -r ".[$i].html_url" /tmp/prs.json)
+
+              # Extract issue number from branch name fix/bug-{N} or fix/sdk-bug-{N}
+              ISSUE_NUM=""
+              if echo "$PR_BRANCH" | grep -qE '^fix/(sdk-)?bug-[0-9]+'; then
+                ISSUE_NUM=$(echo "$PR_BRANCH" | sed 's/fix\/\(sdk-\)\?bug-//')
+              fi
+
+              # Fetch issue title if we have an issue number
+              ISSUE_TITLE=""
+              if [ -n "$ISSUE_NUM" ]; then
+                ISSUE_TITLE=$(gh api "repos/RaufGlasgow/Sorting-History/issues/$ISSUE_NUM" --jq '.title' 2>/dev/null || echo "")
+              fi
+
+              # Check if PR body has ## Bug section (BA-009.2 format)
+              HAS_STRUCTURED_BODY=false
+              if echo "$PR_BODY" | grep -q '^## Bug'; then
+                HAS_STRUCTURED_BODY=true
+              fi
+
+              # Escaped values for HTML
+              SAFE_PR_TITLE=$(html_escape "$PR_TITLE")
+              SAFE_ISSUE_TITLE=$(html_escape "$ISSUE_TITLE")
+
+              if [ "$HAS_STRUCTURED_BODY" = "true" ]; then
+                # Parse structured PR body sections
+                RISK_SECTION=$(printf '%s' "$PR_BODY" | sed -n '/^## Risk/,/^## /{ /^## Risk/d; /^## /d; p; }')
+                RISK_LEVEL=$(printf '%s' "$RISK_SECTION" | grep '^\*\*Level:\*\*' | sed 's/\*\*Level:\*\* *//')
+                RISK_REASON=$(printf '%s' "$RISK_SECTION" | grep '^\*\*Reason:\*\*' | sed 's/\*\*Reason:\*\* *//')
+
+                HOW_TO_TEST=$(printf '%s' "$PR_BODY" | sed -n '/^## How to Test/,/^## /{ /^## How to Test/d; /^## /d; p; }')
+                FILES_CHANGED=$(printf '%s' "$PR_BODY" | sed -n '/^## Files Changed/,/^## /{ /^## Files Changed/d; /^## /d; p; }')
+                BUILD_TESTS=$(printf '%s' "$PR_BODY" | sed -n '/^## Build /,/^## /{ /^## Build/d; /^## /d; p; }')
+
+                FIX_TYPE=$(printf '%s' "$HOW_TO_TEST" | grep '^\*\*Fix type:\*\*' | sed 's/\*\*Fix type:\*\* *//')
+
+                # Escape all parsed content
+                SAFE_RISK_LEVEL=$(html_escape "${RISK_LEVEL:-Unknown}")
+                SAFE_FIX_TYPE=$(html_escape "${FIX_TYPE:-unknown}")
+                SAFE_FILES=$(html_escape "$FILES_CHANGED")
+                SAFE_HOW_TO_TEST=$(html_escape "$HOW_TO_TEST")
+                SAFE_BUILD_TESTS=$(html_escape "${BUILD_TESTS:-See PR for details}")
+
+                # Build bug reference line
+                BUG_LINE=""
+                if [ -n "$ISSUE_NUM" ] && [ -n "$ISSUE_TITLE" ]; then
+                  BUG_LINE="Fixes: Bug #${ISSUE_NUM} (${SAFE_ISSUE_TITLE})"
+                elif [ -n "$ISSUE_NUM" ]; then
+                  BUG_LINE="Fixes: Bug #${ISSUE_NUM}"
+                fi
+
+                # Build action buttons
+                if [ -n "$ISSUE_NUM" ]; then
+                  PR_ACTIONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
+                else
+                  PR_ACTIONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
+                fi
+
+                PR_CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">PR #${PR_NUM} &mdash; ${SAFE_PR_TITLE}</h3>"
+                if [ -n "$BUG_LINE" ]; then
+                  PR_CARD="${PR_CARD}<p style=\"margin:0 0 8px 0;color:#6b7280;font-size:14px;\">${BUG_LINE}</p>"
+                fi
+                PR_CARD="${PR_CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#374151;\">Type: ${SAFE_FIX_TYPE} | Risk: ${SAFE_RISK_LEVEL}</p>"
+                PR_CARD="${PR_CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">WHAT CHANGED:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_FILES}</pre></div>"
+                PR_CARD="${PR_CARD}<p style=\"margin:0 0 12px 0;font-size:13px;color:#374151;\"><strong>BUILD &amp; TESTS:</strong> ${SAFE_BUILD_TESTS}</p>"
+                PR_CARD="${PR_CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">HOW TO TEST:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_HOW_TO_TEST}</pre></div>"
+                PR_CARD="${PR_CARD}<div style=\"margin-top:12px;\">${PR_ACTIONS}</div></div>"
+              else
+                # Fallback: no structured body
+                if [ -n "$ISSUE_NUM" ]; then
+                  PR_ACTIONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
+                else
+                  PR_ACTIONS="<a href=\"https://pipeline.sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://pipeline.sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
+                fi
+
+                PR_CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">PR #${PR_NUM} &mdash; ${SAFE_PR_TITLE}</h3><p style=\"margin:0 0 12px 0;font-size:14px;color:#6b7280;\">See PR for details: <a href=\"${PR_URL}\" style=\"color:#2563eb;\">${PR_URL}</a></p><div style=\"margin-top:12px;\">${PR_ACTIONS}</div></div>"
+              fi
+
+              PR_CARDS="${PR_CARDS}${PR_CARD}"
+              ACTUAL_PR_COUNT=$((ACTUAL_PR_COUNT + 1))
+            done
           fi
 
-          # Subject line: singular vs plural
-          if [ "$ANALYZED_COUNT" -eq 1 ]; then
-            SUBJECT="SortingHistory: 1 bug analyzed -- review needed"
-          else
-            SUBJECT="SortingHistory: ${ANALYZED_COUNT} bugs analyzed -- review needed"
-          fi
+          # =============================================
+          # Build unified email
+          # AC3: ALWAYS send — even if zero bugs and zero PRs (heartbeat)
+          # =============================================
 
           # Build pending notice if any
           PENDING_NOTICE=""
@@ -314,25 +424,53 @@ jobs:
             ATTENTION_SECTION=$(cat /tmp/attention_section.html)
           fi
 
+          # Subject line
+          TOTAL_ITEMS=$((ANALYZED_COUNT + ACTUAL_PR_COUNT))
+          if [ "$TOTAL_ITEMS" -eq 0 ]; then
+            SUBJECT="SortingHistory: All clear -- pipeline healthy"
+          elif [ "$ANALYZED_COUNT" -gt 0 ] && [ "$ACTUAL_PR_COUNT" -gt 0 ]; then
+            SUBJECT="SortingHistory: ${ANALYZED_COUNT} bug(s) + ${ACTUAL_PR_COUNT} PR(s) -- review needed"
+          elif [ "$ANALYZED_COUNT" -gt 0 ]; then
+            SUBJECT="SortingHistory: ${ANALYZED_COUNT} bug(s) analyzed -- review needed"
+          else
+            SUBJECT="SortingHistory: ${ACTUAL_PR_COUNT} PR(s) ready -- review needed"
+          fi
+
           # Full email HTML
           EMAIL_HTML="<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
           EMAIL_HTML="${EMAIL_HTML}<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#fff;\">"
-          EMAIL_HTML="${EMAIL_HTML}<h2 style=\"margin:0 0 4px 0;font-size:20px;color:#1a1a1a;\">Morning Bug Digest</h2>"
-          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ANALYZED_COUNT} bug(s) ready for your review</p>"
-          EMAIL_HTML="${EMAIL_HTML}${ATTENTION_SECTION}"
-          EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
-          EMAIL_HTML="${EMAIL_HTML}${BUG_CARDS}"
+          EMAIL_HTML="${EMAIL_HTML}<h2 style=\"margin:0 0 4px 0;font-size:20px;color:#1a1a1a;\">Pipeline Digest</h2>"
+
+          if [ "$TOTAL_ITEMS" -eq 0 ]; then
+            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">All clear &mdash; no bugs awaiting review and no PRs pending. Pipeline is healthy.</p>"
+            if [ "$PENDING_COUNT" -gt 0 ]; then
+              EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
+            fi
+          else
+            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ANALYZED_COUNT} bug(s) + ${ACTUAL_PR_COUNT} PR(s) for your review</p>"
+            EMAIL_HTML="${EMAIL_HTML}${ATTENTION_SECTION}"
+            EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
+
+            if [ "$ANALYZED_COUNT" -gt 0 ]; then
+              EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#1a1a1a;border-bottom:1px solid #e5e7eb;padding-bottom:6px;\">Bugs Awaiting Review</h3>"
+              EMAIL_HTML="${EMAIL_HTML}${BUG_CARDS}"
+            fi
+
+            if [ "$ACTUAL_PR_COUNT" -gt 0 ]; then
+              EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#1a1a1a;border-bottom:1px solid #e5e7eb;padding-bottom:6px;\">PRs Ready for Review</h3>"
+              EMAIL_HTML="${EMAIL_HTML}${PR_CARDS}"
+            fi
+          fi
+
           EMAIL_HTML="${EMAIL_HTML}<p style=\"margin-top:24px;font-size:12px;color:#999;text-align:center;\">SortingHistory Pipeline &bull; <a href=\"https://github.com/RaufGlasgow/Sorting-History/issues\" style=\"color:#0366d6;\">View all issues on GitHub</a></p>"
           EMAIL_HTML="${EMAIL_HTML}</body></html>"
 
           # Write to files for the send step
           echo "$SUBJECT" > /tmp/email_subject.txt
           echo "$EMAIL_HTML" > /tmp/email_body.html
-          echo "skip_send=false" >> "$GITHUB_OUTPUT"
-          echo "Email built with ${ANALYZED_COUNT} analyzed bugs, ${PENDING_COUNT} pending."
+          echo "Email built: ${ANALYZED_COUNT} bugs, ${ACTUAL_PR_COUNT} PRs, ${PENDING_COUNT} pending."
 
       - name: Send via Resend
-        if: steps.query.outputs.issue_count != '0' && steps.build.outputs.skip_send != 'true'
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}

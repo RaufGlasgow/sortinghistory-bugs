@@ -1,8 +1,8 @@
 name: Afternoon Fix Review Digest
+# Schedule DISABLED — fix review content merged into Pipeline Digest (BA-010.8)
+# Keep workflow_dispatch for manual use / debugging
 on:
-  schedule:
-    - cron: '0 22 * * *'  # 5:00 PM EST / 6:00 PM EDT = 22:00 UTC
-  workflow_dispatch: {}    # Manual trigger for testing
+  workflow_dispatch: {}    # Manual trigger only
 
 jobs:
   send-digest:
