@@ -21,7 +21,8 @@ export type ExpectedAction =
   | { type: "dispatch"; event_type: string; repo: string; payload_keys: string[]; payload_values?: Record<string, unknown> }
   | { type: "label"; repo: string; labels: string[] }
   | { type: "label_and_state"; repo: string; labels: string[]; workflow_type: string }
-  | { type: "skip" };
+  | { type: "skip" }
+  | { type: "handoff_to_dev"; repo: string; labels: string[]; classification: string };
 
 export const ROUTING_FIXTURES: RoutingFixture[] = [
   // --- route-1: content_error -> dispatch sdk-content-verify (AC-1) ---
@@ -224,6 +225,88 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
       labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P4", ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- BA-011 Story 2.1: 3 new classification fixtures ---
+
+  // --- route-content-duplicate: content_duplicate → label (no automation) ---
+  {
+    id: "route-content-duplicate",
+    description: "content_duplicate routes to label (needs human review)",
+    input: {
+      classification: "content_duplicate",
+      severity: "P3",
+      confidence: 0.85,
+      extracted_context: { category: "US History", event_title: "Boston Tea Party" },
+      issue_number: 60,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_CONTENT_DUPLICATE, ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+    },
+  },
+
+  // --- route-performance-issue: performance_issue → handoff_to_dev ---
+  {
+    id: "route-performance-issue",
+    description: "performance_issue routes to handoff_to_dev",
+    input: {
+      classification: "performance_issue",
+      severity: "P2",
+      confidence: 0.80,
+      extracted_context: { area: "category-loading" },
+      issue_number: 61,
+      issue_title: "App is really slow loading Dutch History",
+      issue_body: "The app takes 10+ seconds to load the Dutch History category.",
+      reasoning: "User reports slow loading of a specific category",
+    },
+    expected: {
+      type: "handoff_to_dev",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_PERFORMANCE_ISSUE, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+      classification: "performance_issue",
+    },
+  },
+
+  // --- route-crash-bug: crash_bug → handoff_to_dev ---
+  {
+    id: "route-crash-bug",
+    description: "crash_bug routes to handoff_to_dev",
+    input: {
+      classification: "crash_bug",
+      severity: "P1",
+      confidence: 0.90,
+      extracted_context: { screen: "MultiplayerView" },
+      issue_number: 62,
+      issue_title: "App crashes when selecting multiplayer",
+      issue_body: "Every time I tap the multiplayer button, the app immediately crashes.",
+      reasoning: "App termination reported by user on specific interaction",
+    },
+    expected: {
+      type: "handoff_to_dev",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_CRASH_BUG, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+      classification: "crash_bug",
+    },
+  },
+
+  // --- route-performance-no-body: performance_issue without issue_body → label fallback ---
+  {
+    id: "route-performance-no-body",
+    description: "performance_issue without issue data → label fallback (defensive)",
+    input: {
+      classification: "performance_issue",
+      severity: "P2",
+      confidence: 0.80,
+      extracted_context: {},
+      issue_number: 63,
+    },
+    expected: {
+      type: "label",
+      repo: ROUTING.PRIVATE_REPO,
+      labels: [ROUTING.LABEL_PERFORMANCE_ISSUE, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
     },
   },
 

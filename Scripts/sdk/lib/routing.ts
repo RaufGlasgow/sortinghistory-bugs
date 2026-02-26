@@ -31,6 +31,12 @@ export interface RoutingInput {
   issue_number: number;
   /** Labels already on the issue — used for idempotency check */
   existing_labels?: string[];
+  /** Issue title — needed for handoff_to_dev routes (BA-011 Story 2.4) */
+  issue_title?: string;
+  /** Issue body — needed for handoff_to_dev routes (BA-011 Story 2.4) */
+  issue_body?: string;
+  /** Triage reasoning — needed for handoff_to_dev routes */
+  reasoning?: string;
 }
 
 /** Dispatch action — triggers a repository_dispatch event */
@@ -72,7 +78,24 @@ interface SkipAction {
   issue_number: number;
 }
 
-export type RoutingAction = DispatchAction | LabelAction | LabelAndStateAction | SkipAction;
+/** Handoff-to-dev action — generates structured handoff and posts to private repo (BA-011 ARCH-2) */
+interface HandoffAction {
+  type: "handoff_to_dev";
+  repo: string;
+  issue_number: number;
+  labels: string[];
+  triage_data: {
+    classification: string;
+    confidence: number;
+    severity: string;
+    reasoning: string;
+    extracted_context: Record<string, unknown>;
+    issue_title: string;
+    issue_body: string;
+  };
+}
+
+export type RoutingAction = DispatchAction | LabelAction | LabelAndStateAction | SkipAction | HandoffAction;
 
 // ---------------------------------------------------------------------------
 // Pure routing decision function
@@ -167,6 +190,16 @@ function routeByClassification(classification: Classification, input: RoutingInp
       };
     }
 
+    case "content_duplicate": {
+      // BA-011: Duplicate event — needs human review to decide which copy to keep
+      return {
+        type: "label",
+        repo: ROUTING.PRIVATE_REPO,
+        issue_number: input.issue_number,
+        labels: [ROUTING.LABEL_CONTENT_DUPLICATE, ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+      };
+    }
+
     case "translation_error": {
       // AC-2: label + state file for translation queue
       const category = (typeof input.extracted_context.category === "string" && input.extracted_context.category !== "")
@@ -199,6 +232,63 @@ function routeByClassification(classification: Classification, input: RoutingInp
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
         labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
+      };
+    }
+
+    case "performance_issue": {
+      // BA-011: Needs code analysis/profiling — handoff to developer
+      if (!input.issue_title || !input.issue_body) {
+        // Defensive: if issue data not provided, fall back to label-only (TEA recommendation)
+        console.log("[routing] handoff_to_dev for performance_issue missing issue_title/issue_body — falling back to label-only");
+        return {
+          type: "label",
+          repo: ROUTING.PRIVATE_REPO,
+          issue_number: input.issue_number,
+          labels: [ROUTING.LABEL_PERFORMANCE_ISSUE, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+        };
+      }
+      return {
+        type: "handoff_to_dev",
+        repo: ROUTING.PRIVATE_REPO,
+        issue_number: input.issue_number,
+        labels: [ROUTING.LABEL_PERFORMANCE_ISSUE, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+        triage_data: {
+          classification: "performance_issue",
+          confidence: input.confidence,
+          severity: input.severity,
+          reasoning: input.reasoning ?? "",
+          extracted_context: input.extracted_context,
+          issue_title: input.issue_title,
+          issue_body: input.issue_body,
+        },
+      };
+    }
+
+    case "crash_bug": {
+      // BA-011: Needs investigation — handoff to developer
+      if (!input.issue_title || !input.issue_body) {
+        console.log("[routing] handoff_to_dev for crash_bug missing issue_title/issue_body — falling back to label-only");
+        return {
+          type: "label",
+          repo: ROUTING.PRIVATE_REPO,
+          issue_number: input.issue_number,
+          labels: [ROUTING.LABEL_CRASH_BUG, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+        };
+      }
+      return {
+        type: "handoff_to_dev",
+        repo: ROUTING.PRIVATE_REPO,
+        issue_number: input.issue_number,
+        labels: [ROUTING.LABEL_CRASH_BUG, ROUTING.LABEL_NEEDS_DEV_HANDOFF, ROUTING.LABEL_ROUTED],
+        triage_data: {
+          classification: "crash_bug",
+          confidence: input.confidence,
+          severity: input.severity,
+          reasoning: input.reasoning ?? "",
+          extracted_context: input.extracted_context,
+          issue_title: input.issue_title,
+          issue_body: input.issue_body,
+        },
       };
     }
 
@@ -354,6 +444,11 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
       if (action.category) {
         console.log("[routing]   category: " + action.category);
       }
+    } else if (action.type === "handoff_to_dev") {
+      console.log("[routing]   repo: " + action.repo);
+      console.log("[routing]   issue_number: " + action.issue_number);
+      console.log("[routing]   labels: [" + action.labels.join(", ") + "]");
+      console.log("[routing]   triage_data.classification: " + action.triage_data.classification);
     }
     return;
   }
@@ -379,6 +474,12 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
       await githubLabel(action.repo, action.issue_number, action.labels);
       await createWorkflowState(action.workflow_type, "dispatch", action.category, action.issue_number);
       console.log("[routing] Created workflow state for " + action.workflow_type + " (issue #" + action.issue_number + ")");
+      break;
+
+    case "handoff_to_dev":
+      // BA-011: Apply labels. Handoff generation (Story 3.1) will be wired here later.
+      await githubLabel(action.repo, action.issue_number, action.labels);
+      console.log("[routing] Handoff-to-dev: labeled issue #" + action.issue_number + " (handoff generation pending Story 3.1)");
       break;
   }
 }

@@ -386,6 +386,8 @@ function buildLogEntry(
 
   if (action.type === "skip") {
     gate = "idempotency";
+  } else if (action.type === "handoff_to_dev") {
+    labels = action.labels;
   } else if (action.type === "label" || action.type === "label_and_state") {
     labels = action.labels;
     if (labels.includes(ROUTING.LABEL_LOW_CONFIDENCE)) {
@@ -422,6 +424,9 @@ function buildRoutingComment(
 
     case "label_and_state":
       return "Labeled as `" + triage.classification + "` and queued for " + action.workflow_type + " pipeline.";
+
+    case "handoff_to_dev":
+      return "Handed off to developer — structured handoff for `" + triage.classification + "` (" + triage.severity + ").";
 
     case "skip":
       return "Skipped: " + action.reason;

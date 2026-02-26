@@ -70,9 +70,12 @@ export const BUG_FIX_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] a
 export const CLASSIFICATIONS = [
   "content_error",
   "content_category_error",
+  "content_duplicate",
   "translation_error",
   "ui_bug",
   "gameplay_bug",
+  "performance_issue",
+  "crash_bug",
   "feature_request",
   "needs_human_review",
 ] as const;
@@ -114,4 +117,9 @@ export const ROUTING = {
   LABEL_UNKNOWN_CLASSIFICATION: "unknown-classification",
   /** BA-011: Label for low-confidence classifications (below CONFIDENCE_THRESHOLD) */
   LABEL_LOW_CONFIDENCE: "low-confidence",
+  /** BA-011 Story 2.1: New classification labels */
+  LABEL_CONTENT_DUPLICATE: "content-duplicate",
+  LABEL_PERFORMANCE_ISSUE: "performance-issue",
+  LABEL_CRASH_BUG: "crash-bug",
+  LABEL_NEEDS_DEV_HANDOFF: "needs-dev-handoff",
 } as const;

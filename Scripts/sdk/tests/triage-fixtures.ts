@@ -1,7 +1,8 @@
 /**
- * Story 4.1: Bug Triager Test Fixtures
+ * Bug Triager Test Fixtures
  *
- * 7 test reports with expected classifications and acceptable severity ranges.
+ * 10 test reports with expected classifications and acceptable severity ranges.
+ * BA-011: Added content_duplicate, performance_issue, crash_bug fixtures.
  * Used by both local testing and CI validation.
  */
 
@@ -63,5 +64,28 @@ export const TRIAGE_FIXTURES: TriageFixture[] = [
     report: "The date for the fall of the Berlin Wall is wrong in the German version",
     expected_classification: ["content_error", "translation_error", "needs_human_review"],
     expected_severity_range: ["P2", "P3"],
+  },
+
+  // --- BA-011: 3 new classification fixtures ---
+
+  {
+    id: "test-H",
+    report: "There are two copies of the Boston Tea Party event in US History",
+    expected_classification: ["content_duplicate", "content_error"],
+    expected_severity_range: ["P2", "P3"],
+  },
+  {
+    id: "test-I",
+    report: "The app is really slow when loading the Dutch History category, takes over 10 seconds",
+    expected_classification: ["performance_issue", "gameplay_bug"],
+    expected_severity_range: ["P2", "P3"],
+  },
+  {
+    id: "test-J",
+    // TEA finding: crash-during-gameplay is crash_bug, not gameplay_bug.
+    // After Story 2.3 prompt update, this should classify as crash_bug.
+    report: "The app crashes immediately when I tap the multiplayer button",
+    expected_classification: ["crash_bug", "gameplay_bug"],
+    expected_severity_range: ["P1", "P2"],
   },
 ];

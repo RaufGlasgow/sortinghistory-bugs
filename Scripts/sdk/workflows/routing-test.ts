@@ -108,6 +108,24 @@ function validateAction(actual: RoutingAction, expected: ExpectedAction): string
       // Type match is sufficient for skip
       break;
     }
+
+    case "handoff_to_dev": {
+      if (actual.type !== "handoff_to_dev") break;
+      if (actual.repo !== expected.repo) {
+        errors.push("repo: got \"" + actual.repo + "\", expected \"" + expected.repo + "\"");
+      }
+      const actualLabelsH = [...actual.labels].sort();
+      const expectedLabelsH = [...expected.labels].sort();
+      if (JSON.stringify(actualLabelsH) !== JSON.stringify(expectedLabelsH)) {
+        errors.push(
+          "labels: got [" + actualLabelsH.join(", ") + "], expected [" + expectedLabelsH.join(", ") + "]"
+        );
+      }
+      if (actual.triage_data.classification !== expected.classification) {
+        errors.push("triage_data.classification: got \"" + actual.triage_data.classification + "\", expected \"" + expected.classification + "\"");
+      }
+      break;
+    }
   }
 
   return errors;
