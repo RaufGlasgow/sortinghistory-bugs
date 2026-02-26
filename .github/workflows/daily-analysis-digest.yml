@@ -137,6 +137,25 @@ jobs:
           echo "pr_count=$PR_COUNT" >> "$GITHUB_OUTPUT"
           echo "Found $PR_COUNT open pipeline PRs"
 
+      - name: Check reward code pool status (BA-012.2 AC7)
+        id: reward_pool
+        run: |
+          # Query the Worker endpoint for code pool status
+          POOL_JSON=$(curl -sf "https://sortinghistory.com/api/reward-code/status" 2>/dev/null || echo '{"remaining":0,"total":0,"low":false,"empty":false}')
+          POOL_LOW=$(echo "$POOL_JSON" | jq -r '.low // false')
+          POOL_EMPTY=$(echo "$POOL_JSON" | jq -r '.empty // false')
+          POOL_REMAINING=$(echo "$POOL_JSON" | jq -r '.remaining // 0')
+          POOL_TOTAL=$(echo "$POOL_JSON" | jq -r '.total // 0')
+
+          echo "pool_low=${POOL_LOW}" >> "$GITHUB_OUTPUT"
+          echo "pool_empty=${POOL_EMPTY}" >> "$GITHUB_OUTPUT"
+          echo "pool_remaining=${POOL_REMAINING}" >> "$GITHUB_OUTPUT"
+          echo "pool_total=${POOL_TOTAL}" >> "$GITHUB_OUTPUT"
+
+          if [ "$POOL_LOW" = "true" ]; then
+            echo "WARNING: Offer code pool running low — ${POOL_REMAINING} of ${POOL_TOTAL} codes remaining"
+          fi
+
       - name: Build digest email
         id: build
         env:
@@ -146,6 +165,10 @@ jobs:
           ISSUE_COUNT: ${{ steps.query.outputs.issue_count }}
           PR_COUNT: ${{ steps.query_prs.outputs.pr_count }}
           CONFIDENCE_JSON: ${{ steps.confidence.outputs.confidence_json }}
+          POOL_LOW: ${{ steps.reward_pool.outputs.pool_low }}
+          POOL_EMPTY: ${{ steps.reward_pool.outputs.pool_empty }}
+          POOL_REMAINING: ${{ steps.reward_pool.outputs.pool_remaining }}
+          POOL_TOTAL: ${{ steps.reward_pool.outputs.pool_total }}
         run: |
           # Function to escape HTML entities
           html_escape() {
@@ -459,6 +482,15 @@ jobs:
             if [ "$ACTUAL_PR_COUNT" -gt 0 ]; then
               EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#1a1a1a;border-bottom:1px solid #e5e7eb;padding-bottom:6px;\">PRs Ready for Review</h3>"
               EMAIL_HTML="${EMAIL_HTML}${PR_CARDS}"
+            fi
+          fi
+
+          # BA-012.2 AC7: Reward code pool warning
+          if [ "$POOL_LOW" = "true" ] || [ "$POOL_EMPTY" = "true" ]; then
+            if [ "$POOL_EMPTY" = "true" ]; then
+              EMAIL_HTML="${EMAIL_HTML}<div style=\"margin:20px 0;padding:12px 16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;font-size:13px;color:#991b1b;\"><strong>Offer code pool EMPTY</strong> &mdash; reward emails are being sent without codes. Upload more codes via <code>upload-codes.ts</code>.</div>"
+            else
+              EMAIL_HTML="${EMAIL_HTML}<div style=\"margin:20px 0;padding:12px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;font-size:13px;color:#6d4c00;\"><strong>Offer code pool running low</strong> &mdash; ${POOL_REMAINING} of ${POOL_TOTAL} codes remaining. Upload more soon.</div>"
             fi
           fi
 
