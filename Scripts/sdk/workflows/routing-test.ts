@@ -20,6 +20,7 @@ import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing
 import { ROUTING, CLASSIFICATIONS, PATHS } from "../config.js";
 import { runContractTest } from "../tests/contract-test.js";
 import { generateTriageHandoff, buildFallbackHandoffComment, type TriageOnlyHandoffInput } from "../lib/handoff-generator.js";
+import { readRoutingLogForDate, buildLabelFallback, renderNeedsAttentionHtml, formatClassificationDisplay, type IssueConfidenceData, type DigestConfidenceResult } from "../lib/digest-confidence.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -826,12 +827,117 @@ export async function runRoutingTest(): Promise<void> {
   }
   console.log("");
 
+  // --- Additional test: digest confidence reads routing log JSONL (Story 3.3 AC1) ---
+  console.log("--- extra-22: digest confidence reads routing log and separates flagged issues ---");
+  let digestConfidencePassed = false;
+  {
+    // Create a temp routing log with mixed confidence entries
+    const tmpDir3 = fs.mkdtempSync(path.join(os.tmpdir(), "digest-conf-test-"));
+    const logDir3 = path.join(tmpDir3, "state", "routing-log");
+    fs.mkdirSync(logDir3, { recursive: true });
+    const testDate = "2026-02-25";
+    const logFile3 = path.join(logDir3, testDate + ".jsonl");
+
+    // Write 3 entries: high confidence, low confidence, unknown classification
+    const entries = [
+      { ts: "2026-02-25T10:00:00Z", issue: 101, cls: "content_error", conf: 0.92, action: "dispatch", labels: ["content-error", "sdk-routed"], gate: "classification_route" },
+      { ts: "2026-02-25T10:05:00Z", issue: 102, cls: "ui_bug", conf: 0.55, action: "label", labels: ["ui-bug", "low-confidence", "sdk-routed"], gate: "confidence" },
+      { ts: "2026-02-25T10:10:00Z", issue: 103, cls: "banana_error", conf: 0.9, action: "label", labels: ["needs-human-review", "unknown-classification", "sdk-routed"], gate: "unknown_classification" },
+    ];
+    const logContent = entries.map(e => JSON.stringify(e)).join("\n") + "\n";
+    fs.writeFileSync(logFile3, logContent, "utf-8");
+
+    const result = readRoutingLogForDate(testDate, tmpDir3);
+
+    const checks = [
+      { label: "source is routing_log", ok: result.source === "routing_log" },
+      { label: "needs_attention has 2 issues", ok: result.needs_attention.length === 2 },
+      { label: "normal has 1 issue", ok: result.normal.length === 1 },
+      { label: "all has 3 issues", ok: result.all.length === 3 },
+      { label: "issue 101 is normal", ok: result.normal.some(i => i.issue === 101 && !i.needs_attention) },
+      { label: "issue 102 is flagged (low confidence)", ok: result.needs_attention.some(i => i.issue === 102 && i.flag_reason.includes("Low confidence")) },
+      { label: "issue 103 is flagged (unknown)", ok: result.needs_attention.some(i => i.issue === 103 && i.flag_reason.includes("Unknown classification")) },
+      { label: "display includes percentage", ok: result.normal[0]?.display === "content_error (92%)" },
+    ];
+    const failing = checks.filter(c => !c.ok).map(c => c.label);
+    if (failing.length === 0) {
+      digestConfidencePassed = true;
+      console.log("[extra-22] PASS: Digest confidence reads JSONL, separates flagged/normal, includes percentage display");
+    } else {
+      console.log("[extra-22] FAIL: " + failing.join(", "));
+    }
+
+    try { fs.rmSync(tmpDir3, { recursive: true }); } catch { /* best-effort */ }
+  }
+  console.log("");
+
+  // --- Additional test: digest confidence fallback + renderNeedsAttentionHtml (Story 3.3 AC2, AC3) ---
+  console.log("--- extra-23: label fallback + Needs Attention HTML rendering ---");
+  let digestFallbackPassed = false;
+  {
+    const fallbackChecks: string[] = [];
+
+    // Test label fallback
+    const labelResult = buildLabelFallback([
+      { number: 201, labels: ["low-confidence", "ui-bug", "sdk-routed"] },
+      { number: 202, labels: ["content-error", "sdk-routed"] },
+      { number: 203, labels: ["unknown-classification", "needs-human-review", "sdk-routed"] },
+    ]);
+    if (labelResult.source !== "label_fallback") fallbackChecks.push("source should be label_fallback");
+    if (labelResult.needs_attention.length !== 2) fallbackChecks.push("expected 2 flagged, got " + labelResult.needs_attention.length);
+    if (labelResult.normal.length !== 1) fallbackChecks.push("expected 1 normal, got " + labelResult.normal.length);
+
+    // Test renderNeedsAttentionHtml with flagged issues
+    const html = renderNeedsAttentionHtml(
+      labelResult.needs_attention,
+      "https://github.com/RaufGlasgow/Sorting-History/issues/",
+    );
+    if (!html.includes("Needs Attention")) fallbackChecks.push("HTML missing 'Needs Attention' heading");
+    if (!html.includes("#201")) fallbackChecks.push("HTML missing issue #201");
+    if (!html.includes("#203")) fallbackChecks.push("HTML missing issue #203");
+    if (!html.includes("fef2f2")) fallbackChecks.push("HTML missing red background style");
+
+    // Test renderNeedsAttentionHtml with empty array (should return empty string)
+    const emptyHtml = renderNeedsAttentionHtml([], "https://example.com/issues/");
+    if (emptyHtml !== "") fallbackChecks.push("empty issues should return empty string, got: " + emptyHtml.slice(0, 50));
+
+    // Test formatClassificationDisplay
+    const display1 = formatClassificationDisplay("content_error", 0.92);
+    if (display1 !== "content_error (92%)") fallbackChecks.push("display should be 'content_error (92%)', got: " + display1);
+    const display2 = formatClassificationDisplay("ui_bug", -1);
+    if (display2 !== "ui_bug (confidence unknown)") fallbackChecks.push("display should be 'ui_bug (confidence unknown)', got: " + display2);
+
+    if (fallbackChecks.length === 0) {
+      digestFallbackPassed = true;
+      console.log("[extra-23] PASS: Label fallback, Needs Attention HTML, empty omission, formatClassificationDisplay all correct");
+    } else {
+      console.log("[extra-23] FAIL: " + fallbackChecks.join("; "));
+    }
+  }
+  console.log("");
+
+  // --- Additional test: readRoutingLogForDate returns label_fallback when no log exists (Story 3.3) ---
+  console.log("--- extra-24: readRoutingLogForDate returns label_fallback when no log file ---");
+  let noLogFallbackPassed = false;
+  {
+    const tmpDir4 = fs.mkdtempSync(path.join(os.tmpdir(), "digest-nolog-test-"));
+    const result = readRoutingLogForDate("2099-12-31", tmpDir4);
+    if (result.source === "label_fallback" && result.needs_attention.length === 0 && result.normal.length === 0) {
+      noLogFallbackPassed = true;
+      console.log("[extra-24] PASS: Missing log file returns label_fallback with empty arrays");
+    } else {
+      console.log("[extra-24] FAIL: Expected label_fallback source with empty arrays");
+    }
+    try { fs.rmSync(tmpDir4, { recursive: true }); } catch { /* best-effort */ }
+  }
+  console.log("");
+
   // --- Summary ---
   console.log("=== Routing Test Suite Summary ===");
   const passCount = results.filter(r => r.passed).length;
   const failCount = results.length - passCount;
-  const extraCount = 21;
-  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0) + (triageWiringPassed ? 1 : 0) + (handoffSectionsPassed ? 1 : 0) + (handoffOmitsPassed ? 1 : 0) + (fallbackContentPassed ? 1 : 0) + (handoffWiringPassed ? 1 : 0) + (authPatternPassed ? 1 : 0) + (dryRunStructurePassed ? 1 : 0);
+  const extraCount = 24;
+  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0) + (triageWiringPassed ? 1 : 0) + (handoffSectionsPassed ? 1 : 0) + (handoffOmitsPassed ? 1 : 0) + (fallbackContentPassed ? 1 : 0) + (handoffWiringPassed ? 1 : 0) + (authPatternPassed ? 1 : 0) + (dryRunStructurePassed ? 1 : 0) + (digestConfidencePassed ? 1 : 0) + (digestFallbackPassed ? 1 : 0) + (noLogFallbackPassed ? 1 : 0);
   const extraFailCount = extraCount - extraPassCount;
   const totalPass = passCount + extraPassCount;
   const totalFail = failCount + extraFailCount;
@@ -863,6 +969,9 @@ export async function runRoutingTest(): Promise<void> {
   console.log("  extra-19: " + (handoffWiringPassed ? "PASS" : "FAIL"));
   console.log("  extra-20: " + (authPatternPassed ? "PASS" : "FAIL"));
   console.log("  extra-21: " + (dryRunStructurePassed ? "PASS" : "FAIL"));
+  console.log("  extra-22: " + (digestConfidencePassed ? "PASS" : "FAIL"));
+  console.log("  extra-23: " + (digestFallbackPassed ? "PASS" : "FAIL"));
+  console.log("  extra-24: " + (noLogFallbackPassed ? "PASS" : "FAIL"));
 
   console.log("");
   console.log("Results: " + totalPass + "/" + totalTests + " passed, " + totalFail + " failed");

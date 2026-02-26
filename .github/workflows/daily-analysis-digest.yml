@@ -12,6 +12,61 @@ jobs:
       issues: read
 
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install SDK dependencies
+        run: cd Scripts/sdk && npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts 2>/dev/null || echo "No package.json — tsx available globally"
+
+      - name: Read routing log for confidence data (BA-011 Story 3.3)
+        id: confidence
+        run: |
+          # Read today's routing log via the SDK CLI
+          # Falls back gracefully if no log exists (source=label_fallback)
+          CONFIDENCE_JSON=$(npx tsx Scripts/sdk/lib/digest-confidence-cli.ts 2>/dev/null || echo '{"source":"label_fallback","needs_attention":[],"normal":[],"all":[]}')
+          echo "confidence_json=${CONFIDENCE_JSON}" >> "$GITHUB_OUTPUT"
+
+          # Extract needs-attention count for subject line
+          ATTENTION_COUNT=$(echo "$CONFIDENCE_JSON" | jq '.needs_attention | length' 2>/dev/null || echo "0")
+          echo "attention_count=${ATTENTION_COUNT}" >> "$GITHUB_OUTPUT"
+
+          # Build needs-attention HTML section via jq
+          # Only render if there are flagged issues
+          if [ "$ATTENTION_COUNT" -gt 0 ]; then
+            ATTENTION_HTML="<div style=\"margin-bottom:20px;padding:16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;\">"
+            ATTENTION_HTML="${ATTENTION_HTML}<h3 style=\"margin:0 0 12px 0;font-size:16px;color:#991b1b;\">Needs Attention</h3>"
+            ATTENTION_HTML="${ATTENTION_HTML}<p style=\"margin:0 0 12px 0;font-size:13px;color:#991b1b;\">These bugs were flagged during triage &mdash; review classifications before acting.</p>"
+
+            # Build a card per flagged issue
+            for i in $(seq 0 $((ATTENTION_COUNT - 1))); do
+              ISSUE_NUM=$(echo "$CONFIDENCE_JSON" | jq -r ".needs_attention[$i].issue")
+              DISPLAY=$(echo "$CONFIDENCE_JSON" | jq -r ".needs_attention[$i].display")
+              FLAG_REASON=$(echo "$CONFIDENCE_JSON" | jq -r ".needs_attention[$i].flag_reason")
+              ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE_NUM}"
+
+              ATTENTION_HTML="${ATTENTION_HTML}<div style=\"margin-bottom:8px;padding:8px 12px;background:#fff;border-radius:4px;border-left:3px solid #dc2626;\">"
+              ATTENTION_HTML="${ATTENTION_HTML}<a href=\"${ISSUE_URL}\" style=\"color:#1d4ed8;font-weight:bold;text-decoration:none;\">#${ISSUE_NUM}</a>"
+              ATTENTION_HTML="${ATTENTION_HTML} &mdash; <code style=\"background:#f3f4f6;padding:2px 6px;border-radius:3px;font-size:13px;\">${DISPLAY}</code>"
+              if [ -n "$FLAG_REASON" ] && [ "$FLAG_REASON" != "" ]; then
+                ATTENTION_HTML="${ATTENTION_HTML}<br><span style=\"font-size:12px;color:#dc2626;\">${FLAG_REASON}</span>"
+              fi
+              ATTENTION_HTML="${ATTENTION_HTML}</div>"
+            done
+
+            ATTENTION_HTML="${ATTENTION_HTML}</div>"
+          else
+            ATTENTION_HTML=""
+          fi
+
+          # Write to file (too large for GITHUB_OUTPUT in some cases)
+          echo "$ATTENTION_HTML" > /tmp/attention_section.html
+          echo "Confidence data loaded: source=$(echo "$CONFIDENCE_JSON" | jq -r '.source'), attention=${ATTENTION_COUNT}"
+
       - name: Query issues needing review
         id: query
         env:
@@ -65,6 +120,7 @@ jobs:
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
           ISSUE_LIST: ${{ steps.query.outputs.issue_list }}
           ISSUE_COUNT: ${{ steps.query.outputs.issue_count }}
+          CONFIDENCE_JSON: ${{ steps.confidence.outputs.confidence_json }}
         run: |
           # Function to escape HTML entities
           html_escape() {
@@ -73,6 +129,19 @@ jobs:
             text="${text//</&lt;}"
             text="${text//>/&gt;}"
             printf '%s' "$text"
+          }
+
+          # BA-011 Story 3.3: Lookup confidence data for an issue from routing log
+          # Returns "classification (NN%)" or empty string if not found
+          get_confidence_display() {
+            local issue_num="$1"
+            if [ -z "$CONFIDENCE_JSON" ]; then
+              echo ""
+              return
+            fi
+            local display
+            display=$(echo "$CONFIDENCE_JSON" | jq -r --argjson num "$issue_num" '.all[] | select(.issue == $num) | .display' 2>/dev/null || echo "")
+            echo "$display"
           }
 
           # Build bug cards
@@ -100,6 +169,12 @@ jobs:
             # Extract severity and type from issue labels
             SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
             TYPE=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(. != "from-app" and . != "needs-human-review" and . != "needs-triage" and . != "needs-review" and (startswith("P") | not))] | first // "Unknown"')
+
+            # BA-011 Story 3.3: Overlay confidence from routing log
+            CONF_DISPLAY=$(get_confidence_display "$NUM")
+            if [ -n "$CONF_DISPLAY" ]; then
+              TYPE="$CONF_DISPLAY"
+            fi
 
             # Format date as "Mon DD"
             if [ -n "$CREATED_AT" ] && [ "$CREATED_AT" != "null" ]; then
@@ -233,11 +308,18 @@ jobs:
             PENDING_NOTICE="<div style=\"margin-bottom:20px;padding:12px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;font-size:13px;color:#6d4c00;\">${PENDING_COUNT} bug(s) still awaiting AI analysis (${PENDING_NUMS} ) &mdash; they will appear here once analyzed.</div>"
           fi
 
+          # BA-011 Story 3.3: Read the Needs Attention section (built in confidence step)
+          ATTENTION_SECTION=""
+          if [ -f /tmp/attention_section.html ]; then
+            ATTENTION_SECTION=$(cat /tmp/attention_section.html)
+          fi
+
           # Full email HTML
           EMAIL_HTML="<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
           EMAIL_HTML="${EMAIL_HTML}<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#fff;\">"
           EMAIL_HTML="${EMAIL_HTML}<h2 style=\"margin:0 0 4px 0;font-size:20px;color:#1a1a1a;\">Morning Bug Digest</h2>"
           EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ANALYZED_COUNT} bug(s) ready for your review</p>"
+          EMAIL_HTML="${EMAIL_HTML}${ATTENTION_SECTION}"
           EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
           EMAIL_HTML="${EMAIL_HTML}${BUG_CARDS}"
           EMAIL_HTML="${EMAIL_HTML}<p style=\"margin-top:24px;font-size:12px;color:#999;text-align:center;\">SortingHistory Pipeline &bull; <a href=\"https://github.com/RaufGlasgow/Sorting-History/issues\" style=\"color:#0366d6;\">View all issues on GitHub</a></p>"
