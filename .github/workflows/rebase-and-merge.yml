@@ -1,0 +1,268 @@
+# BA-010.7: Rebase-and-merge workflow
+# Triggered by /merge comment via Cloudflare Worker → repository_dispatch
+#
+# Flow:
+#   1. Checkout private repo with full history
+#   2. Rebase fix branch against main
+#   3. If clean: force-push + squash merge
+#   4. If conflict: abort, email owner with conflicting files, label PR
+
+name: Rebase and Merge
+
+on:
+  repository_dispatch:
+    types: [merge-fix]
+
+jobs:
+  rebase-and-merge:
+    runs-on: ubuntu-latest
+    env:
+      PRIVATE_REPO: RaufGlasgow/Sorting-History
+      GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+
+    steps:
+      - name: Extract payload
+        id: payload
+        run: |
+          ISSUE_NUMBER="${{ github.event.client_payload.issue_number }}"
+          PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+          HEAD_BRANCH="${{ github.event.client_payload.head_branch }}"
+
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "Processing /merge for PR #${PR_NUMBER} (issue #${ISSUE_NUMBER}), branch: ${HEAD_BRANCH}"
+
+      - name: Check PR state
+        id: check
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+
+          # Fetch PR details
+          PR_JSON=$(gh api "repos/${PRIVATE_REPO}/pulls/${PR_NUMBER}" 2>/dev/null || echo '{"state":"error"}')
+          PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "error"')
+          PR_MERGED=$(echo "$PR_JSON" | jq -r '.merged // false')
+          PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // "Unknown"')
+
+          echo "pr_state=${PR_STATE}" >> "$GITHUB_OUTPUT"
+          echo "pr_merged=${PR_MERGED}" >> "$GITHUB_OUTPUT"
+          echo "pr_title=${PR_TITLE}" >> "$GITHUB_OUTPUT"
+
+          if [ "$PR_MERGED" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=already merged" >> "$GITHUB_OUTPUT"
+            echo "PR #${PR_NUMBER} is already merged. Skipping."
+          elif [ "$PR_STATE" = "closed" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=PR is closed" >> "$GITHUB_OUTPUT"
+            echo "PR #${PR_NUMBER} is closed. Skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify skip (already merged or closed)
+        if: steps.check.outputs.skip == 'true'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          SKIP_REASON="${{ steps.check.outputs.skip_reason }}"
+
+          # Send skip notification email
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merge skipped: PR #${PR_NUMBER} — ${SKIP_REASON}" \
+            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2>Merge Skipped</h2><p>PR #${PR_NUMBER} ${SKIP_REASON}. No action taken.</p></div>" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: skip notification email failed"
+
+      - name: Checkout private repo
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          ref: ${{ steps.payload.outputs.head_branch }}
+
+      - name: Check branch exists
+        if: steps.check.outputs.skip != 'true'
+        id: branch_check
+        run: |
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+
+          if ! git rev-parse --verify "origin/${HEAD_BRANCH}" >/dev/null 2>&1; then
+            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
+            echo "Branch ${HEAD_BRANCH} not found on remote."
+          else
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify branch not found
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'false'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merge failed: PR #${PR_NUMBER} — branch not found" \
+            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2>Merge Failed</h2><p>Branch <code>${HEAD_BRANCH}</code> for PR #${PR_NUMBER} no longer exists. The branch may have been deleted.</p></div>" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: branch-not-found email failed"
+
+      - name: Rebase against main
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true'
+        id: rebase
+        run: |
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+
+          # Configure git for rebase
+          git config user.email "pipeline@sortinghistory.com"
+          git config user.name "SortingHistory Pipeline"
+
+          # Fetch latest main
+          git fetch origin main
+
+          # Check if rebase is needed
+          BEHIND_COUNT=$(git rev-list --count "HEAD..origin/main")
+          echo "Branch is ${BEHIND_COUNT} commits behind main"
+
+          if [ "$BEHIND_COUNT" -eq 0 ]; then
+            echo "rebase_needed=false" >> "$GITHUB_OUTPUT"
+            echo "rebase_result=clean" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with main — skipping rebase, proceeding to merge."
+            exit 0
+          fi
+
+          echo "rebase_needed=true" >> "$GITHUB_OUTPUT"
+
+          # Attempt rebase
+          if git rebase origin/main; then
+            echo "rebase_result=clean" >> "$GITHUB_OUTPUT"
+            echo "Rebase successful."
+          else
+            echo "rebase_result=conflict" >> "$GITHUB_OUTPUT"
+
+            # Extract conflicting files
+            CONFLICT_FILES=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "unknown")
+            echo "conflict_files<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$CONFLICT_FILES" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+
+            # Abort the rebase
+            git rebase --abort
+            echo "Rebase conflict detected. Conflicting files: ${CONFLICT_FILES}"
+          fi
+
+      - name: Force-push rebased branch
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'clean' && steps.rebase.outputs.rebase_needed == 'true'
+        run: |
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+          git push --force-with-lease origin "${HEAD_BRANCH}"
+          echo "Force-pushed rebased branch ${HEAD_BRANCH}"
+
+      - name: Squash merge PR
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'clean'
+        id: merge
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+
+          # Merge via GitHub API
+          if gh pr merge "${PR_NUMBER}" --squash --repo "${PRIVATE_REPO}"; then
+            echo "merge_result=success" >> "$GITHUB_OUTPUT"
+            echo "PR #${PR_NUMBER} merged successfully."
+
+            # Add merged-by-pipeline label to the issue
+            if [ -n "$ISSUE_NUMBER" ] && [ "$ISSUE_NUMBER" != "" ] && [ "$ISSUE_NUMBER" != "null" ]; then
+              gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUMBER}/labels" \
+                -X POST \
+                --field 'labels[]=merged-by-pipeline' 2>/dev/null || echo "Warning: failed to add merged-by-pipeline label"
+            fi
+          else
+            echo "merge_result=failed" >> "$GITHUB_OUTPUT"
+            echo "PR merge failed."
+          fi
+
+      - name: Send success email
+        if: steps.merge.outputs.merge_result == 'success'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_TITLE="${{ steps.check.outputs.pr_title }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merged: PR #${PR_NUMBER} — ${PR_TITLE}" \
+            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2 style=\"color:#16a34a;\">PR Merged Successfully</h2><p><strong>PR #${PR_NUMBER}</strong> has been rebased and merged into main.</p><p><a href=\"${PR_URL}\" style=\"display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;\">View Merged PR</a></p><p style=\"color:#999;font-size:12px;margin-top:16px;\">SortingHistory Pipeline</p></div>" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: success email failed"
+
+      - name: Handle conflict
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'conflict'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          CONFLICT_FILES="${{ steps.rebase.outputs.conflict_files }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          # Add rebase-conflict label to the PR
+          gh api "repos/${PRIVATE_REPO}/issues/${PR_NUMBER}/labels" \
+            -X POST \
+            --field 'labels[]=rebase-conflict' 2>/dev/null || echo "Warning: failed to add rebase-conflict label"
+
+          # Build conflict file list HTML
+          FILE_LIST_HTML=""
+          while IFS= read -r file; do
+            if [ -n "$file" ]; then
+              FILE_LIST_HTML="${FILE_LIST_HTML}<li><code>${file}</code></li>"
+            fi
+          done <<< "$CONFLICT_FILES"
+
+          # Send conflict email
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merge Conflict: PR #${PR_NUMBER} needs manual resolution" \
+            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2 style=\"color:#dc2626;\">Merge Conflict</h2><p>PR #${PR_NUMBER} could not be automatically rebased against main.</p><div style=\"padding:16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;margin:16px 0;\"><p style=\"font-weight:bold;margin:0 0 8px 0;\">Conflicting files:</p><ul style=\"margin:0;\">${FILE_LIST_HTML}</ul></div><p>The fix may still be valid. These files have changed on main since the fix was generated. Manual conflict resolution is needed.</p><p><a href=\"${PR_URL}\" style=\"display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;\">View PR on GitHub</a></p><p style=\"color:#999;font-size:12px;margin-top:16px;\">SortingHistory Pipeline</p></div>" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: conflict email failed"
+
+      - name: Handle merge failure
+        if: steps.merge.outputs.merge_result == 'failed'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merge failed: PR #${PR_NUMBER} — GitHub API error" \
+            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2 style=\"color:#dc2626;\">Merge Failed</h2><p>PR #${PR_NUMBER} was rebased successfully but the merge API call failed. This may be due to branch protection rules or a permissions issue.</p><p><a href=\"${PR_URL}\" style=\"display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;\">View PR on GitHub</a></p><p style=\"color:#999;font-size:12px;margin-top:16px;\">SortingHistory Pipeline</p></div>" \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: merge failure email failed"
