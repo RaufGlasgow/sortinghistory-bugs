@@ -268,9 +268,9 @@ function getClassificationGuidance(classification: string): string {
       "This is a UI bug -- check the SwiftUI View file for layout, styling, or rendering issues",
     gameplay_bug:
       "This is a gameplay bug -- check the game logic in the relevant ViewModel or Model file",
-    crash:
+    crash_bug:
       "This is a crash -- check the stack trace in the original report and the relevant Swift file",
-    performance:
+    performance_issue:
       "This is a performance issue -- profile the relevant code path and check for unnecessary redraws or allocations",
   };
   return guidance[classification] ?? "Apply the suggested approach above to fix the issue";
