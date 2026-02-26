@@ -11,6 +11,7 @@ export interface BugReport {
   category?: string;
   screenshot?: string;
   email?: string;
+  bug_type?: string;
   deviceInfo?: {
     model?: string;
     osVersion?: string;
@@ -95,6 +96,16 @@ export function validateBugReport(data: unknown): { valid: true; report: BugRepo
     errors.push({ field: 'deviceInfo', message: 'Device info must be an object' });
   }
 
+  // BA-010.10: Validate bug_type (optional, must be from allowed set)
+  const VALID_BUG_TYPES = ['ui_bug', 'gameplay_bug', 'content_error', 'crash_bug'];
+  if (report.bug_type !== undefined && report.bug_type !== null) {
+    if (typeof report.bug_type !== 'string') {
+      errors.push({ field: 'bug_type', message: 'Bug type must be a string' });
+    } else if (!VALID_BUG_TYPES.includes(report.bug_type)) {
+      errors.push({ field: 'bug_type', message: `Bug type must be one of: ${VALID_BUG_TYPES.join(', ')}` });
+    }
+  }
+
   if (errors.length > 0) {
     return { valid: false, errors };
   }
@@ -106,6 +117,7 @@ export function validateBugReport(data: unknown): { valid: true; report: BugRepo
       category: report.category as string | undefined,
       screenshot: report.screenshot as string | undefined,
       email: report.email as string | undefined,
+      bug_type: (typeof report.bug_type === 'string' && ['ui_bug', 'gameplay_bug', 'content_error', 'crash_bug'].includes(report.bug_type)) ? report.bug_type : undefined,
       deviceInfo: report.deviceInfo as BugReport['deviceInfo'],
     },
   };
@@ -128,6 +140,11 @@ export function formatIssueBody(report: BugReport, confirmationId: string): stri
 
   if (report.email) {
     body += `**Contact Email:** ${report.email}\n\n`;
+  }
+
+  // BA-010.10: Write reporter classification hint into issue body (Path B)
+  if (report.bug_type) {
+    body += `**Reporter Classification:** ${report.bug_type}\n\n`;
   }
 
   body += `---\n\n`;

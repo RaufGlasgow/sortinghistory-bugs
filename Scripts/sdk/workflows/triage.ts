@@ -224,6 +224,7 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   // --------------------------------------------------
   // BA-010.10: Adjust confidence based on reporter hint vs AI classification
   // --------------------------------------------------
+  const originalClassification = triageResult.classification;
   if (reporterHint) {
     if (triageResult.classification === reporterHint) {
       console.log("[triage] BA-010.10: AI classification matches reporter hint — no adjustment");
@@ -244,10 +245,10 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
 
   let classificationComment = buildClassificationComment(triageResult);
   // BA-010.10: Add note when AI disagrees with reporter hint
-  if (reporterHint && triageResult.classification !== reporterHint && triageResult.classification !== "needs_human_review") {
-    classificationComment += "\n\n> **Note:** reporter classified this as `" + reporterHint + "` but triage classified as `" + triageResult.classification + "`";
+  if (reporterHint && originalClassification !== reporterHint && triageResult.classification !== "needs_human_review") {
+    classificationComment += "\n\n> **Note:** reporter classified this as `" + reporterHint + "` but triage classified as `" + originalClassification + "`";
   } else if (reporterHint && triageResult.classification === "needs_human_review") {
-    classificationComment += "\n\n> **Note:** AI and reporter disagree — AI says `" + triageResult.classification + "` (" + (triageResult.confidence * 100).toFixed(0) + "%), reporter says `" + reporterHint + "`";
+    classificationComment += "\n\n> **Note:** AI and reporter disagree — AI says `" + originalClassification + "` (" + (triageResult.confidence * 100).toFixed(0) + "%), reporter says `" + reporterHint + "`";
   }
   postIssueComment(issueNumber, classificationComment);
 
