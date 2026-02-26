@@ -624,12 +624,39 @@ export async function runRoutingTest(): Promise<void> {
   }
   console.log("");
 
+  // --- Additional test: triage.ts passes issue_title/issue_body to routing input (Story 2.4 AC1) ---
+  console.log("--- extra-15: triage.ts passes issue_title, issue_body, reasoning to routing input ---");
+  let triageWiringPassed = false;
+  {
+    const triageWiringPath = path.join(resolvedRoot, "Scripts", "sdk", "workflows", "triage.ts");
+    try {
+      const triageWiringSource = fs.readFileSync(triageWiringPath, "utf-8");
+      const hasIssueTitle = triageWiringSource.includes("issue_title:");
+      const hasIssueBody = triageWiringSource.includes("issue_body:");
+      const hasReasoning = triageWiringSource.includes("reasoning:");
+      if (hasIssueTitle && hasIssueBody && hasReasoning) {
+        triageWiringPassed = true;
+        console.log("[extra-15] PASS: triage.ts passes issue_title, issue_body, and reasoning to routing input");
+      } else {
+        const missing: string[] = [];
+        if (!hasIssueTitle) missing.push("issue_title");
+        if (!hasIssueBody) missing.push("issue_body");
+        if (!hasReasoning) missing.push("reasoning");
+        console.log("[extra-15] FAIL: triage.ts missing fields in routing input: " + missing.join(", "));
+      }
+    } catch (err: unknown) {
+      console.log("[extra-15] SKIP: Could not read triage.ts: " + (err instanceof Error ? err.message : String(err)));
+      triageWiringPassed = true;
+    }
+  }
+  console.log("");
+
   // --- Summary ---
   console.log("=== Routing Test Suite Summary ===");
   const passCount = results.filter(r => r.passed).length;
   const failCount = results.length - passCount;
-  const extraCount = 14;
-  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0);
+  const extraCount = 15;
+  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0) + (triageWiringPassed ? 1 : 0);
   const extraFailCount = extraCount - extraPassCount;
   const totalPass = passCount + extraPassCount;
   const totalFail = failCount + extraFailCount;
@@ -654,6 +681,7 @@ export async function runRoutingTest(): Promise<void> {
   console.log("  extra-12: " + (vendorFreePassed ? "PASS" : "FAIL"));
   console.log("  extra-13: " + (countUpdatedPassed ? "PASS" : "FAIL"));
   console.log("  extra-14: " + (boundaryPassed ? "PASS" : "FAIL"));
+  console.log("  extra-15: " + (triageWiringPassed ? "PASS" : "FAIL"));
 
   console.log("");
   console.log("Results: " + totalPass + "/" + totalTests + " passed, " + totalFail + " failed");

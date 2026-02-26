@@ -230,6 +230,10 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
     extracted_context: triageResult.extracted_context,
     issue_number: issueNumber,
     existing_labels: issueData.labels,
+    // BA-011 Story 2.4: pass issue data for handoff_to_dev routes
+    issue_title: issueData.title,
+    issue_body: issueData.body,
+    reasoning: triageResult.reasoning,
   };
 
   // Handle unknown/unextractable category for content_error (AC5)
