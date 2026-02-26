@@ -17,6 +17,7 @@
 
 import { ROUTING, CLASSIFICATION_SET, CONFIDENCE_THRESHOLD, type Classification, type WorkflowType } from "../config.js";
 import { createWorkflowState } from "./state.js";
+import { generateTriageHandoff, buildFallbackHandoffComment, type TriageOnlyHandoffInput } from "./handoff-generator.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -406,6 +407,44 @@ async function githubLabel(
   console.log("[routing] Applied labels [" + labels.join(", ") + "] to " + repo + "#" + issueNumber);
 }
 
+/** POST a comment on a GitHub issue (BA-011 AC5: same auth as githubLabel/githubDispatch).
+ *  Uses AbortController with 30s timeout per NFR10. */
+async function githubPostComment(
+  repo: string,
+  issueNumber: number,
+  body: string,
+): Promise<void> {
+  const token = getGitHubToken();
+  const url = "https://api.github.com/repos/" + repo + "/issues/" + issueNumber + "/comments";
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ body }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const responseBody = await response.text();
+      throw new Error(
+        "GitHub comment failed: " + response.status + " " + response.statusText + " — " + responseBody,
+      );
+    }
+
+    console.log("[routing] Posted comment on " + repo + "#" + issueNumber);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route executor (side-effect layer)
 // ---------------------------------------------------------------------------
@@ -476,10 +515,76 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
       console.log("[routing] Created workflow state for " + action.workflow_type + " (issue #" + action.issue_number + ")");
       break;
 
-    case "handoff_to_dev":
-      // BA-011: Apply labels. Handoff generation (Story 3.1) will be wired here later.
+    case "handoff_to_dev": {
+      // BA-011 Story 3.1: Generate handoff, post comment, apply labels
       await githubLabel(action.repo, action.issue_number, action.labels);
-      console.log("[routing] Handoff-to-dev: labeled issue #" + action.issue_number + " (handoff generation pending Story 3.1)");
+
+      // Generate structured handoff document
+      let handoffMarkdown: string;
+      try {
+        const handoffInput: TriageOnlyHandoffInput = {
+          issueNumber: action.issue_number,
+          issueTitle: action.triage_data.issue_title,
+          issueBody: action.triage_data.issue_body,
+          classification: action.triage_data.classification,
+          confidence: action.triage_data.confidence,
+          severity: action.triage_data.severity,
+          reasoning: action.triage_data.reasoning,
+          extractedContext: action.triage_data.extracted_context,
+        };
+        handoffMarkdown = generateTriageHandoff(handoffInput);
+      } catch (genErr: unknown) {
+        // AC3: Generation failed → apply handoff-generation-failed label + fallback comment
+        const genErrMsg = genErr instanceof Error ? genErr.message : String(genErr);
+        console.error("[routing] Handoff generation failed for issue #" + action.issue_number + ": " + genErrMsg);
+        try {
+          await githubLabel(action.repo, action.issue_number, ["handoff-generation-failed"]);
+        } catch { /* best-effort label */ }
+        const fallback = buildFallbackHandoffComment(
+          action.triage_data.classification,
+          action.triage_data.confidence,
+          action.triage_data.severity,
+          action.triage_data.reasoning,
+          genErrMsg,
+        );
+        try {
+          await githubPostComment(action.repo, action.issue_number, fallback);
+        } catch { /* best-effort fallback comment */ }
+        break;
+      }
+
+      // Post handoff comment with single retry (AC4)
+      try {
+        await githubPostComment(action.repo, action.issue_number, handoffMarkdown);
+      } catch (postErr: unknown) {
+        const postErrMsg = postErr instanceof Error ? postErr.message : String(postErr);
+        console.error("[routing] Handoff comment post failed (attempt 1) for issue #" + action.issue_number + ": " + postErrMsg);
+        // Retry once
+        try {
+          await githubPostComment(action.repo, action.issue_number, handoffMarkdown);
+          console.log("[routing] Handoff comment posted on retry for issue #" + action.issue_number);
+        } catch (retryErr: unknown) {
+          // Both attempts failed — apply delivery-failed label + fallback
+          const retryErrMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          console.error("[routing] Handoff comment retry also failed for issue #" + action.issue_number + ": " + retryErrMsg);
+          try {
+            await githubLabel(action.repo, action.issue_number, ["delivery-failed"]);
+          } catch { /* best-effort label */ }
+          const fallback = buildFallbackHandoffComment(
+            action.triage_data.classification,
+            action.triage_data.confidence,
+            action.triage_data.severity,
+            action.triage_data.reasoning,
+            "Comment delivery failed after 2 attempts: " + retryErrMsg,
+          );
+          try {
+            await githubPostComment(action.repo, action.issue_number, fallback);
+          } catch { /* best-effort — if this also fails, the labels are the signal */ }
+        }
+      }
+
+      console.log("[routing] Handoff-to-dev complete for issue #" + action.issue_number);
       break;
+    }
   }
 }

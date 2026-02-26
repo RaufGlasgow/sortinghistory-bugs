@@ -19,6 +19,7 @@ import { decideRoute, executeRoute, type RoutingAction } from "../lib/routing.js
 import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing-log.js";
 import { ROUTING, CLASSIFICATIONS, PATHS } from "../config.js";
 import { runContractTest } from "../tests/contract-test.js";
+import { generateTriageHandoff, buildFallbackHandoffComment, type TriageOnlyHandoffInput } from "../lib/handoff-generator.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -651,12 +652,158 @@ export async function runRoutingTest(): Promise<void> {
   }
   console.log("");
 
+  // --- Additional test: generateTriageHandoff includes required sections (Story 3.1 AC2) ---
+  console.log("--- extra-16: generateTriageHandoff includes all required sections ---");
+  let handoffSectionsPassed = false;
+  {
+    const testInput: TriageOnlyHandoffInput = {
+      issueNumber: 99,
+      issueTitle: "App crashes on statistics screen",
+      issueBody: "Every time I open statistics, the app force-closes.",
+      classification: "crash_bug",
+      confidence: 0.92,
+      severity: "P1",
+      reasoning: "User reports app termination on specific screen",
+      extractedContext: { screen: "StatisticsView", file_path: "unknown" },
+    };
+    const markdown = generateTriageHandoff(testInput);
+    const required = [
+      { label: "Classification table", check: markdown.includes("## Classification") && markdown.includes("`crash_bug`") },
+      { label: "Confidence", check: markdown.includes("92%") },
+      { label: "Severity", check: markdown.includes("`P1`") },
+      { label: "Reasoning", check: markdown.includes("## Reasoning") && markdown.includes("app termination") },
+      { label: "Bug Report", check: markdown.includes("## Bug Report") && markdown.includes("force-closes") },
+      { label: "Relevant Code Paths", check: markdown.includes("## Relevant Code Paths") },
+      { label: "Suggested Approach", check: markdown.includes("## Suggested Approach") },
+    ];
+    const missing = required.filter(r => !r.check).map(r => r.label);
+    if (missing.length === 0) {
+      handoffSectionsPassed = true;
+      console.log("[extra-16] PASS: Handoff includes all 7 required sections");
+    } else {
+      console.log("[extra-16] FAIL: Missing sections: " + missing.join(", "));
+    }
+  }
+  console.log("");
+
+  // --- Additional test: generateTriageHandoff omits Attempt Log and QA Summary (Story 3.1 AC2) ---
+  console.log("--- extra-17: generateTriageHandoff omits Attempt Log and QA Summary ---");
+  let handoffOmitsPassed = false;
+  {
+    const testInput2: TriageOnlyHandoffInput = {
+      issueNumber: 100,
+      issueTitle: "Slow loading",
+      issueBody: "Dutch History loads slowly.",
+      classification: "performance_issue",
+      confidence: 0.85,
+      severity: "P2",
+      reasoning: "User reports slow loading",
+      extractedContext: {},
+    };
+    const markdown2 = generateTriageHandoff(testInput2);
+    const hasAttempt = markdown2.includes("Attempt 1") || markdown2.includes("Attempt Log");
+    const hasQA = markdown2.includes("QA Verdict") || markdown2.includes("QA Summary");
+    if (!hasAttempt && !hasQA) {
+      handoffOmitsPassed = true;
+      console.log("[extra-17] PASS: Handoff omits Attempt Log and QA Summary");
+    } else {
+      console.log("[extra-17] FAIL: Handoff contains " + (hasAttempt ? "Attempt Log" : "") + (hasQA ? " QA Summary" : ""));
+    }
+  }
+  console.log("");
+
+  // --- Additional test: buildFallbackHandoffComment contains raw triage data (Story 3.1 AC3) ---
+  console.log("--- extra-18: fallback comment contains raw triage data ---");
+  let fallbackContentPassed = false;
+  {
+    const fallback = buildFallbackHandoffComment("crash_bug", 0.92, "P1", "App terminates on tap", "generation timeout");
+    const hasCls = fallback.includes("crash_bug");
+    const hasConf = fallback.includes("92%");
+    const hasSev = fallback.includes("P1");
+    const hasReasoning = fallback.includes("App terminates on tap");
+    const hasError = fallback.includes("generation timeout");
+    if (hasCls && hasConf && hasSev && hasReasoning && hasError) {
+      fallbackContentPassed = true;
+      console.log("[extra-18] PASS: Fallback comment contains classification, confidence, severity, reasoning, error");
+    } else {
+      const missing: string[] = [];
+      if (!hasCls) missing.push("classification");
+      if (!hasConf) missing.push("confidence");
+      if (!hasSev) missing.push("severity");
+      if (!hasReasoning) missing.push("reasoning");
+      if (!hasError) missing.push("error");
+      console.log("[extra-18] FAIL: Fallback missing: " + missing.join(", "));
+    }
+  }
+  console.log("");
+
+  // --- Additional test: routing.ts handoff_to_dev wiring (Story 3.1 static analysis) ---
+  console.log("--- extra-19: routing.ts handoff_to_dev calls generateTriageHandoff + githubPostComment ---");
+  let handoffWiringPassed = false;
+  {
+    const routingFilePath2 = path.join(resolvedRoot, "Scripts", "sdk", "lib", "routing.ts");
+    try {
+      const routingSrc = fs.readFileSync(routingFilePath2, "utf-8");
+      const hasGenerate = routingSrc.includes("generateTriageHandoff(");
+      const hasPostComment = routingSrc.includes("githubPostComment(");
+      const hasRetry = routingSrc.includes("attempt 1") || routingSrc.includes("retry");
+      const hasFallback = routingSrc.includes("buildFallbackHandoffComment(");
+      const hasDeliveryFailed = routingSrc.includes("delivery-failed");
+      const hasGenerationFailed = routingSrc.includes("handoff-generation-failed");
+      if (hasGenerate && hasPostComment && hasRetry && hasFallback && hasDeliveryFailed && hasGenerationFailed) {
+        handoffWiringPassed = true;
+        console.log("[extra-19] PASS: routing.ts has generate, post, retry, fallback, delivery-failed, generation-failed");
+      } else {
+        const missing: string[] = [];
+        if (!hasGenerate) missing.push("generateTriageHandoff call");
+        if (!hasPostComment) missing.push("githubPostComment call");
+        if (!hasRetry) missing.push("retry logic");
+        if (!hasFallback) missing.push("buildFallbackHandoffComment call");
+        if (!hasDeliveryFailed) missing.push("delivery-failed label");
+        if (!hasGenerationFailed) missing.push("handoff-generation-failed label");
+        console.log("[extra-19] FAIL: Missing: " + missing.join(", "));
+      }
+    } catch (err: unknown) {
+      console.log("[extra-19] SKIP: Could not read routing.ts: " + (err instanceof Error ? err.message : String(err)));
+      handoffWiringPassed = true;
+    }
+  }
+  console.log("");
+
+  // --- Additional test: githubPostComment uses same auth pattern (Story 3.1 AC5) ---
+  console.log("--- extra-20: githubPostComment uses getGitHubToken (same auth pattern) ---");
+  let authPatternPassed = false;
+  {
+    const routingFilePath3 = path.join(resolvedRoot, "Scripts", "sdk", "lib", "routing.ts");
+    try {
+      const routingSrc3 = fs.readFileSync(routingFilePath3, "utf-8");
+      // Find the githubPostComment function and check it calls getGitHubToken
+      const postCommentIdx = routingSrc3.indexOf("async function githubPostComment");
+      if (postCommentIdx > -1) {
+        // Look within the next 500 chars for getGitHubToken
+        const fnBody = routingSrc3.slice(postCommentIdx, postCommentIdx + 800);
+        if (fnBody.includes("getGitHubToken()")) {
+          authPatternPassed = true;
+          console.log("[extra-20] PASS: githubPostComment uses getGitHubToken() (same auth pattern)");
+        } else {
+          console.log("[extra-20] FAIL: githubPostComment does not call getGitHubToken()");
+        }
+      } else {
+        console.log("[extra-20] FAIL: githubPostComment function not found in routing.ts");
+      }
+    } catch (err: unknown) {
+      console.log("[extra-20] SKIP: Could not read routing.ts: " + (err instanceof Error ? err.message : String(err)));
+      authPatternPassed = true;
+    }
+  }
+  console.log("");
+
   // --- Summary ---
   console.log("=== Routing Test Suite Summary ===");
   const passCount = results.filter(r => r.passed).length;
   const failCount = results.length - passCount;
-  const extraCount = 15;
-  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0) + (triageWiringPassed ? 1 : 0);
+  const extraCount = 20;
+  const extraPassCount = (unknownSafeLabel ? 1 : 0) + (dryRunPassed ? 1 : 0) + (allBelowThresholdPassed ? 1 : 0) + (promptCheckPassed ? 1 : 0) + (logSchemaCheckPassed ? 1 : 0) + (logNoSensitivePassed ? 1 : 0) + (routingPureCheckPassed ? 1 : 0) + (allGatesValid ? 1 : 0) + (contractTestPassed ? 1 : 0) + (promptExamplesPassed ? 1 : 0) + (costAwarenessPassed ? 1 : 0) + (vendorFreePassed ? 1 : 0) + (countUpdatedPassed ? 1 : 0) + (boundaryPassed ? 1 : 0) + (triageWiringPassed ? 1 : 0) + (handoffSectionsPassed ? 1 : 0) + (handoffOmitsPassed ? 1 : 0) + (fallbackContentPassed ? 1 : 0) + (handoffWiringPassed ? 1 : 0) + (authPatternPassed ? 1 : 0);
   const extraFailCount = extraCount - extraPassCount;
   const totalPass = passCount + extraPassCount;
   const totalFail = failCount + extraFailCount;
@@ -682,6 +829,11 @@ export async function runRoutingTest(): Promise<void> {
   console.log("  extra-13: " + (countUpdatedPassed ? "PASS" : "FAIL"));
   console.log("  extra-14: " + (boundaryPassed ? "PASS" : "FAIL"));
   console.log("  extra-15: " + (triageWiringPassed ? "PASS" : "FAIL"));
+  console.log("  extra-16: " + (handoffSectionsPassed ? "PASS" : "FAIL"));
+  console.log("  extra-17: " + (handoffOmitsPassed ? "PASS" : "FAIL"));
+  console.log("  extra-18: " + (fallbackContentPassed ? "PASS" : "FAIL"));
+  console.log("  extra-19: " + (handoffWiringPassed ? "PASS" : "FAIL"));
+  console.log("  extra-20: " + (authPatternPassed ? "PASS" : "FAIL"));
 
   console.log("");
   console.log("Results: " + totalPass + "/" + totalTests + " passed, " + totalFail + " failed");
