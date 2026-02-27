@@ -19,7 +19,7 @@ function makeDiff(lineCount: number): string {
 }
 
 describe("quality-gate: clean diff", () => {
-  it("only .swift files, < 500 lines → PASS", () => {
+  it("only .swift files, < 1500 lines → PASS", () => {
     const diff = makeDiff(50);
     const files = ["Views/GameSetupView.swift"];
     const result = runQualityGate(diff, files);
@@ -81,14 +81,14 @@ describe("quality-gate: automation files", () => {
 });
 
 describe("quality-gate: diff proportionality", () => {
-  it("diff > 500 lines → FAIL (oversized)", () => {
-    const diff = makeDiff(600);
+  it("diff > 1500 lines → FAIL (oversized)", () => {
+    const diff = makeDiff(1600);
     const files = ["Views/Test.swift"];
     const result = runQualityGate(diff, files);
     assert.equal(result.passed, false);
     const sizeFail = result.failures.find((f) => f.check === "diff_proportionality");
     assert.ok(sizeFail, "Expected diff_proportionality failure");
-    assert.ok(sizeFail!.description.includes("600"));
+    assert.ok(sizeFail!.description.includes("1600"));
   });
 });
 

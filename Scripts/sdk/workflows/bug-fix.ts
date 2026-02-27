@@ -7,7 +7,7 @@
  *   1. Fetches issue context from GitHub
  *   2. Parses triage classification from the triage comment (AC2, AC3)
  *   3. Delegates fix -> compile -> QA -> quality gate cycle to runRetryLoop()
- *   4. On success: stages changes with safeGitAdd(), returns result for PR creation (AC5)
+ *   4. On success: returns result for PR creation; YAML handles git staging (AC5)
  *   5. On failure: commits handoff, posts issue comment, labels issue (AC6, AC7)
  *
  * The retry loop handles: model selection/escalation, fix subagent spawning,
@@ -35,7 +35,6 @@ import {
   commitHandoff,
   postHandoffComment,
 } from "../lib/handoff-generator.js";
-import { safeGitAdd } from "../lib/git-utils.js";
 import {
   runRetryLoop,
   type TriageContext,
@@ -719,7 +718,7 @@ async function runQAOnly(input: BugFixInput): Promise<BugFixResult> {
  * 3. Parse triage context for model selection (AC2, AC3)
  * 4. Extract screenshots for multimodal fix subagent (AC4)
  * 5. Delegate to runRetryLoop() for fix -> compile -> QA -> quality gate cycle
- * 6. On success: stage changes with safeGitAdd(), return result for PR creation (AC5)
+ * 6. On success: return result for PR creation; YAML handles git staging (AC5)
  * 7. On failure: commit handoff, post comment, label issue (AC6, AC7)
  */
 export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
@@ -930,10 +929,10 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
 /**
  * Handle a successful retry loop result.
  *
- * AC5: Use safeGitAdd() to stage changes, return result for PR creation.
- * The YAML workflow handles the actual PR creation based on our return value.
- * If retry was needed (attempts > 1), the attempt number is available for
- * the YAML to include in the PR title.
+ * AC5: Return result for PR creation. The YAML workflow handles all git
+ * operations (staging, committing, pushing) — the orchestrator does NOT
+ * touch git state. If retry was needed (attempts > 1), the attempt number
+ * is available for the YAML to include in the PR title.
  */
 async function handleSuccess(
   workflowId: string,
@@ -945,18 +944,12 @@ async function handleSuccess(
 ): Promise<BugFixResult> {
   console.log("");
   console.log("[bug-fix] Retry loop SUCCEEDED on attempt " + retryResult.fixAttemptsUsed);
+  console.log("[bug-fix] Changed files: " + retryResult.changedFiles.join(", "));
 
-  // AC5: Stage changes with safeGitAdd() (not git add -A)
-  console.log("[bug-fix] Staging changes with safeGitAdd()...");
-  const stageResult = safeGitAdd(gameRepoPath);
-  console.log("[bug-fix] Staged " + stageResult.staged.length + " file(s), excluded " + stageResult.excluded.length);
-
-  if (stageResult.staged.length === 0) {
-    console.error("[bug-fix] WARNING: safeGitAdd() staged 0 files despite retry loop success");
-    console.error("[bug-fix] Changed files from retry loop: " + retryResult.changedFiles.join(", "));
-    console.error("[bug-fix] Excluded files: " + stageResult.excluded.map(e => e.file + " (" + e.reason + ")").join(", "));
-    // Still report success -- the YAML will detect no staged changes and skip PR creation
-  }
+  // NOTE: We do NOT stage changes here. The YAML workflow handles all git
+  // operations (staging, committing, pushing) in its own safe-add logic.
+  // This avoids the bug where safeGitAdd() pre-staged files, causing the
+  // YAML's "Check for changes" step (git diff --name-only) to find nothing.
 
   // Update workflow state
   await updateWorkflowState(workflowId, {

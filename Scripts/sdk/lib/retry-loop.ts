@@ -8,7 +8,7 @@
  *
  * Key behaviors:
  *   - On compile/QA failure: captures details, bans the approach, escalates model
- *   - On QA verdict "rejected": STOP immediately (no more retries)
+ *   - On QA verdict "rejected": retry with escalated model (like needs_revision); only hard-stop on final attempt
  *   - On QA infrastructure failure: retry QA only (same diff, no new fix),
  *     with its own counter (max 2 retries, 5s delay), independent of fix attempts
  *   - On all attempts exhausted: generates a handoff document
@@ -995,10 +995,11 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     console.log("[retry-loop] QA verdict: " + verdict.verdict);
     console.log("[retry-loop] QA risk: " + verdict.risk_level);
 
-    // --- AC5: QA rejected -> STOP immediately ---
+    // --- AC5: QA rejected ---
+    // If attempts remain, treat like needs_revision: ban approach, log QA
+    // feedback, and continue to next attempt with escalated model.
+    // Only hard-stop on the final attempt.
     if (verdict.verdict === "rejected") {
-      console.log("[retry-loop] QA REJECTED -- stopping immediately (AC5)");
-
       const logEntry: AttemptLogEntry = {
         attempt_number: attempt,
         model: fixResult.model ?? modelSelection.fixModel,
@@ -1009,7 +1010,32 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       };
       attemptLogs.push(logEntry);
 
-      // Generate handoff for rejection
+      if (attempt < maxAttempts) {
+        // Retries remain — treat like needs_revision
+        console.log("[retry-loop] QA REJECTED on attempt " + attempt + "/" + maxAttempts + " -- will retry with escalated model");
+
+        const qaFeedback = verdict.findings
+          .map(f => "[" + f.criterion + "/" + f.severity + "] " + f.file + ": " + f.description)
+          .join("; ");
+
+        previousFailures.push({
+          attempt,
+          approach: fixSummary?.fix_summary ?? "unknown",
+          result: "qa_rejected",
+          errorOutput: verdict.summary,
+          qaFeedback,
+        });
+
+        if (fixSummary?.fix_summary) {
+          bannedApproaches.push(fixSummary.fix_summary);
+        }
+
+        continue;
+      }
+
+      // Final attempt — hard stop
+      console.log("[retry-loop] QA REJECTED on final attempt -- stopping (AC5)");
+
       const handoff = buildHandoff(input, attemptLogs, qaResults, "QA review rejected the fix. The automated fix did not meet quality standards.", attempt);
 
       return {

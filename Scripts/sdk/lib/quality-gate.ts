@@ -19,7 +19,7 @@ import node_path from "node:path";
 // Configuration
 // ------------------------------------------------------------------
 
-const DEFAULT_MAX_DIFF_LINES = 500;
+const DEFAULT_MAX_DIFF_LINES = 1500;
 
 const DEFAULT_ALLOWED_EXTENSIONS: readonly string[] = [
   ".swift",

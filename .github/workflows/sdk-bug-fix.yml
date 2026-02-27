@@ -651,8 +651,10 @@ jobs:
 
           gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" -F /tmp/failure-comment.md
 
-          # Add fix-failed label, remove approved if present
+          # Add fix-failed label, remove approved + pr-created if present
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --add-label "fix-failed" 2>/dev/null || true
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --remove-label "approved" 2>/dev/null || true
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "pr-created" 2>/dev/null || true
