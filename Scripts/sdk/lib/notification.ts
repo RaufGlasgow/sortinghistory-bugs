@@ -117,6 +117,22 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   const actionMessage = escapeHtml(getActionMessage(action));
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
 
+  // Generate action button URLs if AUTH_TOKEN is available
+  const authToken = process.env.AUTH_TOKEN;
+  let actionButtonsHtml: string;
+  let githubLinkHtml: string;
+  if (authToken) {
+    const encodedToken = encodeURIComponent(authToken);
+    const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    actionButtonsHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
+      <a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>`;
+    githubLinkHtml = `<p style="text-align:center;margin-top:12px;"><a href="${issueUrl}" style="color:#8B6914;font-size:13px;text-decoration:none;">View on GitHub &rarr;</a></p>`;
+  } else {
+    actionButtonsHtml = `<a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>`;
+    githubLinkHtml = '';
+  }
+
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
   <!-- Header with app icon -->
   <div style="background:#8B6914;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
@@ -150,10 +166,11 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
       <p style="margin:0;font-weight:700;color:#991b1b;font-size:14px;">${actionMessage}</p>
     </div>
 
-    <!-- CTA button -->
+    <!-- Action buttons -->
     <div style="text-align:center;">
-      <a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>
+      ${actionButtonsHtml}
     </div>
+    ${githubLinkHtml}
   </div>
 
   <!-- Footer with social links -->
