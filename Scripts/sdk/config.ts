@@ -46,6 +46,9 @@ export const PATHS = {
 export const LIMITS = {
   MAX_FIX_ATTEMPTS: 3,
   SESSION_TIMEOUT_MINUTES: 30,
+  /** Maximum API cost in USD for a single bug fix pipeline run.
+   *  Abort + notify if cumulative cost exceeds this. ($30/month budget) */
+  MAX_PER_BUG_COST_USD: 3,
 } as const;
 
 /** Read-only tools for verifier subagents */

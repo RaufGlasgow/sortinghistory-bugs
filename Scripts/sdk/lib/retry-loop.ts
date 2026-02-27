@@ -45,6 +45,7 @@ import {
 import type { AttemptLogEntry, QAVerdictEntry, ModelUsageEntry } from "./state.js";
 import type { ExtractedImage } from "./image-extract.js";
 import { logPipelineEvent } from "./pipeline-log.js";
+import { sendBillingAlertEmail } from "./notification.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -62,11 +63,19 @@ const QA_INFRA_RETRY_DELAY_MS = 5_000;
  * immediately without retry.
  */
 const RETRYABLE_ERROR_PATTERNS: readonly string[] = [
-  "credit balance",
   "timeout",
   "rate limit",
   "rate_limit",
   "ECONNREFUSED",
+];
+
+/** Patterns that indicate an API billing/quota error — never retryable */
+const BILLING_ERROR_PATTERNS: readonly string[] = [
+  "credit balance",
+  "insufficient_quota",
+  "billing",
+  "quota exceeded",
+  "payment required",
 ];
 
 /** HTTP status codes that indicate retryable QA infrastructure errors (AC10d) */
@@ -195,6 +204,15 @@ export function isRetryableQAError(errorMessage: string): boolean {
   }
 
   return false;
+}
+
+/**
+ * Check whether an error is a billing/quota error.
+ * Billing errors must NEVER be retried — they waste runner time.
+ */
+export function isBillingError(errorMessage: string): boolean {
+  const lower = errorMessage.toLowerCase();
+  return BILLING_ERROR_PATTERNS.some(p => lower.includes(p.toLowerCase()));
 }
 
 /** Sleep for the given number of milliseconds */
@@ -538,6 +556,12 @@ async function runQAWithInfraRetry(
     // QA infrastructure failure -- check if retryable (AC10d)
     const errorMsg = qaResult.error ?? "unknown error";
 
+    // C8: Billing errors must NEVER be retried
+    if (isBillingError(errorMsg)) {
+      console.error("[retry-loop] QA BILLING ERROR — not retrying: " + errorMsg);
+      return { qaResult, infraRetriesUsed };
+    }
+
     if (!isRetryableQAError(errorMsg)) {
       console.log("[retry-loop] QA error is NOT retryable: " + errorMsg);
       console.log("[retry-loop] Falling through to QA incomplete fallback");
@@ -643,6 +667,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
   const bannedApproaches: string[] = [];
 
   let fixAttemptsUsed = 0;
+  let cumulativeCostUsd = 0;
 
   // ------------------------------------------------------------------
   // Main retry loop (AC2, AC3)
@@ -708,13 +733,15 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     const attemptTimeoutMs = ATTEMPT_TIMEOUT_MS[attempt] ?? 20 * 60 * 1000;
     const timeoutMinutes = attemptTimeoutMs / 60_000;
 
+    // C9: Track timer outside try so catch can clear it too
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     try {
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(
           () => reject(new Error("Fix subagent timed out after " + timeoutMinutes + " minutes")),
           attemptTimeoutMs,
-        ),
-      );
+        );
+      });
 
       fixResult = await Promise.race([
         spawnSubagent({
@@ -729,7 +756,12 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         }),
         timeoutPromise,
       ]);
+
+      // Subagent finished before timeout — clear the timer
+      if (timeoutTimer) clearTimeout(timeoutTimer);
     } catch (err: unknown) {
+      // C9: Clear timer on any error path to prevent leaks
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       const errMsg = err instanceof Error ? err.message : String(err);
       const isTimeout = errMsg.includes("timed out after");
       console.error("[retry-loop] Fix subagent " + (isTimeout ? "timed out" : "spawn failed") + ": " + errMsg);
@@ -766,14 +798,84 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       timestamp: new Date().toISOString(),
     });
 
+    // H2: Track cumulative cost
+    cumulativeCostUsd += fixResult.costUsd;
+
     console.log("[retry-loop] Fix subagent complete:");
     console.log("  Model: " + (fixResult.model ?? modelSelection.fixModel));
     console.log("  Tokens: " + fixResult.inputTokens + "/" + fixResult.outputTokens);
     console.log("  Cost: $" + fixResult.costUsd.toFixed(4));
+    console.log("  Cumulative cost: $" + cumulativeCostUsd.toFixed(4) + " / $" + LIMITS.MAX_PER_BUG_COST_USD + " cap");
     console.log("  Duration: " + fixResult.durationMs + "ms");
+
+    // H2: Per-bug cost cap — abort if exceeded
+    if (cumulativeCostUsd >= LIMITS.MAX_PER_BUG_COST_USD) {
+      console.error("[retry-loop] COST CAP EXCEEDED: $" + cumulativeCostUsd.toFixed(4) + " >= $" + LIMITS.MAX_PER_BUG_COST_USD);
+      console.error("[retry-loop] Aborting to stay within $30/month budget");
+
+      logPipelineEvent({
+        workflow_id: "bf-" + input.issueNumber,
+        issue: input.issueNumber,
+        event: "cost_cap_exceeded",
+        severity: "error",
+        cost_usd: cumulativeCostUsd,
+        attempt,
+        details: "Per-bug cap of $" + LIMITS.MAX_PER_BUG_COST_USD + " exceeded",
+      });
+
+      return {
+        success: false,
+        attemptLogs,
+        qaResults,
+        modelsUsed,
+        diff: null,
+        changedFiles: [],
+        handoffMarkdown: null,
+        handoffFilePath: null,
+        qaSummary: null,
+        fixSummary: null,
+        error: "Cost cap exceeded ($" + cumulativeCostUsd.toFixed(2) + " > $" + LIMITS.MAX_PER_BUG_COST_USD + " limit). Issue needs manual fix.",
+        fixAttemptsUsed: attempt,
+      };
+    }
 
     if (!fixResult.success) {
       console.error("[retry-loop] Fix subagent failed: " + fixResult.error);
+
+      // C6: Detect billing errors — abort immediately, send email, do NOT retry
+      const errorMsg = fixResult.error ?? "";
+      if (isBillingError(errorMsg) || isBillingError(fixResult.responseText ?? "")) {
+        console.error("[retry-loop] BILLING ERROR DETECTED — aborting all attempts");
+        console.error("[retry-loop] Error: " + errorMsg);
+
+        logPipelineEvent({
+          workflow_id: "bf-" + input.issueNumber,
+          issue: input.issueNumber,
+          event: "billing_error",
+          severity: "error",
+          model: fixResult.model ?? modelSelection.fixModel,
+          attempt,
+          error_msg: errorMsg,
+        });
+
+        // Send billing alert email (fire-and-forget)
+        await sendBillingAlertEmail(errorMsg, input.issueNumber);
+
+        return {
+          success: false,
+          attemptLogs,
+          qaResults,
+          modelsUsed,
+          diff: null,
+          changedFiles: [],
+          handoffMarkdown: null,
+          handoffFilePath: null,
+          qaSummary: null,
+          fixSummary: null,
+          error: "API billing error — pipeline stopped. Top up credits at console.anthropic.com",
+          fixAttemptsUsed: attempt,
+        };
+      }
 
       logPipelineEvent({
         workflow_id: "bf-" + input.issueNumber,
@@ -926,8 +1028,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
 
     const { qaResult, infraRetriesUsed } = await runQAWithInfraRetry(qaInput, attempt);
 
-    // Log QA model usage
+    // Log QA model usage and track cost
     if (qaResult.metrics) {
+      cumulativeCostUsd += qaResult.metrics.costUsd;
       modelsUsed.push({
         step: "qa_review_" + attempt,
         model: qaResult.metrics.model ?? modelSelection.qaModel,
@@ -936,6 +1039,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         cost_estimate: qaResult.metrics.costUsd,
         timestamp: new Date().toISOString(),
       });
+      console.log("[retry-loop] QA cost: $" + qaResult.metrics.costUsd.toFixed(4) + " | Cumulative: $" + cumulativeCostUsd.toFixed(4) + " / $" + LIMITS.MAX_PER_BUG_COST_USD);
     }
 
     if (infraRetriesUsed > 0) {
@@ -960,15 +1064,15 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       };
       attemptLogs.push(logEntry);
 
-      // AC10e: QA infra retries exhausted -- return with QA incomplete
-      // The caller (bug-fix.ts / PV2-4.2) creates the PR with "QA INCOMPLETE" warning
+      // H3: QA infra retries exhausted -- return FAILURE, not success.
+      // An unreviewed fix must NOT get a PR automatically.
       const qaWarning = "## QA Review\n\n" +
         "> **QA REVIEW INCOMPLETE:** " + (qaResult.error ?? "Unknown QA error") + ". Manual review required.\n\n" +
-        "The QA review subagent could not complete its analysis. This does NOT mean the fix is bad --\n" +
-        "it means QA infrastructure had an issue. Please review the changes manually before merging.";
+        "The QA review subagent could not complete its analysis. The fix may be correct but\n" +
+        "cannot be verified. Issue labeled for manual review.";
 
       return {
-        success: true, // Fix itself succeeded, QA just couldn't run
+        success: false, // H3: Unreviewed fixes do NOT get auto-PRs
         attemptLogs,
         qaResults,
         modelsUsed,

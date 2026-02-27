@@ -236,7 +236,7 @@ jobs:
             --arg rejection_reason "$REJECTION_REASON" \
             --arg inner_loop_failures "$INNER_LOOP_FAILURES" \
             '{
-              event_type: "approve",
+              event_type: "sdk-bug-fix",
               client_payload: {
                 issue_number: ($issue_num | tonumber),
                 retry: true,

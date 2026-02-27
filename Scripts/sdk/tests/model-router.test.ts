@@ -3,6 +3,9 @@
  *
  * Tests model selection for all 4 profiles x 3 attempts = 12 combinations.
  * Also tests determineBugProfile() classification logic.
+ *
+ * UPDATED: Opus removed from all escalation paths ($30/month budget constraint).
+ * Max model is now Sonnet. QA always uses Haiku.
  */
 
 import { describe, it } from "node:test";
@@ -13,83 +16,82 @@ import { MODELS } from "../config.js";
 // Alias for readability
 const HAIKU = MODELS.VERIFIER;
 const SONNET = MODELS.FIXER;
-const OPUS = MODELS.COMPLEX_BUG;
 
 describe("model-router: selectModels escalation paths", () => {
-  // content_simple: Haiku -> Sonnet -> Opus
+  // content_simple: Haiku -> Haiku -> Sonnet
   it("content_simple attempt 1 → Haiku fix, Haiku QA", () => {
     const result = selectModels("content_simple", 1, [".json"]);
     assert.equal(result.fixModel, HAIKU);
     assert.equal(result.qaModel, HAIKU);
   });
 
-  it("content_simple attempt 2 → Sonnet fix, Haiku QA", () => {
+  it("content_simple attempt 2 → Haiku fix, Haiku QA", () => {
     const result = selectModels("content_simple", 2, [".json"]);
-    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.fixModel, HAIKU);
     assert.equal(result.qaModel, HAIKU);
   });
 
-  it("content_simple attempt 3 → Opus fix, Sonnet QA", () => {
+  it("content_simple attempt 3 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("content_simple", 3, [".json"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
-  });
-
-  // content_complex: Sonnet -> Opus -> Opus
-  it("content_complex attempt 1 → Sonnet fix, Haiku QA", () => {
-    const result = selectModels("content_complex", 1, [".json"]);
     assert.equal(result.fixModel, SONNET);
     assert.equal(result.qaModel, HAIKU);
   });
 
-  it("content_complex attempt 2 → Opus fix, Sonnet QA", () => {
+  // content_complex: Haiku -> Sonnet -> Sonnet
+  it("content_complex attempt 1 → Haiku fix, Haiku QA", () => {
+    const result = selectModels("content_complex", 1, [".json"]);
+    assert.equal(result.fixModel, HAIKU);
+    assert.equal(result.qaModel, HAIKU);
+  });
+
+  it("content_complex attempt 2 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("content_complex", 2, [".json"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 
-  it("content_complex attempt 3 → Opus fix, Sonnet QA", () => {
+  it("content_complex attempt 3 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("content_complex", 3, [".json"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 
-  // code_simple: Sonnet -> Opus -> Opus
+  // code_simple: Sonnet -> Sonnet -> Sonnet
   it("code_simple attempt 1 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("code_simple", 1, [".swift"]);
     assert.equal(result.fixModel, SONNET);
     assert.equal(result.qaModel, HAIKU);
   });
 
-  it("code_simple attempt 2 → Opus fix, Sonnet QA", () => {
+  it("code_simple attempt 2 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("code_simple", 2, [".swift"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 
-  it("code_simple attempt 3 → Opus fix, Sonnet QA", () => {
+  it("code_simple attempt 3 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("code_simple", 3, [".swift"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 
-  // code_complex: Opus -> Opus -> Opus
-  it("code_complex attempt 1 → Opus fix, Sonnet QA", () => {
+  // code_complex: Sonnet -> Sonnet -> Sonnet
+  it("code_complex attempt 1 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("code_complex", 1, [".swift"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 
-  it("code_complex attempt 2 → Opus fix, Sonnet QA", () => {
+  it("code_complex attempt 2 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("code_complex", 2, [".swift"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 
-  it("code_complex attempt 3 → Opus fix, Sonnet QA", () => {
+  it("code_complex attempt 3 → Sonnet fix, Haiku QA", () => {
     const result = selectModels("code_complex", 3, [".swift"]);
-    assert.equal(result.fixModel, OPUS);
-    assert.equal(result.qaModel, SONNET);
+    assert.equal(result.fixModel, SONNET);
+    assert.equal(result.qaModel, HAIKU);
   });
 });
 
@@ -156,7 +158,6 @@ describe("model-router: selectModels turn limits", () => {
     const modelTier: Record<string, number> = {
       [HAIKU]: 1,
       [SONNET]: 2,
-      [OPUS]: 3,
     };
 
     for (const profile of profiles) {

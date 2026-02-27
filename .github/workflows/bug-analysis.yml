@@ -81,5 +81,29 @@ jobs:
           PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
         timeout-minutes: 5
+
+      # C11: Send branded failure notification on triage crash
+      - name: Notify on failure
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: |
+          ISSUE="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          if [ -n "$RESEND_API_KEY" ] && [ -n "$OWNER_EMAIL" ]; then
+            curl -s -X POST https://api.resend.com/emails \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"from\": \"SortingHistory Pipeline <bugs@sortinghistory.com>\",
+                \"to\": [\"$OWNER_EMAIL\"],
+                \"subject\": \"Pipeline Failed: Triage crashed for issue #${ISSUE}\",
+                \"html\": \"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;'><div style='background:#b91c1c;padding:24px;text-align:center;border-radius:12px 12px 0 0;'><h1 style='color:#fff;margin:0;font-size:20px;'>Triage Pipeline Crashed</h1></div><div style='padding:24px;background:#fff;border:1px solid #e5e1d8;'><p>Bug triage for <strong>issue #${ISSUE}</strong> failed.</p><p><a href='${RUN_URL}'>View workflow run</a></p><p style='color:#888;font-size:12px;'>This is likely an API billing error or infrastructure issue.</p></div></div>\"
+              }" || echo "Email send failed (non-fatal)"
+          else
+            echo "WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send failure email"
+          fi

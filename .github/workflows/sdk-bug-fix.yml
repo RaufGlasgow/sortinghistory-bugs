@@ -3,7 +3,7 @@ run-name: "Fix #${{ github.event.client_payload.issue_number || inputs.issue_num
 
 on:
   repository_dispatch:
-    types: [sdk-bug-fix]
+    types: [sdk-bug-fix, approve]
 
   # PV2-4.4: Browser-friendly trigger for full pipeline or QA-only re-runs
   workflow_dispatch:
@@ -156,6 +156,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
         run: |
           set +e
 

@@ -88,39 +88,40 @@ const CONTENT_EXTENSIONS = new Set([
  * Each array is indexed by attempt number (0-based): attempt 1 = index 0, etc.
  * fix = model for fix generation, qa = model for QA review, fixTurns/qaTurns = max turns.
  *
- * Content simple:  Haiku  -> Sonnet -> Opus   (cheapest path)
- * Content complex: Sonnet -> Opus   -> Opus   (starts higher)
- * Code simple:     Sonnet -> Opus   -> Opus   (code needs at least Sonnet)
- * Code complex:    Opus   -> Opus   -> Opus   (always Opus, increasing context)
+ * COST CONSTRAINT: $30/month budget. Opus removed entirely — max model is Sonnet.
+ * Previous Opus escalation paths burned $50-93 per bug with no successful fixes.
  *
- * Turn limits doubled from original values after analysis showed every run
- * hitting error_max_turns. A full explore->fix->compile cycle in a Swift
- * codebase needs 20+ turns minimum. QA also needs 10+ turns to read diff,
- * context files, and produce structured verdicts.
+ * Content simple:  Haiku  -> Haiku  -> Sonnet (cheapest path)
+ * Content complex: Haiku  -> Sonnet -> Sonnet (starts low, escalates once)
+ * Code simple:     Sonnet -> Sonnet -> Sonnet (code needs at least Sonnet)
+ * Code complex:    Sonnet -> Sonnet -> Sonnet (always Sonnet, increasing context)
+ *
+ * Turn limits reduced from previous values to control costs.
+ * A full explore->fix->compile cycle needs 15-20 turns.
  */
 const ESCALATION_PATHS: Record<
   BugProfile,
   Array<{ fix: string; qa: string; fixTurns: number; qaTurns: number }>
 > = {
   content_simple: [
-    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 25, qaTurns: 12 },
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 10, qaTurns: 6 },
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 8 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
   ],
   content_complex: [
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 8 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
     { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 30, qaTurns: 14 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 40, qaTurns: 18 },
   ],
   code_simple: [
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
     { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 10 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 35, qaTurns: 14 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 45, qaTurns: 18 },
   ],
   code_complex: [
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 30, qaTurns: 12 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 40, qaTurns: 16 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 50, qaTurns: 20 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 8 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 10 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 30, qaTurns: 12 },
   ],
 } as const;
 

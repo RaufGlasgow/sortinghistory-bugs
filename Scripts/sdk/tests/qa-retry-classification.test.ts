@@ -1,19 +1,18 @@
 /**
  * PV2-6.2: QA Retry Classification Tests
  *
- * Tests isRetryableQAError() at lib/retry-loop.ts to ensure correct
- * classification of retryable vs. non-retryable QA errors.
+ * Tests isRetryableQAError() and isBillingError() at lib/retry-loop.ts to ensure
+ * correct classification of retryable vs. non-retryable vs. billing QA errors.
+ *
+ * UPDATED: Billing errors (credit balance, quota) are NO LONGER retryable.
+ * They are detected separately by isBillingError() and cause immediate abort.
  */
 
 import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
-import { isRetryableQAError } from "../lib/retry-loop.js";
+import { isRetryableQAError, isBillingError } from "../lib/retry-loop.js";
 
 describe("qa-retry-classification: retryable errors", () => {
-  it('"credit balance is too low" → retryable', () => {
-    assert.equal(isRetryableQAError("credit balance is too low"), true);
-  });
-
   it('"rate limit exceeded" → retryable', () => {
     assert.equal(isRetryableQAError("rate limit exceeded"), true);
   });
@@ -32,6 +31,28 @@ describe("qa-retry-classification: retryable errors", () => {
 
   it('"HTTP 502 Bad Gateway" → retryable', () => {
     assert.equal(isRetryableQAError("HTTP 502 Bad Gateway"), true);
+  });
+});
+
+describe("qa-retry-classification: billing errors (never retryable)", () => {
+  it('"credit balance is too low" → NOT retryable', () => {
+    assert.equal(isRetryableQAError("credit balance is too low"), false);
+  });
+
+  it('"credit balance is too low" → detected as billing error', () => {
+    assert.equal(isBillingError("credit balance is too low"), true);
+  });
+
+  it('"insufficient_quota" → detected as billing error', () => {
+    assert.equal(isBillingError("insufficient_quota"), true);
+  });
+
+  it('"API billing error: Credit balance is too low" → detected as billing error', () => {
+    assert.equal(isBillingError("API billing error: Credit balance is too low"), true);
+  });
+
+  it('"quota exceeded for this month" → detected as billing error', () => {
+    assert.equal(isBillingError("quota exceeded for this month"), true);
   });
 });
 
@@ -59,5 +80,13 @@ describe("qa-retry-classification: non-retryable errors", () => {
       isRetryableQAError("Unexpected JSON parse error in response"),
       false,
     );
+  });
+
+  it("normal error → not a billing error", () => {
+    assert.equal(isBillingError("Connection refused"), false);
+  });
+
+  it("empty string → not a billing error", () => {
+    assert.equal(isBillingError(""), false);
   });
 });
