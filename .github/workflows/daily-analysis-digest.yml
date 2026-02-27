@@ -1,13 +1,11 @@
-# TEMPORARY: 3x daily schedule for active testing phase.
-# Scale back to 1-2x daily once BA-010.6 (real-time alerts) is proven reliable.
+# 1x daily — real-time alerts (BA-010.6) handle urgent bugs.
+# Digest is a daily summary / heartbeat check.
 
 name: Pipeline Digest
 
 on:
   schedule:
     - cron: '0 10 * * *'   # 10:00 AM Lisbon (winter UTC+0)
-    - cron: '0 14 * * *'   # 2:00 PM Lisbon
-    - cron: '0 18 * * *'   # 6:00 PM Lisbon
   workflow_dispatch: {}    # Manual trigger for testing
 
 concurrency:
