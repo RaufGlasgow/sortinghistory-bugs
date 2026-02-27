@@ -221,7 +221,23 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
 
   } catch (err: unknown) {
     result.error = err instanceof Error ? err.message : String(err);
+    result.success = false;
     console.error(`[subagent] Error: ${result.error}`);
+  }
+
+  // Detect API billing/quota errors that the SDK reports as "success" with zero tokens.
+  // Known pattern: SDK sends result subtype=success with the error string as the result text,
+  // then exits with code 1. The catch block above may or may not fire depending on timing.
+  const KNOWN_API_ERRORS = ["Credit balance is too low", "insufficient_quota", "billing"];
+  if (result.responseText && result.inputTokens === 0 && result.outputTokens === 0) {
+    const matchedError = KNOWN_API_ERRORS.find(err =>
+      result.responseText!.toLowerCase().includes(err.toLowerCase()),
+    );
+    if (matchedError) {
+      result.success = false;
+      result.error = "API billing error: " + result.responseText;
+      console.error("[subagent] BILLING ERROR DETECTED: " + result.responseText);
+    }
   }
 
   // If durationMs wasn't set by the result message, calculate from wall clock

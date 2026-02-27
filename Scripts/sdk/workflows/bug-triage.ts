@@ -144,8 +144,14 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
 
   // Validation 1: Subagent completed successfully
   if (!result.success) {
-    console.error("FAIL: Subagent did not complete successfully");
-    console.error("Error: " + result.error);
+    if (result.error?.includes("API billing error") || result.responseText?.includes("Credit balance")) {
+      console.error("FAIL: Anthropic API credit balance depleted.");
+      console.error("Top up credits at https://console.anthropic.com before retrying.");
+      console.error("Pipeline will not retry — this is a billing issue, not a bug.");
+    } else {
+      console.error("FAIL: Subagent did not complete successfully");
+      console.error("Error: " + result.error);
+    }
     process.exit(1);
   }
   console.log("PASS: Subagent completed successfully");
