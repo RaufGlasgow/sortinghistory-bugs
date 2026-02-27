@@ -38,7 +38,9 @@ export const TRIAGE_FIXTURES: TriageFixture[] = [
   },
   {
     id: "test-D",
-    report: "Game crashes when sorting more than 10 events quickly",
+    // Describes broken game state (wrong results), not app termination.
+    // Avoids the word "crash" so the triager classifies on behavior, not keyword.
+    report: "When I sort more than 10 events quickly, my score resets to zero and the round restarts",
     expected_classification: "gameplay_bug",
     expected_severity_range: ["P1", "P2"],
   },
