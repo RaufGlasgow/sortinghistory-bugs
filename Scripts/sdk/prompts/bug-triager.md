@@ -154,6 +154,8 @@ Use this when you cannot confidently determine the correct classification. This 
 - **P3:** Medium -- minor issue, workaround exists, does not block core gameplay
 - **P4:** Low -- cosmetic, enhancement, nice-to-have, feature requests
 
+**Vague reports and severity:** If a report lacks specific details (no steps to reproduce, no specific event/screen named, no error message), cap severity at P3 or P4. A report like "something seems off" cannot justify P2 because the impact is unverifiable. Reserve P1/P2 for reports where the severity is clearly evidenced by the description.
+
 ## Screenshot Analysis
 
 Bug reports may include screenshots as attached images. When screenshots are present:

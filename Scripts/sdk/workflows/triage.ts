@@ -179,7 +179,19 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   console.log("--- Classifying issue #" + issueNumber + " ---");
 
   // Build report text from issue title + body
-  const reportText = issueData.title + "\n\n" + issueData.body;
+  let reportText = issueData.title + "\n\n" + issueData.body;
+
+  // BA-010.10: Parse reporter hint from issue body (Path B) and prepend to triage prompt
+  const KNOWN_BUG_TYPES = ["ui_bug", "gameplay_bug", "content_error", "crash_bug"];
+  const hintMatch = issueData.body.match(/\*\*Reporter Classification:\*\*\s*(\S+)/);
+  const reporterHint = hintMatch && KNOWN_BUG_TYPES.includes(hintMatch[1]) ? hintMatch[1] : null;
+  if (reporterHint) {
+    const hintBlock = "The bug reporter classified this as: \"" + reporterHint + "\".\nConsider this as a signal but make your own independent assessment.\n\n";
+    reportText = hintBlock + reportText;
+    console.log("[triage] BA-010.10: Prepended reporter hint to triage prompt: " + reporterHint);
+  } else {
+    console.log("[triage] BA-010.10: No reporter hint found in issue body — proceeding normally");
+  }
 
   // Extract screenshots BEFORE stripping them — triage needs to see visual bugs
   const extractedImages = extractBase64Images(reportText);
@@ -210,12 +222,34 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   }
 
   // --------------------------------------------------
+  // BA-010.10: Adjust confidence based on reporter hint vs AI classification
+  // --------------------------------------------------
+  const originalClassification = triageResult.classification;
+  if (reporterHint) {
+    if (triageResult.classification === reporterHint) {
+      console.log("[triage] BA-010.10: AI classification matches reporter hint — no adjustment");
+    } else if (triageResult.confidence >= 0.70) {
+      console.log("[triage] BA-010.10: AI disagrees with reporter (AI=" + triageResult.classification + " vs hint=" + reporterHint + "), capping confidence at 0.70");
+      triageResult.confidence = 0.70;
+    } else {
+      console.log("[triage] BA-010.10: AI disagrees with reporter AND low confidence (" + triageResult.confidence + ") — routing to needs_human_review");
+      triageResult.classification = "needs_human_review";
+    }
+  }
+
+  // --------------------------------------------------
   // Step 3: Post classification comment (AC4)
   // --------------------------------------------------
   console.log("");
   console.log("--- Posting classification comment ---");
 
-  const classificationComment = buildClassificationComment(triageResult);
+  let classificationComment = buildClassificationComment(triageResult);
+  // BA-010.10: Add note when AI disagrees with reporter hint
+  if (reporterHint && originalClassification !== reporterHint && triageResult.classification !== "needs_human_review") {
+    classificationComment += "\n\n> **Note:** reporter classified this as `" + reporterHint + "` but triage classified as `" + originalClassification + "`";
+  } else if (reporterHint && triageResult.classification === "needs_human_review") {
+    classificationComment += "\n\n> **Note:** AI and reporter disagree — AI says `" + originalClassification + "` (" + (triageResult.confidence * 100).toFixed(0) + "%), reporter says `" + reporterHint + "`";
+  }
   postIssueComment(issueNumber, classificationComment);
 
   // --------------------------------------------------
