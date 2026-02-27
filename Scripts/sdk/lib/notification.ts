@@ -200,6 +200,103 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
 }
 
 // ---------------------------------------------------------------------------
+// Billing alert email
+// ---------------------------------------------------------------------------
+
+function buildBillingAlertHtml(errorMessage: string, issueNumber?: number): string {
+  const issueContext = issueNumber
+    ? `<p style="margin:0 0 16px 0;font-size:14px;color:#444444;line-height:1.6;">This happened while triaging <strong>issue #${issueNumber}</strong>. The issue is still open and will need to be re-triaged after credits are restored.</p>`
+    : "";
+
+  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+  <!-- Header -->
+  <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+    <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+    <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+      <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Pipeline Stopped</span>
+    </div>
+    <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">API Credits Depleted</h1>
+  </div>
+
+  <!-- Main content -->
+  <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Error</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;font-family:monospace;">${escapeHtml(errorMessage)}</p>
+    </div>
+
+    ${issueContext}
+
+    <p style="margin:0 0 20px 0;font-size:14px;color:#444444;line-height:1.6;">The bug pipeline cannot classify, fix, or verify anything until credits are topped up. All incoming bugs will fail at triage.</p>
+
+    <!-- Action button -->
+    <div style="text-align:center;margin-bottom:16px;">
+      <a href="https://console.anthropic.com/settings/billing" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">Top Up API Credits</a>
+    </div>
+    <p style="text-align:center;margin:0;font-size:13px;color:#888888;">console.anthropic.com &rarr; Settings &rarr; Billing</p>
+  </div>
+
+  <!-- Footer -->
+  <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+    <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+  </div>
+
+  <!-- Bottom bar -->
+  <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+    <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Billing alert</p>
+  </div>
+</div>`;
+}
+
+/**
+ * Send a billing alert email when API credits are depleted.
+ *
+ * Fire-and-forget: catches all errors so the pipeline can exit cleanly.
+ */
+export async function sendBillingAlertEmail(
+  errorMessage: string,
+  issueNumber?: number,
+): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const ownerEmail = process.env.OWNER_EMAIL;
+
+  if (!apiKey || !ownerEmail) {
+    console.log("[notification] WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send billing alert");
+    return;
+  }
+
+  const subject = "Pipeline Stopped: API Credits Depleted";
+  const html = buildBillingAlertHtml(errorMessage, issueNumber);
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+        to: [ownerEmail],
+        subject,
+        html,
+      }),
+    });
+
+    if (response.ok) {
+      console.log("[notification] Billing alert email sent");
+    } else {
+      const errorText = await response.text();
+      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[notification] Failed to send billing alert: " + errMsg);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Email sender
 // ---------------------------------------------------------------------------
 
