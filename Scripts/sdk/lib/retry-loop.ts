@@ -823,6 +823,12 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         details: "Per-bug cap of $" + LIMITS.MAX_PER_BUG_COST_USD + " exceeded",
       });
 
+      // Generate handoff so the fix can be continued in Claude Code CLI
+      const costCapReason = "Cost cap exceeded ($" + cumulativeCostUsd.toFixed(2) + " spent vs $" + LIMITS.MAX_PER_BUG_COST_USD + " limit). " +
+        "The pipeline made " + attempt + " attempt(s) before hitting the budget. " +
+        "Continue this fix in Claude Code CLI using the context below.";
+      const handoff = buildHandoff(input, attemptLogs, qaResults, costCapReason, attempt);
+
       return {
         success: false,
         attemptLogs,
@@ -830,11 +836,11 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         modelsUsed,
         diff: null,
         changedFiles: [],
-        handoffMarkdown: null,
-        handoffFilePath: null,
+        handoffMarkdown: handoff.markdown,
+        handoffFilePath: handoff.filePath,
         qaSummary: null,
         fixSummary: null,
-        error: "Cost cap exceeded ($" + cumulativeCostUsd.toFixed(2) + " > $" + LIMITS.MAX_PER_BUG_COST_USD + " limit). Issue needs manual fix.",
+        error: costCapReason,
         fixAttemptsUsed: attempt,
       };
     }
@@ -861,6 +867,11 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         // Send billing alert email (fire-and-forget)
         await sendBillingAlertEmail(errorMsg, input.issueNumber);
 
+        // Generate handoff so the fix can be continued in Claude Code CLI
+        const billingReason = "API billing error on attempt " + attempt + ": " + errorMsg + ". " +
+          "Top up credits at console.anthropic.com, then continue this fix in Claude Code CLI using the context below.";
+        const billingHandoff = buildHandoff(input, attemptLogs, qaResults, billingReason, attempt);
+
         return {
           success: false,
           attemptLogs,
@@ -868,11 +879,11 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
           modelsUsed,
           diff: null,
           changedFiles: [],
-          handoffMarkdown: null,
-          handoffFilePath: null,
+          handoffMarkdown: billingHandoff.markdown,
+          handoffFilePath: billingHandoff.filePath,
           qaSummary: null,
           fixSummary: null,
-          error: "API billing error — pipeline stopped. Top up credits at console.anthropic.com",
+          error: billingReason,
           fixAttemptsUsed: attempt,
         };
       }
