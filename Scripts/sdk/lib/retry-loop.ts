@@ -74,11 +74,12 @@ const RETRYABLE_HTTP_CODES: readonly number[] = [429, 500, 502, 503];
 /**
  * Per-attempt timeout in milliseconds (PV2-6.5 AC4).
  * Later attempts get more time because they use more capable models with larger context.
+ * Increased after analysis showed subagents need 20+ minutes for code bugs.
  */
 const ATTEMPT_TIMEOUT_MS: Record<number, number> = {
-  1: 15 * 60 * 1000,  // 15 minutes for attempt 1 (Haiku/Sonnet)
-  2: 20 * 60 * 1000,  // 20 minutes for attempt 2 (Sonnet/Opus)
-  3: 25 * 60 * 1000,  // 25 minutes for attempt 3 (Opus)
+  1: 25 * 60 * 1000,  // 25 minutes for attempt 1 (Haiku/Sonnet)
+  2: 35 * 60 * 1000,  // 35 minutes for attempt 2 (Sonnet/Opus)
+  3: 45 * 60 * 1000,  // 45 minutes for attempt 3 (Opus)
 };
 
 // ------------------------------------------------------------------

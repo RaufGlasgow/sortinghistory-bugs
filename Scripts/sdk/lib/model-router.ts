@@ -92,30 +92,35 @@ const CONTENT_EXTENSIONS = new Set([
  * Content complex: Sonnet -> Opus   -> Opus   (starts higher)
  * Code simple:     Sonnet -> Opus   -> Opus   (code needs at least Sonnet)
  * Code complex:    Opus   -> Opus   -> Opus   (always Opus, increasing context)
+ *
+ * Turn limits doubled from original values after analysis showed every run
+ * hitting error_max_turns. A full explore->fix->compile cycle in a Swift
+ * codebase needs 20+ turns minimum. QA also needs 10+ turns to read diff,
+ * context files, and produce structured verdicts.
  */
 const ESCALATION_PATHS: Record<
   BugProfile,
   Array<{ fix: string; qa: string; fixTurns: number; qaTurns: number }>
 > = {
   content_simple: [
-    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 8, qaTurns: 5 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 6 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 15, qaTurns: 8 },
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 25, qaTurns: 12 },
   ],
   content_complex: [
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 6 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 15, qaTurns: 8 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 20, qaTurns: 10 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 30, qaTurns: 14 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 40, qaTurns: 18 },
   ],
   code_simple: [
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 6 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 15, qaTurns: 8 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 20, qaTurns: 10 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 10 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 35, qaTurns: 14 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 45, qaTurns: 18 },
   ],
   code_complex: [
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 15, qaTurns: 8 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 20, qaTurns: 10 },
-    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 25, qaTurns: 12 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 30, qaTurns: 12 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 40, qaTurns: 16 },
+    { fix: MODELS.COMPLEX_BUG, qa: MODELS.FIXER, fixTurns: 50, qaTurns: 20 },
   ],
 } as const;
 

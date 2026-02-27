@@ -38,8 +38,8 @@ env:
 jobs:
   fix-bug:
     runs-on: macos-14
-    # PV2-4.4 AC9: 15 minutes for qa-only, 60 for full
-    timeout-minutes: ${{ github.event.inputs.mode == 'qa-only' && 15 || 60 }}
+    # PV2-4.4 AC9: 15 minutes for qa-only, 120 for full (3 attempts × 25-45 min each)
+    timeout-minutes: ${{ github.event.inputs.mode == 'qa-only' && 15 || 120 }}
 
     steps:
       - name: Validate payload
