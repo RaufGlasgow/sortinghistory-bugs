@@ -117,22 +117,68 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   const actionMessage = escapeHtml(getActionMessage(action));
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
 
-  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-  <h2 style="color:#1a1a1a;margin:0 0 16px 0;">Action Needed: Bug #${input.issueNumber}</h2>
-  <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;">
-    <h3 style="margin:0 0 8px 0;font-size:16px;color:#111827;overflow-wrap:break-word;">${safeTitle}</h3>
-    <table style="width:100%;border-collapse:collapse;margin:12px 0;">
-      <tr><td style="padding:6px 12px;font-weight:600;width:120px;background:#f5f5f5;">Classification</td><td style="padding:6px 12px;background:#f5f5f5;"><code>${safeClassification}</code> @ ${confidencePercent}% confidence</td></tr>
-      <tr><td style="padding:6px 12px;font-weight:600;">Severity</td><td style="padding:6px 12px;">${safeSeverity}</td></tr>
-    </table>
-    <p style="margin:12px 0 4px 0;font-weight:600;font-size:13px;color:#374151;">AI Reasoning:</p>
-    <p style="margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;">${safeReasoning}</p>
-    <div style="padding:12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;margin-bottom:16px;">
-      <p style="margin:0;font-weight:600;color:#991b1b;font-size:14px;">${actionMessage}</p>
+  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+  <!-- Header with app icon -->
+  <div style="background:#8B6914;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+    <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+    <div style="display:inline-block;padding:4px 14px;background:#b91c1c;border-radius:20px;margin-bottom:8px;">
+      <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Urgent</span>
     </div>
-    <a href="${issueUrl}" style="display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;">View Issue on GitHub</a>
+    <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Bug #${input.issueNumber} Needs Your Attention</h1>
   </div>
-  <p style="color:#999;font-size:12px;text-align:center;margin-top:16px;">SortingHistory Pipeline &bull; Real-time alert</p>
+
+  <!-- Main content -->
+  <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <!-- Bug title -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#faf8f4;border-left:4px solid #DAA520;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug Report</p>
+      <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${safeTitle}</p>
+    </div>
+
+    <!-- Classification table -->
+    <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+      <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#faf8f4;color:#8B6914;font-size:13px;">Classification</td><td style="padding:8px 12px;background:#faf8f4;font-size:14px;color:#333333;"><code style="background:#fef9f3;padding:2px 6px;border-radius:3px;">${safeClassification}</code> @ ${confidencePercent}% confidence</td></tr>
+      <tr><td style="padding:8px 12px;font-weight:600;color:#8B6914;font-size:13px;">Severity</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${safeSeverity}</td></tr>
+    </table>
+
+    <!-- AI Reasoning -->
+    <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#8B6914;text-transform:uppercase;letter-spacing:0.5px;">AI Reasoning</p>
+    <p style="margin:0 0 24px 0;font-size:14px;color:#444444;line-height:1.6;">${safeReasoning}</p>
+
+    <!-- Action callout -->
+    <div style="padding:14px 16px;background:#fef2f2;border:2px solid #fca5a5;border-radius:8px;margin-bottom:24px;">
+      <p style="margin:0;font-weight:700;color:#991b1b;font-size:14px;">${actionMessage}</p>
+    </div>
+
+    <!-- CTA button -->
+    <div style="text-align:center;">
+      <a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>
+    </div>
+  </div>
+
+  <!-- Footer with social links -->
+  <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+    <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+    <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+      <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://youtube.com/@sortinghistory" style="color:#8B6914;text-decoration:none;">YouTube</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://bsky.app/profile/sortinghistory.bsky.social" style="color:#8B6914;text-decoration:none;">Bluesky</a>
+    </p>
+  </div>
+
+  <!-- Bottom bar -->
+  <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+    <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+    <p style="margin:0 0 4px 0;font-size:11px;"><a href="https://sortinghistory.com" style="color:#999999;text-decoration:none;">sortinghistory.com</a></p>
+    <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Urgent real-time alert</p>
+  </div>
 </div>`;
 }
 
@@ -163,7 +209,7 @@ export async function sendActionNeededEmail(
     return;
   }
 
-  const subject = `Action Needed: #${input.issueNumber} — ${input.classification}`;
+  const subject = `Urgent: #${input.issueNumber} — ${input.classification}`;
   const html = buildEmailHtml(input, action);
 
   try {
