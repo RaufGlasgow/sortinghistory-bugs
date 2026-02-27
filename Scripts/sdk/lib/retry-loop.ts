@@ -44,6 +44,7 @@ import {
 } from "./handoff-generator.js";
 import type { AttemptLogEntry, QAVerdictEntry, ModelUsageEntry } from "./state.js";
 import type { ExtractedImage } from "./image-extract.js";
+import { logPipelineEvent } from "./pipeline-log.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -774,6 +775,19 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     if (!fixResult.success) {
       console.error("[retry-loop] Fix subagent failed: " + fixResult.error);
 
+      logPipelineEvent({
+        workflow_id: "bf-" + input.issueNumber,
+        issue: input.issueNumber,
+        event: "fix_attempt_failed",
+        severity: "error",
+        model: fixResult.model ?? modelSelection.fixModel,
+        attempt,
+        tokens_in: fixResult.inputTokens,
+        tokens_out: fixResult.outputTokens,
+        cost_usd: fixResult.costUsd,
+        error_msg: fixResult.error ?? "unknown",
+      });
+
       const logEntry: AttemptLogEntry = {
         attempt_number: attempt,
         model: fixResult.model ?? modelSelection.fixModel,
@@ -814,6 +828,19 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
 
     if (changedFiles.length === 0) {
       console.log("[retry-loop] No changes detected -- attempt " + attempt + " produced no diff");
+
+      logPipelineEvent({
+        workflow_id: "bf-" + input.issueNumber,
+        issue: input.issueNumber,
+        event: "no_changes_produced",
+        severity: "warn",
+        model: fixResult.model ?? modelSelection.fixModel,
+        attempt,
+        tokens_in: fixResult.inputTokens,
+        tokens_out: fixResult.outputTokens,
+        cost_usd: fixResult.costUsd,
+        details: fixSummary?.fix_summary ?? "subagent ran but produced zero file changes",
+      });
 
       const logEntry: AttemptLogEntry = {
         attempt_number: attempt,
@@ -1082,6 +1109,19 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     console.log("");
     console.log("=== Retry Loop SUCCESS on attempt " + attempt + "/" + maxAttempts + " ===");
 
+    logPipelineEvent({
+      workflow_id: "bf-" + input.issueNumber,
+      issue: input.issueNumber,
+      event: "fix_success",
+      severity: "info",
+      model: fixResult.model ?? modelSelection.fixModel,
+      attempt,
+      tokens_in: fixResult.inputTokens,
+      tokens_out: fixResult.outputTokens,
+      cost_usd: fixResult.costUsd,
+      details: fixSummary?.fix_summary ?? "fix applied and QA approved",
+    });
+
     const logEntry: AttemptLogEntry = {
       attempt_number: attempt,
       model: fixResult.model ?? modelSelection.fixModel,
@@ -1113,6 +1153,15 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
   // ------------------------------------------------------------------
   console.log("");
   console.log("=== Retry Loop FAILED -- all " + maxAttempts + " attempts exhausted ===");
+
+  logPipelineEvent({
+    workflow_id: "bf-" + input.issueNumber,
+    issue: input.issueNumber,
+    event: "all_attempts_exhausted",
+    severity: "error",
+    attempt: maxAttempts,
+    details: "All " + maxAttempts + " fix attempts used. Profile: " + bugProfile,
+  });
 
   const handoff = buildHandoff(
     input,

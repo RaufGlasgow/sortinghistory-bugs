@@ -38,6 +38,8 @@ export const PATHS = {
   GAME_REPO: process.env.SDK_GAME_REPO ?? "game-repo",
   /** Routing decision log directory (BA-011 NFR4: public repo, JSONL format) */
   ROUTING_LOG_DIR: process.env.SDK_ROUTING_LOG_DIR ?? "state/routing-log",
+  /** Pipeline error log directory (JSONL format, cross-run tracking) */
+  LOG_DIR: process.env.SDK_LOG_DIR ?? "state/logs",
 };
 
 /** Workflow limits from Architecture Section 4.1 */

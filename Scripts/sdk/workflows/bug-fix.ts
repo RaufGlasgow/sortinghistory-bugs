@@ -45,6 +45,7 @@ import { runQAReview, type QAInput, type QAResult } from "../lib/qa-gate.js";
 import { runQualityGate } from "../lib/quality-gate.js";
 import { selectModels, determineBugProfile, determineQAProfile } from "../lib/model-router.js";
 import type { TriageData } from "../lib/types.js";
+import { logPipelineEvent } from "../lib/pipeline-log.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -786,6 +787,14 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
   console.log("  File extensions: " + triageContext.fileExtensions.join(", "));
   console.log("");
 
+  logPipelineEvent({
+    workflow_id: state.workflow_id,
+    issue: issueNumber,
+    event: "pipeline_start",
+    severity: "info",
+    details: triageContext.classification + " / " + triageContext.severity + " / conf=" + triageContext.confidence,
+  });
+
   // --------------------------------------------------
   // Step 4: Extract screenshots (AC4 — multimodal content blocks)
   // --------------------------------------------------
@@ -966,6 +975,15 @@ async function handleSuccess(
   console.log("");
   console.log("=== Bug Fix COMPLETE -- Issue #" + issueNumber + " (attempt " + retryResult.fixAttemptsUsed + ") ===");
 
+  logPipelineEvent({
+    workflow_id: workflowId,
+    issue: issueNumber,
+    event: "pipeline_complete",
+    severity: "info",
+    attempt: retryResult.fixAttemptsUsed,
+    details: "Fix applied. Files: " + retryResult.changedFiles.join(", "),
+  });
+
   return {
     success: true,
     workflowId,
@@ -1040,6 +1058,15 @@ async function handleFailure(
   console.log("[bug-fix] Workflow " + workflowId + " finished");
   console.log("");
   console.log("=== Bug Fix ESCALATED -- Issue #" + issueNumber + " ===");
+
+  logPipelineEvent({
+    workflow_id: workflowId,
+    issue: issueNumber,
+    event: "pipeline_failed",
+    severity: "error",
+    attempt: retryResult.fixAttemptsUsed,
+    error_msg: retryResult.error ?? "All fix attempts exhausted",
+  });
 
   return {
     success: false,
