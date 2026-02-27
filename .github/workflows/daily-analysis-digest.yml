@@ -212,7 +212,7 @@ jobs:
               BODY=$(echo "$ISSUE_JSON" | jq -r '.body // ""')
 
               # Extract "Actual behavior" from bug report body
-              ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -3 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              ACTUAL_BEHAVIOR=$(echo "$BODY" | awk '/^\*\*Actual behavior:\*\*/{found=1; next} /^\*\*/{found=0} found && NF{print}' | head -10 | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               if [ -z "$ACTUAL_BEHAVIOR" ]; then
                 ACTUAL_BEHAVIOR=""
               fi
@@ -271,14 +271,14 @@ jobs:
                 if [ -z "$ANALYSIS_TEXT" ]; then
                   ANALYSIS_TEXT="See analysis on GitHub: ${ISSUE_URL}"
                 else
-                  # Truncate to 500 chars
-                  if [ ${#ANALYSIS_TEXT} -gt 500 ]; then
-                    ANALYSIS_TEXT="${ANALYSIS_TEXT:0:500}..."
+                  # Truncate to 2000 chars (500 was too short — clipped analysis mid-sentence)
+                  if [ ${#ANALYSIS_TEXT} -gt 2000 ]; then
+                    ANALYSIS_TEXT="${ANALYSIS_TEXT:0:2000}..."
                   fi
                 fi
 
-                # Extract recommended fix: text after **Description:** in ### Suggested Fix section
-                FIX_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Suggested Fix/{found=1} found && /^\*\*Description:\*\*/{sub(/^\*\*Description:\*\*\s*/, ""); print; found=0}')
+                # Extract recommended fix: full text between ### Suggested Fix and next ### heading
+                FIX_TEXT=$(echo "$ANALYSIS_COMMENT" | awk '/^### Suggested Fix/{found=1; next} /^###/{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
                 if [ -z "$FIX_TEXT" ]; then
                   FIX_TEXT="See analysis on GitHub: ${ISSUE_URL}"

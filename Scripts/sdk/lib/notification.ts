@@ -113,9 +113,7 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   const safeClassification = escapeHtml(input.classification);
   const safeSeverity = escapeHtml(input.severity);
   const confidencePercent = Math.round(input.confidence * 100);
-  const safeReasoning = escapeHtml(
-    input.reasoning.length > 200 ? input.reasoning.slice(0, 200) + "..." : input.reasoning,
-  );
+  const safeReasoning = escapeHtml(input.reasoning);
   const actionMessage = escapeHtml(getActionMessage(action));
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
 
