@@ -45,7 +45,7 @@ import {
 import type { AttemptLogEntry, QAVerdictEntry, ModelUsageEntry } from "./state.js";
 import type { ExtractedImage } from "./image-extract.js";
 import { logPipelineEvent } from "./pipeline-log.js";
-import { sendBillingAlertEmail } from "./notification.js";
+import { sendBillingAlertEmail, sendHandoffEmail } from "./notification.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -265,11 +265,23 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
     // Non-fatal
   }
 
-  const allFiles = [changedFilesRaw, untrackedRaw]
+  const allFilesRaw = [changedFilesRaw, untrackedRaw]
     .filter(Boolean)
     .join("\n")
     .split("\n")
     .filter(Boolean);
+
+  // Filter out build artifact paths (safety net — cleanBuildArtifacts should
+  // have already removed the directories, but belt-and-suspenders)
+  const allFiles = allFilesRaw.filter(f => {
+    for (const pattern of BUILD_ARTIFACT_DIR_PATTERNS) {
+      if (f.includes(pattern)) {
+        console.log("[retry-loop] Filtered artifact from diff: " + f);
+        return false;
+      }
+    }
+    return true;
+  });
 
   // For untracked files, capture their content as diff too
   if (untrackedRaw) {
@@ -328,6 +340,59 @@ function resetGameRepo(gameRepoPath: string): void {
     console.error("[retry-loop] FATAL: Could not reset game repo: " + errMsg);
     throw new Error("Game repo reset failed: " + errMsg);
   }
+}
+
+/**
+ * Path patterns that indicate build/temp artifacts to strip from diffs.
+ * These are created by xcodebuild during compilation verification and
+ * must never reach the quality gate or git staging.
+ */
+const BUILD_ARTIFACT_DIR_PATTERNS: readonly string[] = [
+  "DerivedData/",
+  "DerivedData",
+  ".build/",
+  ".build",
+  "build/Build/",
+  "xcuserdata/",
+];
+
+/**
+ * Clean build artifacts from the game repo working tree.
+ * The fix subagent runs xcodebuild to verify compilation, which creates
+ * DerivedData/ and other build artifact directories. These must be removed
+ * before capturing the diff, otherwise the quality gate correctly rejects them.
+ */
+function cleanBuildArtifacts(gameRepoPath: string): void {
+  console.log("[retry-loop] Cleaning build artifacts before diff capture...");
+  const artifactDirs = ["DerivedData", ".build"];
+  let cleaned = 0;
+
+  for (const dir of artifactDirs) {
+    const fullPath = path.join(gameRepoPath, dir);
+    if (fs.existsSync(fullPath)) {
+      try {
+        fs.rmSync(fullPath, { recursive: true, force: true });
+        console.log("[retry-loop] Removed " + dir + "/");
+        cleaned++;
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.log("[retry-loop] WARNING: Could not remove " + dir + ": " + errMsg);
+      }
+    }
+  }
+
+  // Also discard any tracked changes in artifact directories
+  try {
+    execSync("git checkout -- DerivedData/ .build/ 2>/dev/null || true", {
+      cwd: gameRepoPath,
+      encoding: "utf-8",
+      timeout: 10_000,
+    });
+  } catch {
+    // Non-fatal — directories may not exist in git
+  }
+
+  console.log("[retry-loop] Build artifact cleanup done (" + cleaned + " directories removed)");
 }
 
 /**
@@ -935,8 +1000,11 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     }
 
     // --------------------------------------------------
-    // Step 3: Capture git diff
+    // Step 3: Clean build artifacts + capture git diff
     // --------------------------------------------------
+    // The fix subagent may have run xcodebuild, creating DerivedData/.
+    // Clean these BEFORE capturing the diff so the quality gate sees only real changes.
+    cleanBuildArtifacts(input.gameRepoPath);
     const { diff, changedFiles } = captureDiff(input.gameRepoPath);
 
     if (changedFiles.length === 0) {
@@ -1311,6 +1379,24 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     "All " + maxAttempts + " fix attempts exhausted. Each attempt used an escalated model but could not produce a fix that passed all gates.",
     maxAttempts,
   );
+
+  // Send handoff notification email so the owner knows immediately
+  const attemptSummaryLines = attemptLogs.map(log =>
+    "Attempt " + log.attempt_number + " (" + log.model + "): " + log.result + " — " + (log.approach ?? "unknown approach")
+  );
+  try {
+    await sendHandoffEmail({
+      issueNumber: input.issueNumber,
+      issueTitle: input.issueTitle,
+      totalAttempts: maxAttempts,
+      attemptSummary: attemptSummaryLines.join("\n"),
+      modelsUsed: [...new Set(modelsUsed.map(m => m.model))],
+    });
+  } catch (err: unknown) {
+    // Fire-and-forget — don't let email failure break the return
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.log("[retry-loop] WARNING: Could not send handoff email: " + errMsg);
+  }
 
   return {
     success: false,

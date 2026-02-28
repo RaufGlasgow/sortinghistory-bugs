@@ -385,3 +385,151 @@ export async function sendActionNeededEmail(
     console.error("[notification] Failed to send action email: " + errMsg);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Handoff notification email
+// ---------------------------------------------------------------------------
+
+export interface HandoffEmailInput {
+  issueNumber: number;
+  issueTitle: string;
+  totalAttempts: number;
+  /** Short summary of what was tried */
+  attemptSummary: string;
+  /** The models used across attempts */
+  modelsUsed: string[];
+  /** Link to the handoff comment on GitHub */
+  handoffCommentUrl?: string;
+}
+
+function buildHandoffEmailHtml(input: HandoffEmailInput): string {
+  const safeTitle = escapeHtml(input.issueTitle);
+  const safeAttemptSummary = escapeHtml(input.attemptSummary);
+  const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
+  const modelsText = escapeHtml(input.modelsUsed.join(", ") || "unknown");
+
+  // Comment button URL
+  const authToken = process.env.AUTH_TOKEN;
+  let commentButtonHtml = "";
+  if (authToken) {
+    const encodedToken = encodeURIComponent(authToken);
+    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    commentButtonHtml = `<a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Provide Guidance</a>`;
+  }
+
+  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+  <!-- Header -->
+  <div style="background:#d97706;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+    <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+    <div style="display:inline-block;padding:4px 14px;background:#92400e;border-radius:20px;margin-bottom:8px;">
+      <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Handoff</span>
+    </div>
+    <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Pipeline Needs Your Help</h1>
+  </div>
+
+  <!-- Main content -->
+  <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <!-- Bug title -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#faf8f4;border-left:4px solid #DAA520;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug #${input.issueNumber}</p>
+      <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${safeTitle}</p>
+    </div>
+
+    <!-- What happened -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#fffbeb;border-left:4px solid #d97706;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#d97706;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">The pipeline tried <strong>${input.totalAttempts} fix attempt${input.totalAttempts === 1 ? "" : "s"}</strong> and could not produce a fix that passed all quality gates.</p>
+    </div>
+
+    <!-- Details table -->
+    <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+      <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#faf8f4;color:#8B6914;font-size:13px;">Attempts</td><td style="padding:8px 12px;background:#faf8f4;font-size:14px;color:#333333;">${input.totalAttempts}</td></tr>
+      <tr><td style="padding:8px 12px;font-weight:600;color:#8B6914;font-size:13px;">Models Used</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${modelsText}</td></tr>
+    </table>
+
+    <!-- Summary -->
+    <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#8B6914;text-transform:uppercase;letter-spacing:0.5px;">Attempt Summary</p>
+    <p style="margin:0 0 24px 0;font-size:14px;color:#444444;line-height:1.6;white-space:pre-line;">${safeAttemptSummary}</p>
+
+    <!-- Action callout -->
+    <div style="padding:14px 16px;background:#fffbeb;border:2px solid #fbbf24;border-radius:8px;margin-bottom:24px;">
+      <p style="margin:0;font-weight:700;color:#92400e;font-size:14px;">The pipeline needs your guidance to make progress on this bug.</p>
+    </div>
+
+    <!-- Action buttons -->
+    <div style="text-align:center;">
+      <a href="${issueUrl}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Handoff on GitHub</a>
+      ${commentButtonHtml}
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+    <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+    <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+      <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+    </p>
+  </div>
+
+  <!-- Bottom bar -->
+  <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+    <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+    <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Handoff notification</p>
+  </div>
+</div>`;
+}
+
+/**
+ * Send a handoff notification email when the pipeline exhausts all fix attempts.
+ *
+ * Fire-and-forget: catches all errors so the pipeline can continue cleanly.
+ */
+export async function sendHandoffEmail(
+  input: HandoffEmailInput,
+): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const ownerEmail = process.env.OWNER_EMAIL;
+
+  if (!apiKey) {
+    console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping handoff email");
+    return;
+  }
+  if (!ownerEmail) {
+    console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping handoff email");
+    return;
+  }
+
+  const subject = `Handoff: #${input.issueNumber} — Pipeline needs your help`;
+  const html = buildHandoffEmailHtml(input);
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+        to: [ownerEmail],
+        subject,
+        html,
+      }),
+    });
+
+    if (response.ok) {
+      console.log("[notification] Handoff email sent for issue #" + input.issueNumber);
+    } else {
+      const errorText = await response.text();
+      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[notification] Failed to send handoff email: " + errMsg);
+  }
+}

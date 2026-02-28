@@ -348,6 +348,7 @@ export function commitHandoff(result: HandoffResult, gameRepoPath: string): void
       execSync("git checkout " + branch, {
         cwd,
         encoding: "utf-8",
+        maxBuffer: 5 * 1024 * 1024,
         stdio: "pipe",
       });
       console.log("[handoff] Checked out existing branch: " + branch);
@@ -379,14 +380,18 @@ export function commitHandoff(result: HandoffResult, gameRepoPath: string): void
     console.log("[handoff] Wrote handoff to: " + result.filePath);
 
     // Stage and commit
+    // maxBuffer added to mitigate ENOBUFS after 3+ subagent processes
     execSync("git add " + JSON.stringify(result.filePath), {
       cwd,
       encoding: "utf-8",
+      maxBuffer: 5 * 1024 * 1024,
+      stdio: "pipe",
     });
 
     execSync("git commit -m " + JSON.stringify(commitMsg), {
       cwd,
       encoding: "utf-8",
+      maxBuffer: 5 * 1024 * 1024,
       stdio: "pipe",
     });
     console.log("[handoff] Committed: " + commitMsg);
@@ -396,6 +401,7 @@ export function commitHandoff(result: HandoffResult, gameRepoPath: string): void
       cwd,
       encoding: "utf-8",
       timeout: 60_000,
+      maxBuffer: 5 * 1024 * 1024,
       stdio: "pipe",
     });
     console.log("[handoff] Pushed to origin/" + branch);

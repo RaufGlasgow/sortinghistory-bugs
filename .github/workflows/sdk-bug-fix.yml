@@ -217,6 +217,15 @@ jobs:
 
       # ── Full mode: check for changes, commit, version bump ──
 
+      - name: Clean build artifacts before change check
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full'
+        working-directory: game-repo
+        run: |
+          # Remove DerivedData created by subagent's xcodebuild during fix attempts
+          rm -rf DerivedData/ .build/ 2>/dev/null || true
+          git checkout -- DerivedData/ .build/ 2>/dev/null || true
+          echo "Build artifacts cleaned before change check"
+
       - name: Check for changes in game repo
         id: changes
         if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full'
@@ -225,7 +234,8 @@ jobs:
           CHANGED_FILES=$(git diff --name-only)
           UNTRACKED_FILES=$(git ls-files --others --exclude-standard)
           ALL_FILES="$CHANGED_FILES"$'\n'"$UNTRACKED_FILES"
-          ALL_FILES=$(echo "$ALL_FILES" | sed '/^$/d')
+          # Filter out build artifacts that may have survived cleanup
+          ALL_FILES=$(echo "$ALL_FILES" | grep -v '^DerivedData/' | grep -v '^\.build/' | grep -v '^xcuserdata/' | sed '/^$/d')
 
           if [ -z "$ALL_FILES" ]; then
             echo "has_changes=false" >> $GITHUB_OUTPUT
