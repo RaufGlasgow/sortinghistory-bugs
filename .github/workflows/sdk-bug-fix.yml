@@ -289,16 +289,18 @@ jobs:
 
           # Safe git add: only stage files with allowed extensions
           # Replaces dangerous `git add -A` that staged DerivedData (PR #90)
+          # Uses `while read` instead of `for` to handle paths with spaces
           ALLOWED_EXTS="swift json strings md plist pbxproj xcscheme"
           STAGED_COUNT=0
 
-          # Collect all changed + untracked files
-          ALL_FILES=$(git diff --name-only; git ls-files --others --exclude-standard)
+          # Collect all changed + untracked files (one per line, handles spaces)
+          # Uses process substitution so STAGED_COUNT is visible after the loop
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
 
-          for FILE in $ALL_FILES; do
-            # Skip exclusion patterns
+            # Skip exclusion patterns (includes SourcePackages — SPM artifacts)
             case "$FILE" in
-              *DerivedData/*|*.build/*|*xcuserdata/*|*node_modules/*|*.DS_Store|*.o|*.dSYM|*.dSYM/*)
+              *DerivedData/*|*.build/*|*xcuserdata/*|*node_modules/*|*SourcePackages/*|*.DS_Store|*.o|*.dSYM|*.dSYM/*)
                 echo "EXCLUDED: $FILE"
                 continue
                 ;;
@@ -321,7 +323,7 @@ jobs:
             else
               echo "EXCLUDED: $FILE (extension .$EXT not in allowlist)"
             fi
-          done
+          done < <({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)
 
           echo "Safe git add complete: $STAGED_COUNT file(s) staged"
 
@@ -355,14 +357,15 @@ jobs:
         run: |
           # Stage only files with allowed extensions (same pattern as Commit step)
           # Replaces dangerous `git add -A` that reintroduces build artifacts
+          # Uses `while read` with process substitution to handle paths with spaces
           ALLOWED_EXTS="swift json strings md plist pbxproj xcscheme"
           STAGED_COUNT=0
 
-          ALL_FILES=$(git diff --name-only; git ls-files --others --exclude-standard)
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
 
-          for FILE in $ALL_FILES; do
             case "$FILE" in
-              *DerivedData/*|*.build/*|*xcuserdata/*|*node_modules/*|*.DS_Store|*.o|*.dSYM|*.dSYM/*)
+              *DerivedData/*|*.build/*|*xcuserdata/*|*node_modules/*|*SourcePackages/*|*.DS_Store|*.o|*.dSYM|*.dSYM/*)
                 echo "EXCLUDED: $FILE"
                 continue
                 ;;
@@ -384,7 +387,7 @@ jobs:
             else
               echo "EXCLUDED: $FILE (extension .$EXT not in allowlist)"
             fi
-          done
+          done < <({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u)
 
           if ! git diff --staged --quiet; then
             git commit --amend --no-edit
