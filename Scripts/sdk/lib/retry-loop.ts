@@ -1156,8 +1156,22 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       };
       attemptLogs.push(logEntry);
 
-      // H3: QA infra retries exhausted -- return FAILURE, not success.
+      // If there are more attempts, retry with escalated model instead of giving up
+      if (attempt < maxAttempts) {
+        console.log("[retry-loop] QA failed on attempt " + attempt + "/" + maxAttempts + " -- will retry with escalated model");
+        previousFailures.push({
+          attempt,
+          approach: fixSummary?.fix_summary ?? "unknown",
+          result: "qa_infra_failure",
+          errorOutput: qaResult.error ?? "QA subagent failed",
+          qaFeedback: null,
+        });
+        continue;
+      }
+
+      // H3: Final attempt QA failure -- return FAILURE, not success.
       // An unreviewed fix must NOT get a PR automatically.
+      console.log("[retry-loop] QA failed on final attempt -- stopping");
       const qaWarning = "## QA Review\n\n" +
         "> **QA REVIEW INCOMPLETE:** " + (qaResult.error ?? "Unknown QA error") + ". Manual review required.\n\n" +
         "The QA review subagent could not complete its analysis. The fix may be correct but\n" +
