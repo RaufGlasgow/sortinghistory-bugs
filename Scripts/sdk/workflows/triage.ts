@@ -353,6 +353,7 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
           confidence: triageResult.confidence,
           severity: triageResult.severity,
           reasoning: triageResult.reasoning,
+          description: issueData.body,
         },
         routingAction,
       );

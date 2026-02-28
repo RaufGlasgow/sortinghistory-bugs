@@ -21,6 +21,8 @@ export interface ActionNeededEmailInput {
   confidence: number;
   severity: string;
   reasoning: string;
+  /** Reporter's original bug description (from issue body) */
+  description?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +119,31 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   const actionMessage = escapeHtml(getActionMessage(action));
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
 
+  // Build bug description section (truncated to 1000 chars for email)
+  let descriptionHtml = "";
+  if (input.description) {
+    // Extract just the description text, strip markdown images and device info table
+    let descText = input.description
+      .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images
+      .replace(/\|[^\n]*\|/g, "") // strip markdown tables
+      .replace(/---/g, "")
+      .replace(/## Device Info[\s\S]*?(?=##|$)/, "") // strip device info section
+      .replace(/## Screenshot[\s\S]*?(?=##|$)/, "") // strip screenshot section
+      .replace(/_Submitted via Sorting History app_/, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (descText.length > 1000) {
+      descText = descText.slice(0, 1000) + "...";
+    }
+    const safeDescription = escapeHtml(descText);
+    descriptionHtml = `
+    <!-- Reporter description -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What The Reporter Said</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDescription}</p>
+    </div>`;
+  }
+
   // Generate action button URLs if AUTH_TOKEN is available
   const authToken = process.env.AUTH_TOKEN;
   let actionButtonsHtml: string;
@@ -125,8 +152,10 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
     const encodedToken = encodeURIComponent(authToken);
     const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     actionButtonsHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
-      <a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>`;
+      <a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>
+      <a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Comment</a>`;
     githubLinkHtml = `<p style="text-align:center;margin-top:12px;"><a href="${issueUrl}" style="color:#8B6914;font-size:13px;text-decoration:none;">View on GitHub &rarr;</a></p>`;
   } else {
     actionButtonsHtml = `<a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>`;
@@ -150,6 +179,8 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
       <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug Report</p>
       <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${safeTitle}</p>
     </div>
+
+    ${descriptionHtml}
 
     <!-- Classification table -->
     <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
