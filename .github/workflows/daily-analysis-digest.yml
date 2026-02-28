@@ -100,8 +100,8 @@ jobs:
           FILTERED=""
           for NUM in $ALL_NUMBERS; do
             LABELS=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/labels" --jq '.[].name' 2>/dev/null || echo "")
-            if echo "$LABELS" | grep -qE '^(approved|pr-created)$'; then
-              echo "Skipping issue #${NUM} (has approved or pr-created label)"
+            if echo "$LABELS" | grep -qE '^(approved|pr-created|sdk-routed|needs-handoff-review)$'; then
+              echo "Skipping issue #${NUM} (already triaged or has PR)"
               continue
             fi
             FILTERED="${FILTERED}${NUM}\n"
