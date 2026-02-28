@@ -96,32 +96,33 @@ const CONTENT_EXTENSIONS = new Set([
  * Code simple:     Sonnet -> Sonnet -> Sonnet (code needs at least Sonnet)
  * Code complex:    Sonnet -> Sonnet -> Sonnet (always Sonnet, increasing context)
  *
- * Turn limits reduced from previous values to control costs.
- * A full explore->fix->compile cycle needs 15-20 turns.
+ * Turn limits: Fix needs 15-30 turns for explore->fix->compile.
+ * QA needs 15-20 turns for Read/Glob/Grep inspection + JSON output.
+ * QA (Haiku) is cheap (~$0.08/call), so generous turn limits are fine.
  */
 const ESCALATION_PATHS: Record<
   BugProfile,
   Array<{ fix: string; qa: string; fixTurns: number; qaTurns: number }>
 > = {
   content_simple: [
-    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 10, qaTurns: 6 },
-    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 8 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 10, qaTurns: 10 },
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 15 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 15 },
   ],
   content_complex: [
-    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 8 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
+    { fix: MODELS.VERIFIER, qa: MODELS.VERIFIER, fixTurns: 12, qaTurns: 15 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 15 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 20 },
   ],
   code_simple: [
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 8 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 10 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 10 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 15, qaTurns: 15 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 15 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 20 },
   ],
   code_complex: [
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 8 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 10 },
-    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 30, qaTurns: 12 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 20, qaTurns: 15 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 25, qaTurns: 20 },
+    { fix: MODELS.FIXER, qa: MODELS.VERIFIER, fixTurns: 30, qaTurns: 20 },
   ],
 } as const;
 
