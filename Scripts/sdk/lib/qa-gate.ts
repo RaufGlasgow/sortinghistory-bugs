@@ -214,10 +214,18 @@ function buildUserPrompt(input: QAInput, singleProfile: "code" | "content"): str
     parts.push("");
   }
 
-  // The diff itself
+  // The diff itself — truncate if too large to prevent prompt overflow
+  const MAX_DIFF_PROMPT_CHARS = 100_000; // ~100KB safety limit
+  let diffText = input.diff;
+  if (diffText.length > MAX_DIFF_PROMPT_CHARS) {
+    const originalLength = diffText.length;
+    diffText = diffText.slice(0, MAX_DIFF_PROMPT_CHARS);
+    diffText += "\n\n... [TRUNCATED: diff was " + originalLength + " chars, showing first " + MAX_DIFF_PROMPT_CHARS + ". Focus your review on the visible portion.]";
+    console.log("[qa-gate] WARNING: Diff truncated from " + originalLength + " to " + MAX_DIFF_PROMPT_CHARS + " chars for QA prompt");
+  }
   parts.push("## Complete Diff");
   parts.push("```diff");
-  parts.push(input.diff);
+  parts.push(diffText);
   parts.push("```");
   parts.push("");
 

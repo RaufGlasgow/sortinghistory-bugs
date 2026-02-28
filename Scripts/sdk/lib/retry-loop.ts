@@ -1096,6 +1096,52 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     }
 
     // --------------------------------------------------
+    // Step 4b: Early diff size check (prevents QA prompt overflow)
+    // --------------------------------------------------
+    // The quality gate checks diff_proportionality AFTER QA, but an oversized diff
+    // will crash the QA subagent (prompt too large for model context window).
+    // Check size here to skip QA and save cost when the diff would fail quality gate anyway.
+    const MAX_DIFF_LINES_EARLY = 1500; // Matches quality-gate DEFAULT_MAX_DIFF_LINES
+    const diffLineCount = diff.split("\n").length;
+    if (diffLineCount > MAX_DIFF_LINES_EARLY) {
+      console.log("[retry-loop] Diff too large (" + diffLineCount + " lines, max " + MAX_DIFF_LINES_EARLY + ") -- skipping QA");
+
+      logPipelineEvent({
+        workflow_id: "bf-" + input.issueNumber,
+        issue: input.issueNumber,
+        event: "diff_too_large",
+        severity: "warn",
+        model: fixResult.model ?? modelSelection.fixModel,
+        attempt,
+        details: diffLineCount + " lines across " + changedFiles.length + " files (limit: " + MAX_DIFF_LINES_EARLY + ")",
+      });
+
+      const logEntry: AttemptLogEntry = {
+        attempt_number: attempt,
+        model: fixResult.model ?? modelSelection.fixModel,
+        approach: fixSummary?.fix_summary ?? "unknown",
+        result: "quality_gate_fail",
+        error_output: "Diff too large: " + diffLineCount + " lines (max " + MAX_DIFF_LINES_EARLY + "). Fix was too sweeping — needs smaller, targeted changes.",
+        timestamp: new Date().toISOString(),
+      };
+      attemptLogs.push(logEntry);
+
+      previousFailures.push({
+        attempt,
+        approach: fixSummary?.fix_summary ?? "unknown",
+        result: "quality_gate_fail",
+        errorOutput: "Diff too large: " + diffLineCount + " lines (max " + MAX_DIFF_LINES_EARLY + "). Make smaller, targeted changes.",
+        qaFeedback: null,
+      });
+
+      if (fixSummary?.fix_summary) {
+        bannedApproaches.push(fixSummary.fix_summary);
+      }
+
+      continue;
+    }
+
+    // --------------------------------------------------
     // Step 5: Run QA review with infra retry (AC2, AC10)
     // --------------------------------------------------
     console.log("[retry-loop] Running QA review...");
