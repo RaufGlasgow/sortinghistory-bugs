@@ -103,9 +103,8 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   try {
     systemPrompt = fs.readFileSync(promptPath, "utf-8");
   } catch (err: unknown) {
-    console.error("FAIL: Could not read system prompt at " + promptPath);
-    console.error("Error: " + (err instanceof Error ? err.message : String(err)));
-    process.exit(1);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    throw new Error("Could not read system prompt at " + promptPath + ": " + errMsg);
   }
 
   // Strip base64 images from report text to avoid sending raw base64 as text tokens.
@@ -150,30 +149,25 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
       console.error("FAIL: Anthropic API credit balance depleted.");
       console.error("Top up credits at https://console.anthropic.com before retrying.");
       console.error("Pipeline will not retry — this is a billing issue, not a bug.");
-      // Extract issue number from report ID (format: "issue-123")
       const issueMatch = reportId.match(/issue-(\d+)/);
       const issueNum = issueMatch ? parseInt(issueMatch[1], 10) : undefined;
       await sendBillingAlertEmail(result.error ?? "Credit balance is too low", issueNum);
+      throw new Error("API billing error: " + (result.error ?? "Credit balance is too low"));
     } else {
-      console.error("FAIL: Subagent did not complete successfully");
-      console.error("Error: " + result.error);
+      throw new Error("Subagent did not complete successfully: " + (result.error ?? "unknown"));
     }
-    process.exit(1);
   }
   console.log("PASS: Subagent completed successfully");
 
   // Validation 2: No write tools used (read-only enforcement)
   if (result.usedWriteTools) {
-    console.error("FAIL: Subagent used write/edit tools (read-only violation)");
-    console.error("Tools used: " + result.toolsUsed.join(", "));
-    process.exit(1);
+    throw new Error("Subagent used write/edit tools (read-only violation). Tools: " + result.toolsUsed.join(", "));
   }
   console.log("PASS: No write/edit tools used (read-only confirmed)");
 
   // Validation 3: Response exists
   if (!result.responseText) {
-    console.error("FAIL: No response text from subagent");
-    process.exit(1);
+    throw new Error("No response text from subagent");
   }
 
   // Validation 4: Parse JSON from response (defensive — ATT-004 pattern)
@@ -182,22 +176,15 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     const jsonText = extractJson(result.responseText, "classification");
     parsed = JSON.parse(jsonText) as Record<string, unknown>;
   } catch (err: unknown) {
-    console.error("FAIL: Response is not valid JSON");
-    console.error("Raw response: " + result.responseText);
-    console.error("Parse error: " + (err instanceof Error ? err.message : String(err)));
-    process.exit(1);
+    const parseErr = err instanceof Error ? err.message : String(err);
+    throw new Error("Response is not valid JSON. Parse error: " + parseErr + ". Raw response: " + result.responseText?.slice(0, 500));
   }
   console.log("PASS: Response is valid JSON");
 
   // Validation 5: Required fields present and valid
   const validationErrors = validateTriageResult(parsed);
   if (validationErrors.length > 0) {
-    console.error("FAIL: Triage result validation failed:");
-    for (const ve of validationErrors) {
-      console.error("  - " + ve);
-    }
-    console.error("Parsed result: " + JSON.stringify(parsed, null, 2));
-    process.exit(1);
+    throw new Error("Triage result validation failed: " + validationErrors.join("; "));
   }
   console.log("PASS: All required fields present and valid");
 

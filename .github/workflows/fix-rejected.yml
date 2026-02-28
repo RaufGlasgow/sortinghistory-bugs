@@ -19,6 +19,7 @@ env:
 jobs:
   reject-fix:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Extract Issue Number from PR Body

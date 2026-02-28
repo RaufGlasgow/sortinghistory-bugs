@@ -820,29 +820,28 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     const attemptTimeoutMs = ATTEMPT_TIMEOUT_MS[attempt] ?? 20 * 60 * 1000;
     const timeoutMinutes = attemptTimeoutMs / 60_000;
 
-    // C9: Track timer outside try so catch can clear it too
+    // C9: Use AbortController to kill the subagent process on timeout.
+    // Previous approach used Promise.race() which left orphaned subagent processes
+    // running in the background, consuming API tokens and causing ENOBUFS.
+    const abortController = new AbortController();
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     try {
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutTimer = setTimeout(
-          () => reject(new Error("Fix subagent timed out after " + timeoutMinutes + " minutes")),
-          attemptTimeoutMs,
-        );
-      });
+      timeoutTimer = setTimeout(() => {
+        console.error("[retry-loop] Timeout reached (" + timeoutMinutes + " min) — aborting subagent via AbortController");
+        abortController.abort();
+      }, attemptTimeoutMs);
 
-      fixResult = await Promise.race([
-        spawnSubagent({
-          model: modelSelection.fixModel,
-          tools: [...BUG_FIX_TOOLS],
-          prompt: userPrompt,
-          systemPrompt,
-          hooks,
-          cwd: input.gameRepoPath,
-          maxTurns: modelSelection.fixMaxTurns,
-          images: input.screenshots,
-        }),
-        timeoutPromise,
-      ]);
+      fixResult = await spawnSubagent({
+        model: modelSelection.fixModel,
+        tools: [...BUG_FIX_TOOLS],
+        prompt: userPrompt,
+        systemPrompt,
+        hooks,
+        cwd: input.gameRepoPath,
+        maxTurns: modelSelection.fixMaxTurns,
+        images: input.screenshots,
+        abortController,
+      });
 
       // Subagent finished before timeout — clear the timer
       if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -850,7 +849,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       // C9: Clear timer on any error path to prevent leaks
       if (timeoutTimer) clearTimeout(timeoutTimer);
       const errMsg = err instanceof Error ? err.message : String(err);
-      const isTimeout = errMsg.includes("timed out after");
+      const isTimeout = abortController.signal.aborted || errMsg.includes("timed out after") || errMsg.includes("abort");
       console.error("[retry-loop] Fix subagent " + (isTimeout ? "timed out" : "spawn failed") + ": " + errMsg);
 
       // PV2-6.5 AC5/AC6: Log timeout as "timeout" result with error message

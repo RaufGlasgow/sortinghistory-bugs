@@ -72,6 +72,8 @@ export interface SubagentParams {
   resume?: string;
   /** Optional images to include as multimodal content blocks */
   images?: ExtractedImage[];
+  /** Optional AbortController for cancellation (C9: kill timed-out subagents) */
+  abortController?: AbortController;
 }
 
 /**
@@ -156,6 +158,7 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
       thinking: { type: "disabled" },
       hooks: params.hooks,
       resume: params.resume,
+      abortController: params.abortController,
     };
 
     if (params.systemPrompt) {
