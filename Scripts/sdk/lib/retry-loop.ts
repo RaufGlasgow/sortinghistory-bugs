@@ -18,7 +18,7 @@
  * It imports and calls: model-router, qa-gate, quality-gate, handoff-generator, state.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -230,8 +230,11 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
   let diff = "";
   let changedFilesRaw = "";
 
+  // Use execFileSync instead of execSync to avoid spawning /bin/sh.
+  // After 2+ subagent processes, the system runs out of buffer space (ENOBUFS)
+  // for shell processes. execFileSync spawns git directly, halving the overhead.
   try {
-    diff = execSync("git diff", {
+    diff = execFileSync("git", ["diff"], {
       cwd: gameRepoPath,
       encoding: "utf-8",
       timeout: 30_000,
@@ -243,10 +246,11 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
   }
 
   try {
-    changedFilesRaw = execSync("git diff --name-only", {
+    changedFilesRaw = execFileSync("git", ["diff", "--name-only"], {
       cwd: gameRepoPath,
       encoding: "utf-8",
       timeout: 30_000,
+      maxBuffer: 5 * 1024 * 1024,
     }).trim();
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -256,10 +260,11 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
   // Also check for untracked files
   let untrackedRaw = "";
   try {
-    untrackedRaw = execSync("git ls-files --others --exclude-standard", {
+    untrackedRaw = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
       cwd: gameRepoPath,
       encoding: "utf-8",
       timeout: 30_000,
+      maxBuffer: 5 * 1024 * 1024,
     }).trim();
   } catch {
     // Non-fatal
@@ -283,11 +288,17 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
     return true;
   });
 
-  // For untracked files, capture their content as diff too
+  // For untracked files that survived filtering, capture their content as diff too
   if (untrackedRaw) {
-    for (const untrackedFile of untrackedRaw.split("\n").filter(Boolean)) {
+    const filteredUntracked = untrackedRaw.split("\n").filter(Boolean).filter(f => {
+      for (const pattern of BUILD_ARTIFACT_DIR_PATTERNS) {
+        if (f.includes(pattern)) return false;
+      }
+      return true;
+    });
+    for (const untrackedFile of filteredUntracked) {
       try {
-        const fileDiff = execSync("git diff --no-index /dev/null " + JSON.stringify(untrackedFile), {
+        const fileDiff = execFileSync("git", ["diff", "--no-index", "/dev/null", untrackedFile], {
           cwd: gameRepoPath,
           encoding: "utf-8",
           timeout: 10_000,
@@ -317,11 +328,11 @@ function captureDiff(gameRepoPath: string): { diff: string; changedFiles: string
 function resetGameRepo(gameRepoPath: string): void {
   console.log("[retry-loop] Resetting game repo working tree...");
   try {
-    execSync("git checkout -- .", { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
-    execSync("git clean -fd", { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
+    execFileSync("git", ["checkout", "--", "."], { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
+    execFileSync("git", ["clean", "-fd"], { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
 
     // PV2-6.5 AC1: Verify clean state after reset
-    const status = execSync("git status --porcelain", {
+    const status = execFileSync("git", ["status", "--porcelain"], {
       cwd: gameRepoPath,
       encoding: "utf-8",
       timeout: 5_000,
@@ -382,14 +393,16 @@ function cleanBuildArtifacts(gameRepoPath: string): void {
   }
 
   // Also discard any tracked changes in artifact directories
-  try {
-    execSync("git checkout -- DerivedData/ .build/ 2>/dev/null || true", {
-      cwd: gameRepoPath,
-      encoding: "utf-8",
-      timeout: 10_000,
-    });
-  } catch {
-    // Non-fatal — directories may not exist in git
+  for (const dir of artifactDirs) {
+    try {
+      execFileSync("git", ["checkout", "--", dir + "/"], {
+        cwd: gameRepoPath,
+        encoding: "utf-8",
+        timeout: 10_000,
+      });
+    } catch {
+      // Non-fatal — directory may not exist in git
+    }
   }
 
   console.log("[retry-loop] Build artifact cleanup done (" + cleaned + " directories removed)");
