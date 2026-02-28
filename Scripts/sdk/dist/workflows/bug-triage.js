@@ -17,6 +17,7 @@ import { MODELS, TRIAGE_TOOLS, CLASSIFICATION_SET } from "../config.js";
 import { spawnSubagent } from "../lib/subagent.js";
 import { extractJson } from "../lib/json-extract.js";
 import { stripBase64Images } from "../lib/image-extract.js";
+import { sendBillingAlertEmail } from "../lib/notification.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 /** Valid classification values — imported from config.ts (BA-011 AC1: single source of truth) */
@@ -108,10 +109,15 @@ export async function runTriage(input) {
     console.log("=== Triage Results — Report " + reportId + " ===");
     // Validation 1: Subagent completed successfully
     if (!result.success) {
-        if (result.error?.includes("API billing error") || result.responseText?.includes("Credit balance")) {
+        const isBillingError = result.error?.includes("API billing error") || result.responseText?.includes("Credit balance");
+        if (isBillingError) {
             console.error("FAIL: Anthropic API credit balance depleted.");
             console.error("Top up credits at https://console.anthropic.com before retrying.");
             console.error("Pipeline will not retry — this is a billing issue, not a bug.");
+            // Extract issue number from report ID (format: "issue-123")
+            const issueMatch = reportId.match(/issue-(\d+)/);
+            const issueNum = issueMatch ? parseInt(issueMatch[1], 10) : undefined;
+            await sendBillingAlertEmail(result.error ?? "Credit balance is too low", issueNum);
         }
         else {
             console.error("FAIL: Subagent did not complete successfully");

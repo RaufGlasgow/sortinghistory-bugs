@@ -229,11 +229,13 @@ function buildBillingAlertHtml(errorMessage: string, issueNumber?: number): stri
 
     <p style="margin:0 0 20px 0;font-size:14px;color:#444444;line-height:1.6;">The bug pipeline cannot classify, fix, or verify anything until credits are topped up. All incoming bugs will fail at triage.</p>
 
-    <!-- Action button -->
+    <!-- Action buttons -->
     <div style="text-align:center;margin-bottom:16px;">
-      <a href="https://console.anthropic.com/settings/billing" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">Top Up API Credits</a>
+      <a href="https://console.anthropic.com/settings/billing" style="display:inline-block;padding:14px 28px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Top Up API Credits</a>
+      ${issueNumber ? `<a href="https://github.com/RaufGlasgow/sortinghistory-bugs/actions/workflows/bug-analysis.yml" style="display:inline-block;padding:14px 28px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Retry Triage #${issueNumber}</a>` : ""}
     </div>
-    <p style="text-align:center;margin:0;font-size:13px;color:#888888;">console.anthropic.com &rarr; Settings &rarr; Billing</p>
+    <p style="text-align:center;margin:0 0 4px 0;font-size:13px;color:#888888;">console.anthropic.com &rarr; Settings &rarr; Billing</p>
+    ${issueNumber ? `<p style="text-align:center;margin:0;font-size:13px;color:#888888;">Click <strong>Run workflow</strong> and enter issue number <strong>${issueNumber}</strong></p>` : ""}
   </div>
 
   <!-- Footer -->
