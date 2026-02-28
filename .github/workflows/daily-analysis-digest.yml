@@ -459,28 +459,46 @@ jobs:
             SUBJECT="SortingHistory: ${ACTUAL_PR_COUNT} PR(s) ready -- review needed"
           fi
 
-          # Full email HTML
+          # Full email HTML — branded template matching action-needed emails
           EMAIL_HTML="<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>"
-          EMAIL_HTML="${EMAIL_HTML}<body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#fff;\">"
-          EMAIL_HTML="${EMAIL_HTML}<h2 style=\"margin:0 0 4px 0;font-size:20px;color:#1a1a1a;\">Pipeline Digest</h2>"
+          EMAIL_HTML="${EMAIL_HTML}<body style=\"margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f0e8;\">"
+          EMAIL_HTML="${EMAIL_HTML}<div style=\"max-width:600px;margin:0 auto;padding:0;background:#fffdf8;\">"
+
+          # Branded header
+          if [ "$TOTAL_ITEMS" -eq 0 ]; then
+            HEADER_BG="#22863a"
+            HEADER_BADGE="All Clear"
+            HEADER_TITLE="Pipeline Healthy"
+          else
+            HEADER_BG="#8B6914"
+            HEADER_BADGE="Action Needed"
+            HEADER_TITLE="${ANALYZED_COUNT} Bug(s) + ${ACTUAL_PR_COUNT} PR(s) for Review"
+          fi
+          EMAIL_HTML="${EMAIL_HTML}<div style=\"background:${HEADER_BG};padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;\">"
+          EMAIL_HTML="${EMAIL_HTML}<img src=\"https://sortinghistory.com/images/app-icon.png\" alt=\"Sorting History\" style=\"width:80px;height:80px;border-radius:18px;margin-bottom:12px;\">"
+          EMAIL_HTML="${EMAIL_HTML}<div style=\"display:inline-block;padding:4px 14px;background:rgba(0,0,0,0.2);border-radius:20px;margin-bottom:8px;\"><span style=\"color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;\">${HEADER_BADGE}</span></div>"
+          EMAIL_HTML="${EMAIL_HTML}<h1 style=\"color:#ffffff;margin:0;font-size:22px;font-weight:700;\">${HEADER_TITLE}</h1>"
+          EMAIL_HTML="${EMAIL_HTML}</div>"
+
+          # Main content area
+          EMAIL_HTML="${EMAIL_HTML}<div style=\"padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;\">"
 
           if [ "$TOTAL_ITEMS" -eq 0 ]; then
-            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">All clear &mdash; no bugs awaiting review and no PRs pending. Pipeline is healthy.</p>"
+            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:15px;color:#444;line-height:1.6;\">No bugs awaiting review and no PRs pending. The pipeline is running smoothly.</p>"
             if [ "$PENDING_COUNT" -gt 0 ]; then
               EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
             fi
           else
-            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:14px;color:#666;\">${ANALYZED_COUNT} bug(s) + ${ACTUAL_PR_COUNT} PR(s) for your review</p>"
             EMAIL_HTML="${EMAIL_HTML}${ATTENTION_SECTION}"
             EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
 
             if [ "$ANALYZED_COUNT" -gt 0 ]; then
-              EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#1a1a1a;border-bottom:1px solid #e5e7eb;padding-bottom:6px;\">Bugs Awaiting Review</h3>"
+              EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">Bugs Awaiting Review</h3>"
               EMAIL_HTML="${EMAIL_HTML}${BUG_CARDS}"
             fi
 
             if [ "$ACTUAL_PR_COUNT" -gt 0 ]; then
-              EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#1a1a1a;border-bottom:1px solid #e5e7eb;padding-bottom:6px;\">PRs Ready for Review</h3>"
+              EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">PRs Ready for Review</h3>"
               EMAIL_HTML="${EMAIL_HTML}${PR_CARDS}"
             fi
           fi
@@ -494,8 +512,26 @@ jobs:
             fi
           fi
 
-          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin-top:24px;font-size:12px;color:#999;text-align:center;\">SortingHistory Pipeline &bull; <a href=\"https://github.com/RaufGlasgow/Sorting-History/issues\" style=\"color:#0366d6;\">View all issues on GitHub</a></p>"
-          EMAIL_HTML="${EMAIL_HTML}</body></html>"
+          EMAIL_HTML="${EMAIL_HTML}</div>"
+
+          # Branded footer with social links
+          EMAIL_HTML="${EMAIL_HTML}<div style=\"padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;\">"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;\">Sorting History</p>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 12px 0;font-size:13px;color:#777;text-align:center;\">Sort history's greatest moments into the correct order</p>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0;font-size:13px;color:#888;text-align:center;\">"
+          EMAIL_HTML="${EMAIL_HTML}<a href=\"https://sortinghistory.com\" style=\"color:#8B6914;text-decoration:none;\">Website</a>"
+          EMAIL_HTML="${EMAIL_HTML} &nbsp;&middot;&nbsp; <a href=\"https://x.com/SortingHistory\" style=\"color:#8B6914;text-decoration:none;\">X/Twitter</a>"
+          EMAIL_HTML="${EMAIL_HTML} &nbsp;&middot;&nbsp; <a href=\"https://instagram.com/sortinghistory\" style=\"color:#8B6914;text-decoration:none;\">Instagram</a>"
+          EMAIL_HTML="${EMAIL_HTML} &nbsp;&middot;&nbsp; <a href=\"https://youtube.com/@sortinghistory\" style=\"color:#8B6914;text-decoration:none;\">YouTube</a>"
+          EMAIL_HTML="${EMAIL_HTML} &nbsp;&middot;&nbsp; <a href=\"https://bsky.app/profile/sortinghistory.bsky.social\" style=\"color:#8B6914;text-decoration:none;\">Bluesky</a>"
+          EMAIL_HTML="${EMAIL_HTML}</p></div>"
+
+          # Bottom bar
+          EMAIL_HTML="${EMAIL_HTML}<div style=\"padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;\">"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;\">Sorting History &mdash; Learn history by playing it</p>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 4px 0;font-size:11px;\"><a href=\"https://sortinghistory.com\" style=\"color:#999;text-decoration:none;\">sortinghistory.com</a></p>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0;font-size:10px;color:#aaa;\">SortingHistory Pipeline &bull; <a href=\"https://github.com/RaufGlasgow/Sorting-History/issues\" style=\"color:#aaa;text-decoration:none;\">View all issues</a></p>"
+          EMAIL_HTML="${EMAIL_HTML}</div></div></body></html>"
 
           # Write to files for the send step
           echo "$SUBJECT" > /tmp/email_subject.txt
