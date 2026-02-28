@@ -197,6 +197,12 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
       <p style="margin:0;font-weight:700;color:#991b1b;font-size:14px;">${actionMessage}</p>
     </div>
 
+    <!-- Re-engagement guidance -->
+    <div style="padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:24px;">
+      <p style="margin:0 0 6px 0;font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">How to respond</p>
+      <p style="margin:0;font-size:13px;color:#475569;line-height:1.6;">Comment <code style="background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:12px;">/approve</code> on the GitHub issue to trigger an automated fix, or add your assessment and then <code style="background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:12px;">/approve</code> to retry with your guidance.</p>
+    </div>
+
     <!-- Action buttons -->
     <div style="text-align:center;">
       ${actionButtonsHtml}

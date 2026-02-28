@@ -501,6 +501,17 @@ export function generateTriageHandoff(input: TriageOnlyHandoffInput): string {
   sections.push("");
   sections.push(getClassificationGuidance(input.classification));
 
+  // -- Next Steps (re-engagement guidance) --
+  sections.push("");
+  sections.push("## Next Steps");
+  sections.push("");
+  sections.push("Choose one of the following actions:");
+  sections.push("");
+  sections.push("- **Approve for automated fix:** Comment `/approve` on this issue to trigger the fix pipeline");
+  sections.push("- **Provide guidance:** Add a comment with your assessment or correction, then comment `/approve` to retry with your context");
+  sections.push("- **Reclassify:** If the classification above is wrong, comment `/reclassify <type>` (e.g. `/reclassify content_error`)");
+  sections.push("- **Close:** If this is not a real bug, close the issue");
+
   // -- Footer --
   sections.push("");
   sections.push("---");

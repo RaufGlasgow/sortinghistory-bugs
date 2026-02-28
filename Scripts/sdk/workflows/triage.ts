@@ -24,6 +24,7 @@ import { decideRoute, executeRoute, type RoutingInput, type RoutingAction } from
 import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
 import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing-log.js";
 import { shouldSendEmail, sendActionNeededEmail } from "../lib/notification.js";
+import { generateTriageHandoff, postHandoffComment } from "../lib/handoff-generator.js";
 import type { TriageData } from "../lib/types.js";
 
 // ---------------------------------------------------------------------------
@@ -360,6 +361,32 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
     } catch (emailErr: unknown) {
       const emailErrMsg = emailErr instanceof Error ? emailErr.message : String(emailErr);
       console.error("[triage] WARNING: Action email failed (non-fatal): " + emailErrMsg);
+    }
+  }
+
+  // --------------------------------------------------
+  // Step 5b: Post triage handoff for needs-human-review issues
+  // Gives the human a structured document with full context instead of
+  // just a classification comment. Uses the same generateTriageHandoff()
+  // that handoff_to_dev uses.
+  // --------------------------------------------------
+  if (triageResult.classification === "needs_human_review") {
+    try {
+      const handoffMarkdown = generateTriageHandoff({
+        issueNumber,
+        issueTitle: issueData.title,
+        issueBody: issueData.body,
+        classification: triageResult.classification,
+        confidence: triageResult.confidence,
+        severity: triageResult.severity,
+        reasoning: triageResult.reasoning,
+        extractedContext: triageResult.extracted_context,
+      });
+      postHandoffComment(issueNumber, handoffMarkdown);
+      console.log("[triage] Posted triage handoff for needs-human-review issue #" + issueNumber);
+    } catch (handoffErr: unknown) {
+      const handoffErrMsg = handoffErr instanceof Error ? handoffErr.message : String(handoffErr);
+      console.error("[triage] WARNING: Triage handoff generation failed (non-fatal): " + handoffErrMsg);
     }
   }
 

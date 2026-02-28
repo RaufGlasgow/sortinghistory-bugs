@@ -608,6 +608,19 @@ jobs:
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --add-label "fix-generated,pr-created"
 
+      - name: Clean up stale failure labels (full mode success)
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.create-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "fix-failed" 2>/dev/null || true
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "needs-handoff-review" 2>/dev/null || true
+          gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
+            --remove-label "needs-manual-fix" 2>/dev/null || true
+          echo "Cleaned up stale failure labels from issue #${{ env.ISSUE_NUM }}"
+
       - name: Send PR created email
         if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
         working-directory: Scripts/sdk
