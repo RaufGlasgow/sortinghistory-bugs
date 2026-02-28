@@ -94,6 +94,38 @@ function escapeHtml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Strip images, tables, device info, screenshots from issue body for email display.
+ * Shared by Action-Needed, PR Created, and Handoff emails.
+ */
+function stripIssueBody(raw: string, maxLength: number): string {
+  let text = raw
+    .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images
+    .replace(/!\[.*?\]\(https?:\/\/[^)]+\)/g, "[image]") // strip URL images
+    .replace(/\|[^\n]*\|/g, "") // strip markdown tables
+    .replace(/---/g, "")
+    .replace(/## Device Info[\s\S]*?(?=##|$)/, "") // strip device info section
+    .replace(/## Screenshot[\s\S]*?(?=##|$)/, "") // strip screenshot section
+    .replace(/_Submitted via Sorting History app_/, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (text.length > maxLength) {
+    text = text.slice(0, maxLength) + "...";
+  }
+  return text;
+}
+
+/**
+ * Extract a labeled section from issue body (e.g. "**Steps to reproduce:**" ... next section).
+ * Returns the section content or empty string if not found.
+ */
+function extractSection(body: string, label: string): string {
+  const regex = new RegExp(`\\*\\*${label}:\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*[A-Z][^*]*:\\*\\*|##|$)`, "i");
+  const match = body.match(regex);
+  if (!match || !match[1]) return "";
+  return match[1].trim();
+}
+
 function getActionMessage(action: RoutingAction): string {
   switch (action.type) {
     case "handoff_to_dev":
@@ -122,19 +154,7 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   // Build bug description section (truncated to 1000 chars for email)
   let descriptionHtml = "";
   if (input.description) {
-    // Extract just the description text, strip markdown images and device info table
-    let descText = input.description
-      .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images
-      .replace(/\|[^\n]*\|/g, "") // strip markdown tables
-      .replace(/---/g, "")
-      .replace(/## Device Info[\s\S]*?(?=##|$)/, "") // strip device info section
-      .replace(/## Screenshot[\s\S]*?(?=##|$)/, "") // strip screenshot section
-      .replace(/_Submitted via Sorting History app_/, "")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-    if (descText.length > 1000) {
-      descText = descText.slice(0, 1000) + "...";
-    }
+    const descText = stripIssueBody(input.description, 1000);
     const safeDescription = escapeHtml(descText);
     descriptionHtml = `
     <!-- Reporter description -->
@@ -142,6 +162,28 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What The Reporter Said</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDescription}</p>
     </div>`;
+
+    // Extract repro steps and expected behavior for decision-making
+    const reproSteps = extractSection(input.description, "Steps to reproduce");
+    const expectedBehavior = extractSection(input.description, "Expected behavior");
+
+    if (reproSteps) {
+      const safeRepro = escapeHtml(reproSteps.slice(0, 500));
+      descriptionHtml += `
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Steps to Reproduce</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeRepro}</p>
+    </div>`;
+    }
+
+    if (expectedBehavior) {
+      const safeExpected = escapeHtml(expectedBehavior.slice(0, 500));
+      descriptionHtml += `
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#16a34a;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Expected Behavior</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeExpected}</p>
+    </div>`;
+    }
   }
 
   // Generate action button URLs if AUTH_TOKEN is available
@@ -407,6 +449,10 @@ export interface PRCreatedEmailInput {
   fixAttempts: number;
   alphaVersion?: string;
   pipelineMode: string;
+  /** Original issue body — displayed as "What's the bug" in the email */
+  issueBody?: string;
+  /** QA review summary — displayed as "QA Review" in the email */
+  qaSummary?: string;
 }
 
 function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
@@ -432,6 +478,29 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
     ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Fix Attempts</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${input.fixAttempts} (with model escalation)</td></tr>`
     : "";
 
+  // Bug description from issue body
+  let bugDescHtml = "";
+  if (input.issueBody) {
+    const descText = stripIssueBody(input.issueBody, 1000);
+    const safeDesc = escapeHtml(descText);
+    bugDescHtml = `<!-- Bug description -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What's The Bug</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDesc}</p>
+    </div>`;
+  }
+
+  // QA summary
+  let qaSummaryHtml = "";
+  if (input.qaSummary) {
+    const safeQa = escapeHtml(input.qaSummary.slice(0, 2000));
+    qaSummaryHtml = `<!-- QA review -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">QA Review</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeQa}</p>
+    </div>`;
+  }
+
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
   <!-- Header -->
   <div style="background:#166534;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
@@ -449,6 +518,10 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
       <p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug #${input.issueNumber}</p>
       <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${safeTitle}</p>
     </div>
+
+    ${bugDescHtml}
+
+    ${qaSummaryHtml}
 
     <!-- Details table -->
     <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
@@ -565,6 +638,8 @@ export interface HandoffEmailInput {
   modelsUsed: string[];
   /** Link to the handoff comment on GitHub */
   handoffCommentUrl?: string;
+  /** Original issue body — displayed as "What's the bug" in the email */
+  issueBody?: string;
 }
 
 function buildHandoffEmailHtml(input: HandoffEmailInput): string {
@@ -572,6 +647,19 @@ function buildHandoffEmailHtml(input: HandoffEmailInput): string {
   const safeAttemptSummary = escapeHtml(input.attemptSummary);
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
   const modelsText = escapeHtml(input.modelsUsed.join(", ") || "unknown");
+
+  // Bug description from issue body
+  let handoffBugDescHtml = "";
+  if (input.issueBody) {
+    const descText = stripIssueBody(input.issueBody, 1000);
+    const safeDesc = escapeHtml(descText);
+    handoffBugDescHtml = `
+    <!-- Bug description -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What's The Bug</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDesc}</p>
+    </div>`;
+  }
 
   // Comment button URL
   const authToken = process.env.AUTH_TOKEN;
@@ -599,6 +687,8 @@ function buildHandoffEmailHtml(input: HandoffEmailInput): string {
       <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug #${input.issueNumber}</p>
       <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${safeTitle}</p>
     </div>
+
+    ${handoffBugDescHtml}
 
     <!-- What happened -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#fffbeb;border-left:4px solid #d97706;border-radius:4px;">

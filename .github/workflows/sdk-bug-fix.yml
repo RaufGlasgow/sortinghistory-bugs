@@ -621,6 +621,32 @@ jobs:
             --remove-label "needs-manual-fix" 2>/dev/null || true
           echo "Cleaned up stale failure labels from issue #${{ env.ISSUE_NUM }}"
 
+      - name: Fetch issue body for email context
+        id: issue-body
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Fetch issue body and truncate for email safety (max 2000 chars)
+          BODY=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}" --jq '.body // ""' 2>/dev/null || echo "")
+          TRUNCATED="${BODY:0:2000}"
+          # Write to file to avoid shell quoting issues
+          printf '%s' "$TRUNCATED" > /tmp/issue-body.txt
+          echo "has_body=true" >> $GITHUB_OUTPUT
+
+      - name: Read QA summary for email context
+        id: qa-for-email
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
+        run: |
+          QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
+          if [ -f "$QA_SUMMARY_FILE" ]; then
+            # Truncate QA summary to 3000 chars for email
+            head -c 3000 "$QA_SUMMARY_FILE" > /tmp/qa-summary-email.txt
+            echo "has_qa=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_qa=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Send PR created email
         if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
         working-directory: Scripts/sdk
@@ -638,6 +664,8 @@ jobs:
           FIX_ATTEMPTS: ${{ steps.fix.outputs.fix_attempts }}
           ALPHA_VERSION: ${{ steps.bump-version.outputs.ALPHA_VERSION }}
           PIPELINE_MODE: ${{ env.PIPELINE_MODE }}
+          ISSUE_BODY_FILE: /tmp/issue-body.txt
+          QA_SUMMARY_FILE: /tmp/qa-summary-email.txt
         run: node dist/send-pr-email.js
         continue-on-error: true
 

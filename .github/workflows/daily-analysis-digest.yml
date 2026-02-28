@@ -355,27 +355,70 @@ jobs:
                 ISSUE_NUM=$(echo "$PR_BRANCH" | sed 's/fix\/\(sdk-\)\?bug-//')
               fi
 
-              # Fetch issue title if we have an issue number
+              # Fetch issue title and body if we have an issue number
               ISSUE_TITLE=""
+              ISSUE_BODY_RAW=""
               if [ -n "$ISSUE_NUM" ]; then
                 ISSUE_TITLE=$(gh api "repos/RaufGlasgow/Sorting-History/issues/$ISSUE_NUM" --jq '.title' 2>/dev/null || echo "")
+                ISSUE_BODY_RAW=$(gh api "repos/RaufGlasgow/Sorting-History/issues/$ISSUE_NUM" --jq '.body // ""' 2>/dev/null || echo "")
               fi
 
-              # Check if PR body has ## Bug section (BA-009.2 format)
-              HAS_STRUCTURED_BODY=false
+              # Strip images, tables, device info, screenshots from issue body for email display
+              ISSUE_DESC=""
+              if [ -n "$ISSUE_BODY_RAW" ]; then
+                ISSUE_DESC=$(printf '%s' "$ISSUE_BODY_RAW" \
+                  | sed 's/!\[.*\](data:image\/[^)]*)/[screenshot]/g' \
+                  | sed '/^|.*|$/d' \
+                  | sed '/^---$/d' \
+                  | sed '/^## Device Info/,/^##/{/^## Device Info/d;/^##/!d;}' \
+                  | sed '/^## Screenshot/,/^##/{/^## Screenshot/d;/^##/!d;}' \
+                  | sed '/_Submitted via Sorting History app_/d' \
+                  | sed '/^$/N;/^\n$/d' \
+                  | head -c 500)
+                # Append ellipsis if truncated
+                if [ ${#ISSUE_BODY_RAW} -gt 500 ]; then
+                  ISSUE_DESC="${ISSUE_DESC}..."
+                fi
+              fi
+              SAFE_ISSUE_DESC=$(html_escape "$ISSUE_DESC")
+
+              # Check PR body format: BA-009.2 (## Bug) or SDK (## SDK Bug Fix)
+              PR_BODY_FORMAT="none"
               if echo "$PR_BODY" | grep -q '^## Bug'; then
-                HAS_STRUCTURED_BODY=true
+                PR_BODY_FORMAT="ba009"
+              elif echo "$PR_BODY" | grep -q '^## SDK Bug Fix'; then
+                PR_BODY_FORMAT="sdk"
               fi
 
               # Escaped values for HTML
               SAFE_PR_TITLE=$(html_escape "$PR_TITLE")
               SAFE_ISSUE_TITLE=$(html_escape "$ISSUE_TITLE")
 
-              if [ "$HAS_STRUCTURED_BODY" = "true" ]; then
-                # Parse structured PR body sections
+              # Build action buttons (shared across all formats)
+              if [ -n "$ISSUE_NUM" ]; then
+                PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
+              else
+                PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
+              fi
+
+              # Build bug reference line (shared)
+              BUG_LINE=""
+              if [ -n "$ISSUE_NUM" ] && [ -n "$ISSUE_TITLE" ]; then
+                BUG_LINE="Fixes: Bug #${ISSUE_NUM} (${SAFE_ISSUE_TITLE})"
+              elif [ -n "$ISSUE_NUM" ]; then
+                BUG_LINE="Fixes: Bug #${ISSUE_NUM}"
+              fi
+
+              # Build bug description HTML block (shared across all formats)
+              BUG_DESC_HTML=""
+              if [ -n "$SAFE_ISSUE_DESC" ]; then
+                BUG_DESC_HTML="<div style=\"margin-bottom:12px;padding:10px 12px;background:#f0f7ff;border-left:3px solid #2563eb;border-radius:4px;\"><strong style=\"font-size:12px;color:#2563eb;text-transform:uppercase;letter-spacing:0.5px;\">WHAT'S THE BUG:</strong><p style=\"margin:4px 0 0 0;font-size:13px;color:#333333;line-height:1.5;white-space:pre-line;\">${SAFE_ISSUE_DESC}</p></div>"
+              fi
+
+              if [ "$PR_BODY_FORMAT" = "ba009" ]; then
+                # Parse structured PR body sections (BA-009.2 format)
                 RISK_SECTION=$(printf '%s' "$PR_BODY" | sed -n '/^## Risk/,/^## /{ /^## Risk/d; /^## /d; p; }')
                 RISK_LEVEL=$(printf '%s' "$RISK_SECTION" | grep '^\*\*Level:\*\*' | sed 's/\*\*Level:\*\* *//')
-                RISK_REASON=$(printf '%s' "$RISK_SECTION" | grep '^\*\*Reason:\*\*' | sed 's/\*\*Reason:\*\* *//')
 
                 HOW_TO_TEST=$(printf '%s' "$PR_BODY" | sed -n '/^## How to Test/,/^## /{ /^## How to Test/d; /^## /d; p; }')
                 FILES_CHANGED=$(printf '%s' "$PR_BODY" | sed -n '/^## Files Changed/,/^## /{ /^## Files Changed/d; /^## /d; p; }')
@@ -383,46 +426,56 @@ jobs:
 
                 FIX_TYPE=$(printf '%s' "$HOW_TO_TEST" | grep '^\*\*Fix type:\*\*' | sed 's/\*\*Fix type:\*\* *//')
 
-                # Escape all parsed content
                 SAFE_RISK_LEVEL=$(html_escape "${RISK_LEVEL:-Unknown}")
                 SAFE_FIX_TYPE=$(html_escape "${FIX_TYPE:-unknown}")
                 SAFE_FILES=$(html_escape "$FILES_CHANGED")
                 SAFE_HOW_TO_TEST=$(html_escape "$HOW_TO_TEST")
                 SAFE_BUILD_TESTS=$(html_escape "${BUILD_TESTS:-See PR for details}")
 
-                # Build bug reference line
-                BUG_LINE=""
-                if [ -n "$ISSUE_NUM" ] && [ -n "$ISSUE_TITLE" ]; then
-                  BUG_LINE="Fixes: Bug #${ISSUE_NUM} (${SAFE_ISSUE_TITLE})"
-                elif [ -n "$ISSUE_NUM" ]; then
-                  BUG_LINE="Fixes: Bug #${ISSUE_NUM}"
-                fi
-
-                # Build action buttons
-                if [ -n "$ISSUE_NUM" ]; then
-                  PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
-                else
-                  PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
-                fi
-
                 PR_CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">PR #${PR_NUM} &mdash; ${SAFE_PR_TITLE}</h3>"
                 if [ -n "$BUG_LINE" ]; then
                   PR_CARD="${PR_CARD}<p style=\"margin:0 0 8px 0;color:#6b7280;font-size:14px;\">${BUG_LINE}</p>"
                 fi
+                PR_CARD="${PR_CARD}${BUG_DESC_HTML}"
                 PR_CARD="${PR_CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#374151;\">Type: ${SAFE_FIX_TYPE} | Risk: ${SAFE_RISK_LEVEL}</p>"
                 PR_CARD="${PR_CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">WHAT CHANGED:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_FILES}</pre></div>"
                 PR_CARD="${PR_CARD}<p style=\"margin:0 0 12px 0;font-size:13px;color:#374151;\"><strong>BUILD &amp; TESTS:</strong> ${SAFE_BUILD_TESTS}</p>"
                 PR_CARD="${PR_CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">HOW TO TEST:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_HOW_TO_TEST}</pre></div>"
                 PR_CARD="${PR_CARD}<div style=\"margin-top:12px;\">${PR_ACTIONS}</div></div>"
-              else
-                # Fallback: no structured body
-                if [ -n "$ISSUE_NUM" ]; then
-                  PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
-                else
-                  PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
-                fi
 
-                PR_CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">PR #${PR_NUM} &mdash; ${SAFE_PR_TITLE}</h3><p style=\"margin:0 0 12px 0;font-size:14px;color:#6b7280;\">See PR for details: <a href=\"${PR_URL}\" style=\"color:#2563eb;\">${PR_URL}</a></p><div style=\"margin-top:12px;\">${PR_ACTIONS}</div></div>"
+              elif [ "$PR_BODY_FORMAT" = "sdk" ]; then
+                # Parse SDK bug fix PR body format (## SDK Bug Fix)
+                SDK_COMPILATION=$(printf '%s' "$PR_BODY" | grep '^\*\*Compilation:\*\*' | head -1 | sed 's/\*\*Compilation:\*\* *//')
+                SDK_CONFIDENCE=$(printf '%s' "$PR_BODY" | grep '^\*\*Confidence:\*\*' | head -1 | sed 's/\*\*Confidence:\*\* *//')
+                SDK_FILES=$(printf '%s' "$PR_BODY" | sed -n '/^```$/,/^```$/{/^```$/d;p;}' | head -20)
+                # Extract QA summary (text between --- markers)
+                SDK_QA=$(printf '%s' "$PR_BODY" | sed -n '/^---$/,/^---$/{/^---$/d;p;}' | head -20)
+
+                SAFE_SDK_COMPILATION=$(html_escape "${SDK_COMPILATION:-unknown}")
+                SAFE_SDK_CONFIDENCE=$(html_escape "${SDK_CONFIDENCE:-unknown}")
+                SAFE_SDK_FILES=$(html_escape "${SDK_FILES:-See PR for details}")
+                SAFE_SDK_QA=$(html_escape "${SDK_QA:-See PR for details}")
+
+                PR_CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">PR #${PR_NUM} &mdash; ${SAFE_PR_TITLE}</h3>"
+                if [ -n "$BUG_LINE" ]; then
+                  PR_CARD="${PR_CARD}<p style=\"margin:0 0 8px 0;color:#6b7280;font-size:14px;\">${BUG_LINE}</p>"
+                fi
+                PR_CARD="${PR_CARD}${BUG_DESC_HTML}"
+                PR_CARD="${PR_CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#374151;\">Compilation: ${SAFE_SDK_COMPILATION} | Confidence: ${SAFE_SDK_CONFIDENCE}</p>"
+                PR_CARD="${PR_CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">FILES CHANGED:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_SDK_FILES}</pre></div>"
+                if [ -n "$SDK_QA" ]; then
+                  PR_CARD="${PR_CARD}<div style=\"margin-bottom:12px;\"><strong style=\"font-size:13px;color:#374151;\">QA REVIEW:</strong><pre style=\"background:#f9fafb;padding:8px;border-radius:4px;font-size:12px;overflow-x:auto;white-space:pre-wrap;margin:4px 0;\">${SAFE_SDK_QA}</pre></div>"
+                fi
+                PR_CARD="${PR_CARD}<div style=\"margin-top:12px;\">${PR_ACTIONS}</div></div>"
+
+              else
+                # Fallback: no structured body — still show bug description if available
+                PR_CARD="<div style=\"border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px;background:#ffffff;\"><h3 style=\"margin:0 0 8px 0;font-size:16px;color:#111827;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">PR #${PR_NUM} &mdash; ${SAFE_PR_TITLE}</h3>"
+                if [ -n "$BUG_LINE" ]; then
+                  PR_CARD="${PR_CARD}<p style=\"margin:0 0 8px 0;color:#6b7280;font-size:14px;\">${BUG_LINE}</p>"
+                fi
+                PR_CARD="${PR_CARD}${BUG_DESC_HTML}"
+                PR_CARD="${PR_CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#6b7280;\">See PR for full details: <a href=\"${PR_URL}\" style=\"color:#2563eb;\">${PR_URL}</a></p><div style=\"margin-top:12px;\">${PR_ACTIONS}</div></div>"
               fi
 
               PR_CARDS="${PR_CARDS}${PR_CARD}"

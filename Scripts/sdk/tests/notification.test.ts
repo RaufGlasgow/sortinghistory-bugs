@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { shouldSendEmail, sendActionNeededEmail, sendPRCreatedEmail } from "../lib/notification.js";
+import { shouldSendEmail, sendActionNeededEmail, sendPRCreatedEmail, sendHandoffEmail } from "../lib/notification.js";
 import type { RoutingAction } from "../lib/routing.js";
 
 // ---------------------------------------------------------------------------
@@ -286,6 +286,79 @@ describe("sendPRCreatedEmail", () => {
       confidence: "high",
       fixAttempts: 0,
       pipelineMode: "qa-only",
+    });
+  });
+
+  it("does not throw with issueBody and qaSummary", async () => {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.OWNER_EMAIL;
+
+    await sendPRCreatedEmail({
+      issueNumber: 116,
+      issueTitle: "Help bubbles appearing simultaneously",
+      prNumber: 117,
+      prUrl: "https://github.com/RaufGlasgow/Sorting-History/pull/117",
+      filesModified: "Views/GameSetupView.swift",
+      compilation: "success",
+      confidence: "high",
+      fixAttempts: 1,
+      pipelineMode: "full",
+      issueBody: "## Bug Description\n\nHelp bubbles keep appearing.\n\n**Steps to reproduce:**\n1. Open app\n2. Start game\n\n**Expected behavior:**\nOnly one bubble at a time",
+      qaSummary: "## QA Review\n\nFix correctly addresses the issue. Compilation passes. No regressions found.",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendHandoffEmail tests (env var handling + optional issueBody)
+// ---------------------------------------------------------------------------
+
+describe("sendHandoffEmail", () => {
+  let origResend: string | undefined;
+  let origOwner: string | undefined;
+
+  beforeEach(() => {
+    origResend = process.env.RESEND_API_KEY;
+    origOwner = process.env.OWNER_EMAIL;
+  });
+
+  afterEach(() => {
+    if (origResend !== undefined) {
+      process.env.RESEND_API_KEY = origResend;
+    } else {
+      delete process.env.RESEND_API_KEY;
+    }
+    if (origOwner !== undefined) {
+      process.env.OWNER_EMAIL = origOwner;
+    } else {
+      delete process.env.OWNER_EMAIL;
+    }
+  });
+
+  it("does not throw when env vars are missing", async () => {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.OWNER_EMAIL;
+
+    await sendHandoffEmail({
+      issueNumber: 120,
+      issueTitle: "Some complex bug",
+      totalAttempts: 3,
+      attemptSummary: "Attempt 1: failed\nAttempt 2: failed\nAttempt 3: failed",
+      modelsUsed: ["sonnet", "opus"],
+    });
+  });
+
+  it("does not throw with issueBody", async () => {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.OWNER_EMAIL;
+
+    await sendHandoffEmail({
+      issueNumber: 120,
+      issueTitle: "Some complex bug",
+      totalAttempts: 3,
+      attemptSummary: "Attempt 1: failed\nAttempt 2: failed\nAttempt 3: failed",
+      modelsUsed: ["sonnet", "opus"],
+      issueBody: "## Bug Description\nThe app crashes when loading.\n\n**Steps to reproduce:**\n1. Tap play\n2. Wait\n\n**Expected behavior:**\nGame loads",
     });
   });
 });

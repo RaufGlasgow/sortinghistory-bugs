@@ -1473,6 +1473,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       totalAttempts: maxAttempts,
       attemptSummary: attemptSummaryLines.join("\n"),
       modelsUsed: [...new Set(modelsUsed.map(m => m.model))],
+      issueBody: input.issueBody,
     });
   } catch (err: unknown) {
     // Fire-and-forget — don't let email failure break the return
