@@ -212,7 +212,7 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
           result.responseText = (resultMsg as SDKResultSuccess).result;
         } else {
           const errorResult = resultMsg as SDKResultError;
-          result.error = errorResult.errors?.join("; ") ?? `Subagent error: ${errorResult.subtype}`;
+          result.error = errorResult.errors?.join("; ") || `Subagent error: ${errorResult.subtype}`;
         }
       }
     }

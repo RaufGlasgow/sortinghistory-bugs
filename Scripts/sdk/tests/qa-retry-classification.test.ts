@@ -32,6 +32,22 @@ describe("qa-retry-classification: retryable errors", () => {
   it('"HTTP 502 Bad Gateway" → retryable', () => {
     assert.equal(isRetryableQAError("HTTP 502 Bad Gateway"), true);
   });
+
+  it('"Claude Code process exited with code 1" → retryable', () => {
+    assert.equal(isRetryableQAError("Claude Code process exited with code 1"), true);
+  });
+
+  it('"spawnSync /bin/sh ENOBUFS" → retryable', () => {
+    assert.equal(isRetryableQAError("spawnSync /bin/sh ENOBUFS"), true);
+  });
+
+  it("empty string → retryable (unknown transient failure)", () => {
+    assert.equal(isRetryableQAError(""), true);
+  });
+
+  it("short error → retryable (unknown transient failure)", () => {
+    assert.equal(isRetryableQAError("error"), true);
+  });
 });
 
 describe("qa-retry-classification: billing errors (never retryable)", () => {
@@ -69,10 +85,6 @@ describe("qa-retry-classification: non-retryable errors", () => {
       isRetryableQAError("Invalid config: qaProfile must be code or content"),
       false,
     );
-  });
-
-  it("empty string → not retryable", () => {
-    assert.equal(isRetryableQAError(""), false);
   });
 
   it('"Unexpected JSON parse error in response" → not retryable', () => {

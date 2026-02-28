@@ -67,6 +67,9 @@ const RETRYABLE_ERROR_PATTERNS: readonly string[] = [
   "rate limit",
   "rate_limit",
   "ECONNREFUSED",
+  "ENOBUFS",
+  "exited with code",
+  "process exited",
 ];
 
 /** Patterns that indicate an API billing/quota error — never retryable */
@@ -179,6 +182,12 @@ interface AttemptState {
  * (missing prompt file, invalid config) fall through immediately.
  */
 export function isRetryableQAError(errorMessage: string): boolean {
+  // Empty or very short errors are unknown transient failures — retryable.
+  // Known non-retryable errors (billing, missing config) always produce longer messages.
+  if (errorMessage.trim().length < 10) {
+    return true;
+  }
+
   const lower = errorMessage.toLowerCase();
 
   // Check string patterns
