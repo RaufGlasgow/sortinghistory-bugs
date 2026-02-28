@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { shouldSendEmail, sendActionNeededEmail } from "../lib/notification.js";
+import { shouldSendEmail, sendActionNeededEmail, sendPRCreatedEmail } from "../lib/notification.js";
 import type { RoutingAction } from "../lib/routing.js";
 
 // ---------------------------------------------------------------------------
@@ -208,5 +208,84 @@ describe("sendActionNeededEmail", () => {
       },
       action,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendPRCreatedEmail tests (env var handling)
+// ---------------------------------------------------------------------------
+
+describe("sendPRCreatedEmail", () => {
+  let origResend: string | undefined;
+  let origOwner: string | undefined;
+
+  beforeEach(() => {
+    origResend = process.env.RESEND_API_KEY;
+    origOwner = process.env.OWNER_EMAIL;
+  });
+
+  afterEach(() => {
+    if (origResend !== undefined) {
+      process.env.RESEND_API_KEY = origResend;
+    } else {
+      delete process.env.RESEND_API_KEY;
+    }
+    if (origOwner !== undefined) {
+      process.env.OWNER_EMAIL = origOwner;
+    } else {
+      delete process.env.OWNER_EMAIL;
+    }
+  });
+
+  it("does not throw when RESEND_API_KEY is missing", async () => {
+    delete process.env.RESEND_API_KEY;
+    process.env.OWNER_EMAIL = "test@example.com";
+
+    await sendPRCreatedEmail({
+      issueNumber: 116,
+      issueTitle: "Help bubbles appearing simultaneously",
+      prNumber: 117,
+      prUrl: "https://github.com/RaufGlasgow/Sorting-History/pull/117",
+      filesModified: "Views/GameSetupView.swift",
+      compilation: "success",
+      confidence: "high",
+      fixAttempts: 1,
+      pipelineMode: "full",
+    });
+  });
+
+  it("does not throw when OWNER_EMAIL is missing", async () => {
+    process.env.RESEND_API_KEY = "re_test_key";
+    delete process.env.OWNER_EMAIL;
+
+    await sendPRCreatedEmail({
+      issueNumber: 116,
+      issueTitle: "Help bubbles appearing simultaneously",
+      prNumber: 117,
+      prUrl: "https://github.com/RaufGlasgow/Sorting-History/pull/117",
+      filesModified: "Views/GameSetupView.swift",
+      compilation: "success",
+      confidence: "high",
+      fixAttempts: 2,
+      alphaVersion: "207",
+      pipelineMode: "full",
+    });
+  });
+
+  it("does not throw for qa-only mode", async () => {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.OWNER_EMAIL;
+
+    await sendPRCreatedEmail({
+      issueNumber: 116,
+      issueTitle: "Help bubbles appearing simultaneously",
+      prNumber: 117,
+      prUrl: "https://github.com/RaufGlasgow/Sorting-History/pull/117",
+      filesModified: "Views/GameSetupView.swift",
+      compilation: "success",
+      confidence: "high",
+      fixAttempts: 0,
+      pipelineMode: "qa-only",
+    });
   });
 });

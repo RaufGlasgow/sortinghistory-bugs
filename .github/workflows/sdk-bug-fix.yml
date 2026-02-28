@@ -434,6 +434,7 @@ jobs:
 
           # Fetch issue title
           ISSUE_TITLE=$(gh api repos/RaufGlasgow/Sorting-History/issues/${ISSUE_NUM} --jq '.title')
+          echo "issue_title=$ISSUE_TITLE" >> $GITHUB_OUTPUT
 
           # BA-010.3: Only close existing PR on retry or manual dispatch
           EXISTING_PR=$(gh pr list --head "$BRANCH" --repo RaufGlasgow/Sorting-History --json number -q '.[0].number' 2>/dev/null || true)
@@ -606,6 +607,26 @@ jobs:
         run: |
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --add-label "fix-generated,pr-created"
+
+      - name: Send PR created email
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
+        working-directory: Scripts/sdk
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          PR_URL: ${{ steps.create-pr.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.create-pr.outputs.pr_number }}
+          ISSUE_NUMBER: ${{ env.ISSUE_NUM }}
+          ISSUE_TITLE: ${{ steps.create-pr.outputs.issue_title }}
+          FILES_MODIFIED: ${{ steps.fix.outputs.files_modified }}
+          COMPILATION: ${{ steps.fix.outputs.compilation }}
+          CONFIDENCE: ${{ steps.fix.outputs.confidence }}
+          FIX_ATTEMPTS: ${{ steps.fix.outputs.fix_attempts }}
+          ALPHA_VERSION: ${{ steps.bump-version.outputs.ALPHA_VERSION }}
+          PIPELINE_MODE: ${{ env.PIPELINE_MODE }}
+        run: node dist/send-pr-email.js
+        continue-on-error: true
 
       # PV2-4.4 AC3f: Remove escalation labels on qa-only success
       - name: Remove escalation labels (qa-only success)

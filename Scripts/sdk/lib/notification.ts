@@ -387,6 +387,165 @@ export async function sendActionNeededEmail(
 }
 
 // ---------------------------------------------------------------------------
+// PR Created notification email
+// ---------------------------------------------------------------------------
+
+export interface PRCreatedEmailInput {
+  issueNumber: number;
+  issueTitle: string;
+  prNumber: number;
+  prUrl: string;
+  filesModified: string;
+  compilation: string;
+  confidence: string;
+  fixAttempts: number;
+  alphaVersion?: string;
+  pipelineMode: string;
+}
+
+function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
+  const safeTitle = escapeHtml(input.issueTitle);
+  const safeFiles = escapeHtml(input.filesModified);
+  const safeCompilation = escapeHtml(input.compilation);
+  const safeConfidence = escapeHtml(input.confidence);
+  const modeLabel = input.pipelineMode === "qa-only" ? " (QA-Only Re-Run)" : "";
+
+  const authToken = process.env.AUTH_TOKEN;
+  let rejectButtonHtml = "";
+  if (authToken) {
+    const encodedToken = encodeURIComponent(authToken);
+    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject Fix</a>`;
+  }
+
+  const versionHtml = input.alphaVersion
+    ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Test Version</td><td style="padding:8px 12px;font-size:14px;color:#333333;">1.1.0-alpha.${escapeHtml(input.alphaVersion)}</td></tr>`
+    : "";
+
+  const retryHtml = input.fixAttempts > 1
+    ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Fix Attempts</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${input.fixAttempts} (with model escalation)</td></tr>`
+    : "";
+
+  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+  <!-- Header -->
+  <div style="background:#166534;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+    <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+    <div style="display:inline-block;padding:4px 14px;background:#15803d;border-radius:20px;margin-bottom:8px;">
+      <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">PR Ready</span>
+    </div>
+    <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">PR #${input.prNumber} Ready for Review${modeLabel}</h1>
+  </div>
+
+  <!-- Main content -->
+  <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <!-- Bug title -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #22c55e;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug #${input.issueNumber}</p>
+      <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${safeTitle}</p>
+    </div>
+
+    <!-- Details table -->
+    <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+      <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#f0fdf4;color:#166534;font-size:13px;">Compilation</td><td style="padding:8px 12px;background:#f0fdf4;font-size:14px;color:#333333;">${safeCompilation}</td></tr>
+      <tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Confidence</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${safeConfidence}</td></tr>
+      ${retryHtml}
+      ${versionHtml}
+    </table>
+
+    <!-- Files modified -->
+    <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#166534;text-transform:uppercase;letter-spacing:0.5px;">Files Modified</p>
+    <div style="margin:0 0 24px 0;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;font-family:monospace;font-size:13px;color:#334155;line-height:1.8;white-space:pre-line;overflow-wrap:break-word;">${safeFiles}</div>
+
+    <!-- Action callout -->
+    <div style="padding:14px 16px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;margin-bottom:24px;">
+      <p style="margin:0;font-weight:700;color:#166534;font-size:14px;">The pipeline has generated a fix and it passed QA review. Please review and merge, or reject if incorrect.</p>
+    </div>
+
+    <!-- Action buttons -->
+    <div style="text-align:center;">
+      <a href="${input.prUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Review PR #${input.prNumber}</a>
+      ${rejectButtonHtml}
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+    <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+    <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+    <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+      <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://youtube.com/@sortinghistory" style="color:#8B6914;text-decoration:none;">YouTube</a>
+      &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+      <a href="https://bsky.app/profile/sortinghistory.bsky.social" style="color:#8B6914;text-decoration:none;">Bluesky</a>
+    </p>
+  </div>
+
+  <!-- Bottom bar -->
+  <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+    <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+    <p style="margin:0 0 4px 0;font-size:11px;"><a href="https://sortinghistory.com" style="color:#999999;text-decoration:none;">sortinghistory.com</a></p>
+    <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; PR notification</p>
+  </div>
+</div>`;
+}
+
+/**
+ * Send a "PR Created" email when the pipeline successfully creates a PR.
+ *
+ * Fire-and-forget: catches all errors so the pipeline can continue cleanly.
+ */
+export async function sendPRCreatedEmail(
+  input: PRCreatedEmailInput,
+): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  const ownerEmail = process.env.OWNER_EMAIL;
+
+  if (!apiKey) {
+    console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping PR created email");
+    return;
+  }
+  if (!ownerEmail) {
+    console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping PR created email");
+    return;
+  }
+
+  const modeLabel = input.pipelineMode === "qa-only" ? " [QA re-run]" : "";
+  const subject = `PR #${input.prNumber} Ready: Fix for #${input.issueNumber}${modeLabel}`;
+  const html = buildPRCreatedEmailHtml(input);
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+        to: [ownerEmail],
+        subject,
+        html,
+      }),
+    });
+
+    if (response.ok) {
+      console.log("[notification] PR created email sent for PR #" + input.prNumber + " (issue #" + input.issueNumber + ")");
+    } else {
+      const errorText = await response.text();
+      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+    }
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[notification] Failed to send PR created email: " + errMsg);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Handoff notification email
 // ---------------------------------------------------------------------------
 
