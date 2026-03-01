@@ -33,7 +33,7 @@ jobs:
           PR_BODY=$(gh pr view "$PR_NUM" --repo "$PRIVATE_REPO" --json body -q .body)
 
           # Extract issue number from "Fixes #XX" pattern (portable — no grep -P)
-          ISSUE_NUM=$(echo "$PR_BODY" | grep -o 'Fixes #[0-9]*' | head -1 | grep -o '[0-9]*')
+          ISSUE_NUM=$(echo "$PR_BODY" | grep -oE 'Fixes (RaufGlasgow/Sorting-History)?#[0-9]+' | head -1 | grep -o '[0-9]*')
 
           if [ -z "$ISSUE_NUM" ]; then
             echo "WARNING: Could not extract issue number from PR body"
@@ -75,7 +75,7 @@ jobs:
 
           # The attempt count is determined in a later step, but we need
           # to know it now for the dynamic comment. Count rejections inline.
-          ISSUE_NUM_FROM_PR=$(gh pr view "$PR_NUM" --repo "$PRIVATE_REPO" --json body -q .body | grep -o 'Fixes #[0-9]*' | head -1 | grep -o '[0-9]*' || true)
+          ISSUE_NUM_FROM_PR=$(gh pr view "$PR_NUM" --repo "$PRIVATE_REPO" --json body -q .body | grep -oE 'Fixes (RaufGlasgow/Sorting-History)?#[0-9]+' | head -1 | grep -o '[0-9]*' || true)
 
           # Count previous rejections to determine current attempt
           if [ -n "$ISSUE_NUM_FROM_PR" ]; then
