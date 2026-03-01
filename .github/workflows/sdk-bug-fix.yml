@@ -627,11 +627,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
-          # Fetch issue body and truncate for email safety (max 2000 chars)
+          # Fetch full issue body for email context (stripIssueBody in TypeScript handles size limits)
           BODY=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}" --jq '.body // ""' 2>/dev/null || echo "")
-          TRUNCATED="${BODY:0:2000}"
           # Write to file to avoid shell quoting issues
-          printf '%s' "$TRUNCATED" > /tmp/issue-body.txt
+          printf '%s' "$BODY" > /tmp/issue-body.txt
           echo "has_body=true" >> $GITHUB_OUTPUT
 
       - name: Read QA summary for email context
@@ -640,8 +639,8 @@ jobs:
         run: |
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
           if [ -f "$QA_SUMMARY_FILE" ]; then
-            # Truncate QA summary to 3000 chars for email
-            head -c 3000 "$QA_SUMMARY_FILE" > /tmp/qa-summary-email.txt
+            # Pass full QA summary — TypeScript handles size limits for email
+            cp "$QA_SUMMARY_FILE" /tmp/qa-summary-email.txt
             echo "has_qa=true" >> $GITHUB_OUTPUT
           else
             echo "has_qa=false" >> $GITHUB_OUTPUT

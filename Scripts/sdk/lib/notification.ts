@@ -110,7 +110,7 @@ function stripIssueBody(raw: string, maxLength: number): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   if (text.length > maxLength) {
-    text = text.slice(0, maxLength) + "...";
+    text = text.slice(0, maxLength) + "\n\n[Truncated for email — full text on GitHub issue]";
   }
   return text;
 }
@@ -154,7 +154,7 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   // Build bug description section (truncated to 1000 chars for email)
   let descriptionHtml = "";
   if (input.description) {
-    const descText = stripIssueBody(input.description, 1000);
+    const descText = stripIssueBody(input.description, 8000);
     const safeDescription = escapeHtml(descText);
     descriptionHtml = `
     <!-- Reporter description -->
@@ -481,7 +481,7 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   // Bug description from issue body
   let bugDescHtml = "";
   if (input.issueBody) {
-    const descText = stripIssueBody(input.issueBody, 1000);
+    const descText = stripIssueBody(input.issueBody, 8000);
     const safeDesc = escapeHtml(descText);
     bugDescHtml = `<!-- Bug description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
@@ -493,7 +493,10 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   // QA summary
   let qaSummaryHtml = "";
   if (input.qaSummary) {
-    const safeQa = escapeHtml(input.qaSummary.slice(0, 2000));
+    const qaTruncated = input.qaSummary.length > 8000
+      ? input.qaSummary.slice(0, 8000) + "\n\n[Truncated for email — full QA summary on GitHub PR]"
+      : input.qaSummary;
+    const safeQa = escapeHtml(qaTruncated);
     qaSummaryHtml = `<!-- QA review -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">QA Review</p>
@@ -651,7 +654,7 @@ function buildHandoffEmailHtml(input: HandoffEmailInput): string {
   // Bug description from issue body
   let handoffBugDescHtml = "";
   if (input.issueBody) {
-    const descText = stripIssueBody(input.issueBody, 1000);
+    const descText = stripIssueBody(input.issueBody, 8000);
     const safeDesc = escapeHtml(descText);
     handoffBugDescHtml = `
     <!-- Bug description -->
