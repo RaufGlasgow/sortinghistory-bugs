@@ -45,10 +45,10 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     },
   },
 
-  // --- route-2: translation_error -> label + state (AC-2) ---
+  // --- route-2: translation_error -> dispatch sdk-translation-fix (BA-008.2 AC1) ---
   {
     id: "route-2",
-    description: "translation_error routes to label + workflow state",
+    description: "translation_error routes to sdk-translation-fix dispatch",
     input: {
       classification: "translation_error",
       severity: "P3",
@@ -57,10 +57,11 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
       issue_number: 43,
     },
     expected: {
-      type: "label_and_state",
-      repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_TRANSLATION_ERROR, ROUTING.LABEL_ROUTED],
-      workflow_type: "translation_verification",
+      type: "dispatch",
+      event_type: ROUTING.DISPATCH_TRANSLATION_FIX,
+      repo: ROUTING.PUBLIC_REPO,
+      payload_keys: ["workflow_type", "language", "issue_number"],
+      payload_values: { workflow_type: "translation_verification", language: "German", issue_number: 43 },
     },
   },
 

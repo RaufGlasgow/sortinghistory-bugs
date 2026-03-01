@@ -81,10 +81,10 @@ const VALIDATION_CASES: ValidationCase[] = [
     id: 4,
     description: "In the German translation of Ancient Civilizations, 'vereint' should be 'vereinigt'",
     expected_classification: ["translation_error"],
-    expected_route_type: ["label_and_state"],
+    expected_route_type: ["dispatch"],
     required_labels: [ROUTING.LABEL_ROUTED, ROUTING.LABEL_TRANSLATION_ERROR],
     forbidden_labels: [],
-    expect_dispatch: false,
+    expect_dispatch: true,
     expect_handoff: false,
   },
   {

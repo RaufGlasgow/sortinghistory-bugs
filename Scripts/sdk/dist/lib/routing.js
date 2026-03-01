@@ -113,17 +113,24 @@ function routeByClassification(classification, input) {
             };
         }
         case "translation_error": {
-            // AC-2: label + state file for translation queue
-            const category = (typeof input.extracted_context.category === "string" && input.extracted_context.category !== "")
-                ? input.extracted_context.category
-                : undefined;
+            // BA-008.2 AC1: dispatch sdk-translation-fix to public repo (replaces label_and_state)
+            const language = (typeof input.extracted_context.language === "string" && input.extracted_context.language !== "")
+                ? input.extracted_context.language
+                : "unknown";
             return {
-                type: "label_and_state",
-                repo: ROUTING.PRIVATE_REPO,
-                issue_number: input.issue_number,
-                labels: [ROUTING.LABEL_TRANSLATION_ERROR, ROUTING.LABEL_ROUTED],
-                workflow_type: "translation_verification",
-                category,
+                type: "dispatch",
+                event_type: ROUTING.DISPATCH_TRANSLATION_FIX,
+                repo: ROUTING.PUBLIC_REPO,
+                payload: {
+                    workflow_type: "translation_verification",
+                    language,
+                    issue_number: input.issue_number,
+                },
+                issue_labels: {
+                    repo: ROUTING.PRIVATE_REPO,
+                    issue_number: input.issue_number,
+                    labels: [ROUTING.LABEL_ROUTED, ROUTING.LABEL_TRANSLATION_ERROR],
+                },
             };
         }
         case "ui_bug": {
