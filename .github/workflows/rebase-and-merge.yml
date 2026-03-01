@@ -63,18 +63,52 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # BA-008.1 AC3e: Branded skip notification
       - name: Notify skip (already merged or closed)
         if: steps.check.outputs.skip == 'true'
         run: |
           PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
           SKIP_REASON="${{ steps.check.outputs.skip_reason }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
 
-          # Send skip notification email
+          cat > /tmp/skip-email.html << 'EMAILEOF'
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#6b7280;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#4b5563;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Skipped</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Merge Skipped</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#f3f4f6;border-left:4px solid #6b7280;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">No Action Taken</p>
+          EMAILEOF
+
+          # Inject dynamic content safely via sed
+          echo "      <p style=\"margin:0;font-size:14px;color:#333333;line-height:1.5;\">PR #${PR_NUMBER} ${SKIP_REASON}. The /merge command was ignored.</p>" >> /tmp/skip-email.html
+
+          cat >> /tmp/skip-email.html << EMAILEOF
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View PR</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
           PAYLOAD=$(jq -n \
             --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
             --arg to "$OWNER_EMAIL" \
             --arg subject "Merge skipped: PR #${PR_NUMBER} — ${SKIP_REASON}" \
-            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2>Merge Skipped</h2><p>PR #${PR_NUMBER} ${SKIP_REASON}. No action taken.</p></div>" \
+            --rawfile html /tmp/skip-email.html \
             '{from: $from, to: [$to], subject: $subject, html: $html}')
 
           curl -sf -X POST https://api.resend.com/emails \
@@ -104,17 +138,50 @@ jobs:
             echo "branch_exists=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # BA-008.1 AC3e: Branded branch-not-found email
       - name: Notify branch not found
         if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'false'
         run: |
           PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
           HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          cat > /tmp/branch-not-found-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Error</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Branch Not Found</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">Branch <code style="background:#fef2f2;padding:1px 4px;border-radius:3px;">${HEAD_BRANCH}</code> for PR #${PR_NUMBER} no longer exists on the remote. The branch may have been deleted after the fix was generated.</p>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">The PR will need to be re-generated. Re-trigger the fix pipeline from the original issue.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View PR</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
 
           PAYLOAD=$(jq -n \
             --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
             --arg to "$OWNER_EMAIL" \
             --arg subject "Merge failed: PR #${PR_NUMBER} — branch not found" \
-            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2>Merge Failed</h2><p>Branch <code>${HEAD_BRANCH}</code> for PR #${PR_NUMBER} no longer exists. The branch may have been deleted.</p></div>" \
+            --rawfile html /tmp/branch-not-found-email.html \
             '{from: $from, to: [$to], subject: $subject, html: $html}')
 
           curl -sf -X POST https://api.resend.com/emails \
@@ -196,18 +263,70 @@ jobs:
             echo "PR merge failed."
           fi
 
+      # BA-008.1 AC3e: Branded merge success email
       - name: Send success email
         if: steps.merge.outputs.merge_result == 'success'
         run: |
           PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
           PR_TITLE="${{ steps.check.outputs.pr_title }}"
           PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          # Build issue link if available
+          ISSUE_ROW=""
+          if [ -n "$ISSUE_NUMBER" ] && [ "$ISSUE_NUMBER" != "null" ]; then
+            ISSUE_URL="https://github.com/${PRIVATE_REPO}/issues/${ISSUE_NUMBER}"
+            ISSUE_ROW="<tr><td style=\"padding:8px 12px;font-weight:600;color:#166534;font-size:13px;\">Issue</td><td style=\"padding:8px 12px;font-size:14px;color:#333333;\"><a href=\"${ISSUE_URL}\" style=\"color:#2563eb;\">#${ISSUE_NUMBER}</a></td></tr>"
+          fi
+
+          cat > /tmp/success-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#166534;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#15803d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Merged</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">PR #${PR_NUMBER} Merged</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #22c55e;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">PR #${PR_NUMBER}</p>
+                <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${PR_TITLE}</p>
+              </div>
+              <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+                <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#f0fdf4;color:#166534;font-size:13px;">Status</td><td style="padding:8px 12px;background:#f0fdf4;font-size:14px;color:#333333;">Rebased and merged into main</td></tr>
+                ${ISSUE_ROW}
+              </table>
+              <div style="padding:14px 16px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#166534;font-size:14px;">The fix is now on main. If a version bump was included, the next build will contain this fix.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Merged PR</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+              <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+                <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+              </p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
 
           PAYLOAD=$(jq -n \
             --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
             --arg to "$OWNER_EMAIL" \
             --arg subject "Merged: PR #${PR_NUMBER} — ${PR_TITLE}" \
-            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2 style=\"color:#16a34a;\">PR Merged Successfully</h2><p><strong>PR #${PR_NUMBER}</strong> has been rebased and merged into main.</p><p><a href=\"${PR_URL}\" style=\"display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;\">View Merged PR</a></p><p style=\"color:#999;font-size:12px;margin-top:16px;\">SortingHistory Pipeline</p></div>" \
+            --rawfile html /tmp/success-email.html \
             '{from: $from, to: [$to], subject: $subject, html: $html}')
 
           curl -sf -X POST https://api.resend.com/emails \
@@ -215,12 +334,14 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" || echo "Warning: success email failed"
 
+      # BA-008.1 AC3c: Branded merge conflict email
       - name: Handle conflict
         if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'conflict'
         run: |
           PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
           ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
           CONFLICT_FILES="${{ steps.rebase.outputs.conflict_files }}"
+          PR_TITLE="${{ steps.check.outputs.pr_title }}"
           PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
 
           # Add rebase-conflict label to the PR
@@ -232,16 +353,62 @@ jobs:
           FILE_LIST_HTML=""
           while IFS= read -r file; do
             if [ -n "$file" ]; then
-              FILE_LIST_HTML="${FILE_LIST_HTML}<li><code>${file}</code></li>"
+              FILE_LIST_HTML="${FILE_LIST_HTML}<li style=\"margin:4px 0;\"><code style=\"background:#fef2f2;padding:1px 4px;border-radius:3px;\">${file}</code></li>"
             fi
           done <<< "$CONFLICT_FILES"
 
-          # Send conflict email
+          cat > /tmp/conflict-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#d97706;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#92400e;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Conflict</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Merge Conflict on PR #${PR_NUMBER}</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#faf8f4;border-left:4px solid #DAA520;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">PR #${PR_NUMBER}</p>
+                <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${PR_TITLE}</p>
+              </div>
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fffbeb;border-left:4px solid #d97706;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#d97706;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">The PR could not be automatically rebased against main. Files on the fix branch conflict with recent changes on main.</p>
+              </div>
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #dc2626;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#dc2626;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Conflicting Files</p>
+                <ul style="margin:4px 0 0 0;padding-left:20px;font-size:14px;color:#333333;line-height:1.8;">${FILE_LIST_HTML}</ul>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">The fix may still be valid. Resolve the conflict manually on GitHub, or reject the PR and re-trigger the pipeline.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View PR</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+              <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+                <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+              </p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
           PAYLOAD=$(jq -n \
             --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
             --arg to "$OWNER_EMAIL" \
             --arg subject "Merge Conflict: PR #${PR_NUMBER} needs manual resolution" \
-            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2 style=\"color:#dc2626;\">Merge Conflict</h2><p>PR #${PR_NUMBER} could not be automatically rebased against main.</p><div style=\"padding:16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;margin:16px 0;\"><p style=\"font-weight:bold;margin:0 0 8px 0;\">Conflicting files:</p><ul style=\"margin:0;\">${FILE_LIST_HTML}</ul></div><p>The fix may still be valid. These files have changed on main since the fix was generated. Manual conflict resolution is needed.</p><p><a href=\"${PR_URL}\" style=\"display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;\">View PR on GitHub</a></p><p style=\"color:#999;font-size:12px;margin-top:16px;\">SortingHistory Pipeline</p></div>" \
+            --rawfile html /tmp/conflict-email.html \
             '{from: $from, to: [$to], subject: $subject, html: $html}')
 
           curl -sf -X POST https://api.resend.com/emails \
@@ -249,17 +416,54 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" || echo "Warning: conflict email failed"
 
+      # BA-008.1 AC3d: Branded merge API failure email
       - name: Handle merge failure
         if: steps.merge.outputs.merge_result == 'failed'
         run: |
           PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_TITLE="${{ steps.check.outputs.pr_title }}"
           PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          cat > /tmp/merge-failure-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Merge Failed</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">GitHub API Merge Error</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#faf8f4;border-left:4px solid #DAA520;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">PR #${PR_NUMBER}</p>
+                <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${PR_TITLE}</p>
+              </div>
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">The PR was rebased successfully, but the GitHub merge API call failed. This is usually caused by branch protection rules, required status checks, or a permissions issue.</p>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">Try merging manually on GitHub, or check repository settings for branch protection rules that may be blocking the merge.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View PR</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
 
           PAYLOAD=$(jq -n \
             --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
             --arg to "$OWNER_EMAIL" \
             --arg subject "Merge failed: PR #${PR_NUMBER} — GitHub API error" \
-            --arg html "<div style=\"font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:20px;\"><h2 style=\"color:#dc2626;\">Merge Failed</h2><p>PR #${PR_NUMBER} was rebased successfully but the merge API call failed. This may be due to branch protection rules or a permissions issue.</p><p><a href=\"${PR_URL}\" style=\"display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;\">View PR on GitHub</a></p><p style=\"color:#999;font-size:12px;margin-top:16px;\">SortingHistory Pipeline</p></div>" \
+            --rawfile html /tmp/merge-failure-email.html \
             '{from: $from, to: [$to], subject: $subject, html: $html}')
 
           curl -sf -X POST https://api.resend.com/emails \
