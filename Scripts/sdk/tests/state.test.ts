@@ -84,12 +84,12 @@ describe("createWorkflowState", () => {
     const cv = await createWorkflowState("content_verification", "manual");
     const tv = await createWorkflowState("translation_verification", "manual");
     const bt = await createWorkflowState("bug_triage", "manual");
-    const cb = await createWorkflowState("complex_bug", "manual");
+    const bf = await createWorkflowState("bug_fix", "manual");
 
     assert.ok(cv.workflow_id.startsWith("cv-"));
     assert.ok(tv.workflow_id.startsWith("tv-"));
     assert.ok(bt.workflow_id.startsWith("bt-"));
-    assert.ok(cb.workflow_id.startsWith("cb-"));
+    assert.ok(bf.workflow_id.startsWith("bf-"));
   });
 
   it("creates state directory if it does not exist", async () => {

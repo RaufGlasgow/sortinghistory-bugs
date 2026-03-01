@@ -344,7 +344,7 @@ describe("sendHandoffEmail", () => {
       issueTitle: "Some complex bug",
       totalAttempts: 3,
       attemptSummary: "Attempt 1: failed\nAttempt 2: failed\nAttempt 3: failed",
-      modelsUsed: ["sonnet", "opus"],
+      modelsUsed: ["haiku", "sonnet"],
     });
   });
 
@@ -357,7 +357,7 @@ describe("sendHandoffEmail", () => {
       issueTitle: "Some complex bug",
       totalAttempts: 3,
       attemptSummary: "Attempt 1: failed\nAttempt 2: failed\nAttempt 3: failed",
-      modelsUsed: ["sonnet", "opus"],
+      modelsUsed: ["haiku", "sonnet"],
       issueBody: "## Bug Description\nThe app crashes when loading.\n\n**Steps to reproduce:**\n1. Tap play\n2. Wait\n\n**Expected behavior:**\nGame loads",
     });
   });

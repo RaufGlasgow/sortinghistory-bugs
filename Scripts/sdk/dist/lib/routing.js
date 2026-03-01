@@ -242,49 +242,65 @@ function getGitHubToken() {
     }
     return token;
 }
-/** POST repository_dispatch event to a GitHub repo */
+/** POST repository_dispatch event to a GitHub repo (H10: 30s timeout) */
 async function githubDispatch(repo, eventType, clientPayload) {
     const token = getGitHubToken();
     const url = "https://api.github.com/repos/" + repo + "/dispatches";
-    const response = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Authorization": "Bearer " + token,
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            event_type: eventType,
-            client_payload: clientPayload,
-        }),
-    });
-    // repository_dispatch returns 204 on success
-    if (!response.ok) {
-        const body = await response.text();
-        throw new Error("GitHub dispatch failed: " + response.status + " " + response.statusText + " — " + body);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    try {
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + token,
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                event_type: eventType,
+                client_payload: clientPayload,
+            }),
+            signal: controller.signal,
+        });
+        // repository_dispatch returns 204 on success
+        if (!response.ok) {
+            const body = await response.text();
+            throw new Error("GitHub dispatch failed: " + response.status + " " + response.statusText + " — " + body);
+        }
+        console.log("[routing] Dispatched " + eventType + " to " + repo);
     }
-    console.log("[routing] Dispatched " + eventType + " to " + repo);
+    finally {
+        clearTimeout(timeoutId);
+    }
 }
-/** POST labels to a GitHub issue */
+/** POST labels to a GitHub issue (H10: 30s timeout) */
 async function githubLabel(repo, issueNumber, labels) {
     const token = getGitHubToken();
     const url = "https://api.github.com/repos/" + repo + "/issues/" + issueNumber + "/labels";
-    const response = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Authorization": "Bearer " + token,
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ labels }),
-    });
-    if (!response.ok) {
-        const body = await response.text();
-        throw new Error("GitHub label failed: " + response.status + " " + response.statusText + " — " + body);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30_000);
+    try {
+        const response = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + token,
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ labels }),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const body = await response.text();
+            throw new Error("GitHub label failed: " + response.status + " " + response.statusText + " — " + body);
+        }
+        console.log("[routing] Applied labels [" + labels.join(", ") + "] to " + repo + "#" + issueNumber);
     }
-    console.log("[routing] Applied labels [" + labels.join(", ") + "] to " + repo + "#" + issueNumber);
+    finally {
+        clearTimeout(timeoutId);
+    }
 }
 /** POST a comment on a GitHub issue (BA-011 AC5: same auth as githubLabel/githubDispatch).
  *  Uses AbortController with 30s timeout per NFR10. */
@@ -364,11 +380,14 @@ export async function executeRoute(action, dryRun) {
     }
     switch (action.type) {
         case "dispatch":
-            // HIGH-4 fix: apply labels on the source issue before dispatching
+            // H1 fix: dispatch FIRST, then label. If dispatch fails, no label is applied,
+            // so idempotency guard (sdk-routed) doesn't block retry.
+            // Previous order (label then dispatch) caused issues to get stuck forever.
+            await githubDispatch(action.repo, action.event_type, action.payload);
+            // Dispatch succeeded — now apply labels (including sdk-routed for idempotency)
             if (action.issue_labels) {
                 await githubLabel(action.issue_labels.repo, action.issue_labels.issue_number, action.issue_labels.labels);
             }
-            await githubDispatch(action.repo, action.event_type, action.payload);
             break;
         case "label":
             await githubLabel(action.repo, action.issue_number, action.labels);

@@ -38,8 +38,8 @@ env:
 jobs:
   fix-bug:
     runs-on: macos-14
-    # PV2-4.4 AC9: 15 minutes for qa-only, 120 for full (3 attempts × 25-45 min each)
-    timeout-minutes: ${{ github.event.inputs.mode == 'qa-only' && 15 || 120 }}
+    # BA-007.1 AC5: 15 minutes for qa-only, 90 for full (2 full attempts + overhead)
+    timeout-minutes: ${{ github.event.inputs.mode == 'qa-only' && 15 || 90 }}
 
     steps:
       - name: Validate payload
@@ -334,7 +334,7 @@ jobs:
 
           git commit -m "fix(#${{ env.ISSUE_NUM }}): SDK bug fix for #${{ env.ISSUE_NUM }}
 
-          Applied by SDK bug fix pipeline (Opus 4.6) with QA gate
+          Applied by SDK bug fix pipeline with QA gate
           Compilation: ${{ steps.fix.outputs.compilation }}
           Confidence: ${{ steps.fix.outputs.confidence }}"
 
@@ -735,3 +735,46 @@ jobs:
             --remove-label "approved" 2>/dev/null || true
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --remove-label "pr-created" 2>/dev/null || true
+
+      # BA-007.1 AC8: Send branded failure email when fix pipeline fails
+      - name: Send fix failure email
+        if: always() && (steps.guard.outputs.blocked || 'false') != 'true' && (steps.fix.outputs.applied != 'true' || (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes != 'true'))
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: |
+          # Skip if PR was created (success path)
+          if [ -n "${{ steps.create-pr.outputs.pr_url }}" ]; then
+            echo "PR was created, skipping failure email"
+            exit 0
+          fi
+
+          ISSUE="${{ env.ISSUE_NUM }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          MODE="${{ env.PIPELINE_MODE }}"
+          FIX_ATTEMPTS="${{ steps.fix.outputs.fix_attempts }}"
+          ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE}"
+
+          if [ "$MODE" = "qa-only" ]; then
+            SUBJECT="Pipeline Failed: QA re-run failed for issue #${ISSUE}"
+            HEADLINE="QA Re-Run Failed"
+            DETAIL="The QA-only re-run could not approve the existing fix."
+          else
+            SUBJECT="Pipeline Failed: Fix attempts exhausted for issue #${ISSUE}"
+            HEADLINE="Fix Pipeline Failed"
+            DETAIL="All fix attempts have been exhausted (${FIX_ATTEMPTS:-0} attempt(s))."
+          fi
+
+          if [ -n "$RESEND_API_KEY" ] && [ -n "$OWNER_EMAIL" ]; then
+            curl -s -X POST https://api.resend.com/emails \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"from\": \"SortingHistory Pipeline <bugs@sortinghistory.com>\",
+                \"to\": [\"$OWNER_EMAIL\"],
+                \"subject\": \"$SUBJECT\",
+                \"html\": \"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;'><div style='background:#b91c1c;padding:24px;text-align:center;border-radius:12px 12px 0 0;'><h1 style='color:#fff;margin:0;font-size:20px;'>$HEADLINE</h1></div><div style='padding:24px;background:#fff;border:1px solid #e5e1d8;'><p>$DETAIL</p><p><strong>Issue:</strong> <a href='${ISSUE_URL}'>#${ISSUE}</a></p><p><strong>What to do:</strong> Review the issue, then either fix manually or re-trigger the pipeline with different parameters.</p><p><a href='${RUN_URL}'>View workflow run</a></p></div></div>\"
+              }" || echo "Email send failed (non-fatal)"
+          else
+            echo "WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send failure email"
+          fi

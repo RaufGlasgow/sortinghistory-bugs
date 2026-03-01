@@ -9,7 +9,7 @@
  * Story PV2-4.3 refactor:
  *   - runFixLoop() replaced with call to runRetryLoop() from retry-loop.ts (AC1)
  *   - Content fixes use Content QA profile (QN-1 through QN-5) (AC2)
- *   - Model escalation: Haiku -> Sonnet -> Opus via content_simple profile (AC3)
+ *   - Model escalation: Haiku -> Sonnet via content_simple profile (AC3)
  *   - QA feedback included in retry prompts (AC4)
  *   - On exhausted retries: content-specific handoff + comment + label (AC5, AC7)
  *   - createPullRequest() uses safeGitAdd() (AC6, already done in PV2-1.3)
@@ -244,9 +244,9 @@ function createPullRequest(opts: {
 /**
  * Build a TriageContext for content bugs to pass to runRetryLoop().
  *
- * Content model escalation: Haiku -> Sonnet -> Opus (AC3).
+ * Content model escalation: Haiku -> Sonnet (AC3).
  * This maps to the content_simple profile in model-router.ts when confidence >= 0.8.
- * Content_simple escalation path: Haiku -> Sonnet -> Opus (cheapest content path).
+ * Content_simple escalation path: Haiku -> Sonnet (cheapest content path).
  *
  * @param category - The content category being fixed
  * @param approvedFindings - Findings approved for fixing
@@ -257,7 +257,7 @@ function buildContentTriageContext(
 ): TriageContext {
   // Content bugs always classify as content_error with high confidence
   // This maps to content_simple in model-router.ts determineBugProfile()
-  // content_simple escalation: Haiku -> Sonnet -> Opus (AC3)
+  // content_simple escalation: Haiku -> Sonnet (AC3)
   return {
     classification: "content_error",
     confidence: 0.95, // High confidence -> content_simple profile
@@ -337,7 +337,7 @@ async function runContentRetryLoop(
   console.log("[content-e2e] File: " + options.filePath);
   console.log("");
 
-  // Build content-specific triage context (AC3: Haiku -> Sonnet -> Opus)
+  // Build content-specific triage context (AC3: Haiku -> Sonnet)
   const triageContext = buildContentTriageContext(category, approvedFindings);
 
   // Build synthetic issue body from findings (AC4: context for fix subagent)
@@ -357,7 +357,7 @@ async function runContentRetryLoop(
 
   // Delegate to the shared retry loop (AC1)
   // The retry loop handles:
-  //   - Model selection/escalation per attempt (AC3: content_simple = Haiku -> Sonnet -> Opus)
+  //   - Model selection/escalation per attempt (AC3: content_simple = Haiku -> Sonnet)
   //   - Fix subagent spawning with bug-fixer.md prompt
   //   - QA review using content profile (AC2: QN-1 through QN-5)
   //     The profile is automatically determined as "content" by model-router.ts

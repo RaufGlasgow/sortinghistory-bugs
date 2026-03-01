@@ -31,7 +31,7 @@ function makeTier3Input(): HandoffInput {
       },
       {
         attempt_number: 2,
-        model: "claude-opus-4-6",
+        model: "claude-sonnet-4-5-20250929",
         approach: "Fix date and description together",
         result: "compilation_error",
         error_summary: "JSON syntax error introduced",

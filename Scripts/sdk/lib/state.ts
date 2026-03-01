@@ -90,7 +90,6 @@ function generateWorkflowId(type: WorkflowType): string {
     content_verification: "cv",
     translation_verification: "tv",
     bug_triage: "bt",
-    complex_bug: "cb",
     bug_fix: "bf",
   };
   const prefix = prefixMap[type];
