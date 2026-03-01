@@ -6,8 +6,6 @@ export const MODELS = {
   VERIFIER: "claude-haiku-4-5-20251001",
   /** Sonnet 4.5 — content/translation fixes (needs write capability) */
   FIXER: "claude-sonnet-4-5-20250929",
-  /** Opus 4.6 — complex bug diagnosis, deep reasoning */
-  COMPLEX_BUG: "claude-opus-4-6",
 } as const;
 
 /** Workflow types handled by the orchestrator */
@@ -15,7 +13,6 @@ export type WorkflowType =
   | "content_verification"
   | "translation_verification"
   | "bug_triage"
-  | "complex_bug"
   | "bug_fix";
 
 /** Workflow status transitions: verifying → awaiting_approval → fixing → re_verifying → complete | escalated */

@@ -8,10 +8,9 @@
  * escalating to more capable (and expensive) models only on retry.
  *
  * Model tiers (cheapest to most capable):
- *   Haiku 4.5 < Sonnet 4.5 < Opus 4.6
+ *   Haiku 4.5 < Sonnet 4.5
  *
  * QA model rule: QA model is always <= fix model tier.
- * (Never use Opus for QA when fix uses Sonnet.)
  */
 
 import { MODELS, LIMITS } from "../config.js";
@@ -88,8 +87,7 @@ const CONTENT_EXTENSIONS = new Set([
  * Each array is indexed by attempt number (0-based): attempt 1 = index 0, etc.
  * fix = model for fix generation, qa = model for QA review, fixTurns/qaTurns = max turns.
  *
- * COST CONSTRAINT: $30/month budget. Opus removed entirely — max model is Sonnet.
- * Previous Opus escalation paths burned $50-93 per bug with no successful fixes.
+ * COST CONSTRAINT: $30/month budget. Max model is Sonnet.
  *
  * Content simple:  Haiku  -> Haiku  -> Sonnet (cheapest path)
  * Content complex: Haiku  -> Sonnet -> Sonnet (starts low, escalates once)

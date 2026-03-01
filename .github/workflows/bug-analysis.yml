@@ -17,6 +17,7 @@ jobs:
       group: bug-analysis-${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Validate payload

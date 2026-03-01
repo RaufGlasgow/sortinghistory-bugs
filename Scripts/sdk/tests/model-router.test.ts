@@ -4,8 +4,7 @@
  * Tests model selection for all 4 profiles x 3 attempts = 12 combinations.
  * Also tests determineBugProfile() classification logic.
  *
- * UPDATED: Opus removed from all escalation paths ($30/month budget constraint).
- * Max model is now Sonnet. QA always uses Haiku.
+ * Max model is Sonnet. QA always uses Haiku.
  */
 
 import { describe, it } from "node:test";
