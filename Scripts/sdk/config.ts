@@ -104,6 +104,8 @@ export const ROUTING = {
   DISPATCH_CONTENT_RESUME: "sdk-content-resume",
   DISPATCH_APPROVE: "approve",
   DISPATCH_SDK_BUG_FIX: "sdk-bug-fix",
+  DISPATCH_TRANSLATION_FIX: "sdk-translation-fix",
+  DISPATCH_TRANSLATION_RESUME: "sdk-translation-resume",
 
   /** Labels applied by routing */
   LABEL_ROUTED: "sdk-routed",

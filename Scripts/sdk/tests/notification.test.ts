@@ -55,15 +55,14 @@ describe("shouldSendEmail", () => {
     assert.equal(shouldSendEmail(action), true);
   });
 
-  it("returns true for translation_error label_and_state action", () => {
+  it("returns false for translation_error dispatch action (BA-008.2)", () => {
     const action: RoutingAction = {
-      type: "label_and_state",
-      repo: "test/repo",
-      issue_number: 1,
-      labels: ["translation-error", "sdk-routed"],
-      workflow_type: "translation_verification",
+      type: "dispatch",
+      event_type: "sdk-translation-fix",
+      repo: "test/public-repo",
+      payload: { workflow_type: "translation_verification", language: "German", issue_number: 1 },
     };
-    assert.equal(shouldSendEmail(action), true);
+    assert.equal(shouldSendEmail(action), false);
   });
 
   it("returns true for performance_issue handoff_to_dev action", () => {

@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PATHS, ROUTING } from "./config.js";
@@ -21,6 +21,7 @@ import { runContentE2ETest } from "./workflows/content-e2e-test.js";
 import { runRealTriage } from "./workflows/triage.js";
 import { runBugFix } from "./workflows/bug-fix.js";
 import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
+import { runTranslationE2E, resumeTranslationE2E } from "./workflows/translation-e2e.js";
 /**
  * Parse a named flag from process.argv.
  * Supports: `--flag value` syntax.
@@ -502,8 +503,67 @@ async function main() {
             }
             break;
         }
+        case "translation-fix": {
+            // BA-008.2: Translation fix command -- analyzes issue, pauses for approval
+            const issueNumber = parseIssueFlag();
+            const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
+            // Read issue body and title from temp files (written by YAML workflow)
+            // or fetch via gh CLI
+            let issueBody = "";
+            let issueTitle = "";
+            try {
+                issueBody = readFileSync("/tmp/issue-body.txt", "utf-8").trim();
+                issueTitle = readFileSync("/tmp/issue-title.txt", "utf-8").trim();
+            }
+            catch {
+                // Temp files not available -- fetch via gh CLI
+                try {
+                    issueBody = execSync("gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body", { encoding: "utf-8", timeout: 30_000 }).trim();
+                    issueTitle = execSync("gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json title --jq .title", { encoding: "utf-8", timeout: 30_000 }).trim();
+                }
+                catch (fetchErr) {
+                    const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+                    console.error("[orchestrator] Failed to fetch issue #" + issueNumber + ": " + fetchMsg);
+                    process.exit(1);
+                }
+            }
+            console.log("[orchestrator] Translation fix: issue=#" + issueNumber + " title=" + issueTitle);
+            const translationResult = await runTranslationE2E({
+                issueNumber,
+                issueBody,
+                issueTitle,
+                gameRepoPath: gameRepo,
+                dryRun: !hasFlag("no-dry-run"),
+            });
+            console.log("[orchestrator] Translation fix result: " + translationResult.status);
+            if (translationResult.error) {
+                console.error("[orchestrator] Error: " + translationResult.error);
+                process.exit(1);
+            }
+            break;
+        }
+        case "translation-resume": {
+            // BA-008.2: Resume translation workflow after approval
+            const issueNumber = parseIssueFlag();
+            const action = parseActionFlag();
+            const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
+            console.log("[orchestrator] Translation resume: issue=#" + issueNumber + " action=" + action);
+            // Look up workflow by issue number
+            const foundState = await findWorkflowByIssue(issueNumber);
+            if (!foundState) {
+                console.error("[orchestrator] No paused workflow found for issue #" + issueNumber);
+                postIssueComment(issueNumber, "## Translation Resume Failed\n\nNo paused workflow found for this issue.");
+                process.exit(1);
+            }
+            const resumeResult = await resumeTranslationE2E(foundState.workflow_id, action, { gameRepoPath: gameRepo, dryRun: false });
+            console.log("[orchestrator] Translation resume result: " + resumeResult.status);
+            if (resumeResult.error) {
+                console.error("[orchestrator] Error: " + resumeResult.error);
+            }
+            break;
+        }
         default:
-            console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test, bug-fix`);
+            console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test, bug-fix, translation-fix, translation-resume`);
             process.exit(1);
     }
 }

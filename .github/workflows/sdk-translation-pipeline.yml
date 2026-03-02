@@ -1,0 +1,153 @@
+name: SDK Translation Pipeline
+run-name: "Translation #${{ github.event.client_payload.issue_number || 'manual' }} (${{ github.event.action || 'manual' }})"
+
+on:
+  repository_dispatch:
+    types: [sdk-translation-fix, sdk-translation-resume]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sdk-translation-${{ github.event.client_payload.issue_number || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  DISPATCH_TYPE: ${{ github.event.action || 'manual' }}
+  WORKFLOW_TYPE: ${{ github.event.client_payload.workflow_type || 'translation_verification' }}
+  WORKFLOW_ID: ${{ github.event.client_payload.workflow_id || '' }}
+
+jobs:
+  sdk-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout public repo (automation scripts + SDK)
+        uses: actions/checkout@v4
+
+      - name: Checkout private repo (game content)
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          path: game-repo
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: Scripts/sdk
+        run: npm ci
+
+      - name: TypeScript type-check
+        working-directory: Scripts/sdk
+        run: npx tsc --noEmit
+
+      - name: Build TypeScript
+        working-directory: Scripts/sdk
+        run: npm run build
+
+      # === TRANSLATION FIX (sdk-translation-fix dispatch) -- BA-008.2 AC2 ===
+      - name: "Translation Fix: Validate payload"
+        if: github.event.action == 'sdk-translation-fix'
+        run: |
+          # Validate issue_number as numeric
+          ISSUE="${{ github.event.client_payload.issue_number }}"
+          if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid issue_number in payload: '$ISSUE'. Must be a positive integer."
+            exit 1
+          fi
+
+          echo "TRANSLATION_ISSUE=$ISSUE" >> "$GITHUB_ENV"
+          echo "TRANSLATION_LANGUAGE=${{ github.event.client_payload.language }}" >> "$GITHUB_ENV"
+          echo "Validated: issue_number=$ISSUE language=${{ github.event.client_payload.language }}"
+
+      - name: "Translation Fix: Fetch issue body"
+        if: github.event.action == 'sdk-translation-fix'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          # Fetch the issue body from the private repo
+          ISSUE_BODY=$(gh issue view "$TRANSLATION_ISSUE" --repo RaufGlasgow/Sorting-History --json body --jq '.body')
+          ISSUE_TITLE=$(gh issue view "$TRANSLATION_ISSUE" --repo RaufGlasgow/Sorting-History --json title --jq '.title')
+
+          # Save to temp files for the orchestrator
+          echo "$ISSUE_BODY" > /tmp/issue-body.txt
+          echo "$ISSUE_TITLE" > /tmp/issue-title.txt
+
+          echo "Issue #$TRANSLATION_ISSUE: $ISSUE_TITLE"
+
+      - name: "Translation Fix: Run translation pipeline"
+        if: github.event.action == 'sdk-translation-fix'
+        working-directory: Scripts/sdk
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          node dist/orchestrator.js translation-fix \
+            --issue "$TRANSLATION_ISSUE"
+        timeout-minutes: 15
+
+      # Commit state files
+      - name: "Translation Fix: Commit state files"
+        if: github.event.action == 'sdk-translation-fix'
+        run: |
+          git config user.name "sdk-bot"
+          git config user.email "sdk-bot@users.noreply.github.com"
+          git add state/ || true
+          git diff --cached --quiet && echo "No state changes to commit" || \
+            (git commit -m "state: translation verify pause for issue #$TRANSLATION_ISSUE" && git push)
+
+      # === TRANSLATION RESUME (sdk-translation-resume dispatch) -- BA-008.2 ===
+      - name: "Translation Resume: Validate payload"
+        if: github.event.action == 'sdk-translation-resume'
+        run: |
+          ISSUE="${{ github.event.client_payload.issue_number }}"
+          if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid issue_number in payload: '$ISSUE'. Must be a positive integer."
+            exit 1
+          fi
+
+          ACTION="${{ github.event.client_payload.action }}"
+          if [[ "$ACTION" != "approve" && "$ACTION" != "reject" ]]; then
+            echo "::error::Invalid action in payload: '$ACTION'. Must be 'approve' or 'reject'."
+            exit 1
+          fi
+
+          echo "RESUME_ISSUE=$ISSUE" >> "$GITHUB_ENV"
+          echo "RESUME_ACTION=$ACTION" >> "$GITHUB_ENV"
+          echo "Validated: issue_number=$ISSUE action=$ACTION"
+
+      - name: "Translation Resume: Resume with approval"
+        if: github.event.action == 'sdk-translation-resume'
+        working-directory: Scripts/sdk
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          node dist/orchestrator.js translation-resume \
+            --issue "$RESUME_ISSUE" \
+            --action "$RESUME_ACTION"
+        timeout-minutes: 15
+
+      - name: "Translation Resume: Commit state files"
+        if: github.event.action == 'sdk-translation-resume'
+        run: |
+          git config user.name "sdk-bot"
+          git config user.email "sdk-bot@users.noreply.github.com"
+          git add state/ || true
+          git diff --cached --quiet && echo "No state changes to commit" || \
+            (git commit -m "state: translation resume complete for issue #$RESUME_ISSUE" && git push)
+
+      # === TEST SUITE (manual / schedule / push) ===
+      - name: "Run test suite"
+        if: github.event.action != 'sdk-translation-fix' && github.event.action != 'sdk-translation-resume'
+        working-directory: Scripts/sdk
+        run: npm test
+        timeout-minutes: 5
