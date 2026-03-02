@@ -453,11 +453,118 @@ export interface PRCreatedEmailInput {
   issueBody?: string;
   /** QA review summary — displayed as "QA Review" in the email */
   qaSummary?: string;
+  /** Git diff --stat output showing per-file insertions/deletions */
+  diffSummary?: string;
+}
+
+/**
+ * Parse a single line from `git diff --stat` output into file name and change counts.
+ * Example input: " Views/GameSetupView.swift | 12 +++---"
+ * Returns { file, insertions, deletions } or null if not a valid stat line.
+ */
+export interface DiffStatLine {
+  file: string;
+  insertions: number;
+  deletions: number;
+}
+
+export function parseDiffStatLine(line: string): DiffStatLine | null {
+  // Match lines like: " file.swift | 12 +++---" or " file.swift | 4 ++++"
+  // Also handles renames: " old.swift => new.swift | 5 ++---"
+  const match = line.match(/^\s*(.+?)\s*\|\s*(\d+)\s*([+-]*)\s*$/);
+  if (!match) return null;
+
+  const file = match[1].trim();
+  const plusChars = (match[3].match(/\+/g) || []).length;
+  const minusChars = (match[3].match(/-/g) || []).length;
+
+  return { file, insertions: plusChars, deletions: minusChars };
+}
+
+/**
+ * Parse the summary line from `git diff --stat` output.
+ * Example: " 3 files changed, 25 insertions(+), 8 deletions(-)"
+ * Returns a human-readable summary string, or empty string if not found.
+ */
+export function parseDiffStatSummary(lines: string[]): string {
+  for (const line of lines) {
+    const match = line.match(/(\d+)\s+files?\s+changed(?:,\s+(\d+)\s+insertions?\(\+\))?(?:,\s+(\d+)\s+deletions?\(-\))?/);
+    if (match) {
+      const filesChanged = match[1];
+      const ins = match[2] || "0";
+      const del = match[3] || "0";
+      return `${filesChanged} file${parseInt(filesChanged) !== 1 ? "s" : ""} changed, +${ins} -${del}`;
+    }
+  }
+  return "";
+}
+
+/**
+ * Build the "What Changed" HTML section from git diff --stat output.
+ * Falls back to the plain filesModified string if diffSummary is not provided.
+ *
+ * Truncates to 30 file entries max to stay well under the 80KB Gmail limit.
+ */
+export function buildWhatChangedHtml(diffSummary: string | undefined, filesModified: string): string {
+  // If no diff summary available, fall back to the plain file list
+  if (!diffSummary || !diffSummary.trim()) {
+    const safeFiles = escapeHtml(filesModified);
+    return `<!-- Files modified (fallback) -->
+    <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#166534;text-transform:uppercase;letter-spacing:0.5px;">Files Modified</p>
+    <div style="margin:0 0 24px 0;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;font-family:monospace;font-size:13px;color:#334155;line-height:1.8;white-space:pre-line;overflow-wrap:break-word;">${safeFiles}</div>`;
+  }
+
+  const lines = diffSummary.split("\n");
+  const statLines: DiffStatLine[] = [];
+  const MAX_FILE_ROWS = 30;
+
+  for (const line of lines) {
+    const parsed = parseDiffStatLine(line);
+    if (parsed) {
+      statLines.push(parsed);
+    }
+  }
+
+  const summary = parseDiffStatSummary(lines);
+
+  // Build per-file HTML rows
+  const displayLines = statLines.slice(0, MAX_FILE_ROWS);
+  const truncated = statLines.length > MAX_FILE_ROWS;
+
+  let fileRowsHtml = "";
+  for (const stat of displayLines) {
+    const safeFile = escapeHtml(stat.file);
+    const insText = stat.insertions > 0 ? `<span style="color:#22863a;font-weight:600;">+${stat.insertions}</span>` : "";
+    const delText = stat.deletions > 0 ? `<span style="color:#cb2431;font-weight:600;">-${stat.deletions}</span>` : "";
+    const separator = insText && delText ? " " : "";
+    fileRowsHtml += `<tr>
+      <td style="padding:4px 8px;font-family:monospace;font-size:12px;color:#334155;border-bottom:1px solid #f1f5f9;overflow-wrap:break-word;max-width:350px;">${safeFile}</td>
+      <td style="padding:4px 8px;font-size:12px;text-align:right;border-bottom:1px solid #f1f5f9;white-space:nowrap;">${insText}${separator}${delText}</td>
+    </tr>`;
+  }
+
+  if (truncated) {
+    const remaining = statLines.length - MAX_FILE_ROWS;
+    fileRowsHtml += `<tr>
+      <td colspan="2" style="padding:4px 8px;font-size:12px;color:#64748b;font-style:italic;border-bottom:1px solid #f1f5f9;">...and ${remaining} more file${remaining !== 1 ? "s" : ""}</td>
+    </tr>`;
+  }
+
+  const safeSummary = summary ? escapeHtml(summary) : "";
+  const summaryHtml = safeSummary
+    ? `<div style="margin:0 0 8px 0;padding:6px 10px;background:#f0fdf4;border-radius:4px;font-size:12px;color:#166534;font-weight:600;">${safeSummary}</div>`
+    : "";
+
+  return `<!-- What Changed (diff summary) -->
+    <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#166534;text-transform:uppercase;letter-spacing:0.5px;">What Changed</p>
+    ${summaryHtml}
+    <table style="width:100%;border-collapse:collapse;margin:0 0 24px 0;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;">
+      ${fileRowsHtml}
+    </table>`;
 }
 
 function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   const safeTitle = escapeHtml(input.issueTitle);
-  const safeFiles = escapeHtml(input.filesModified);
   const safeCompilation = escapeHtml(input.compilation);
   const safeConfidence = escapeHtml(input.confidence);
   const modeLabel = input.pipelineMode === "qa-only" ? " (QA-Only Re-Run)" : "";
@@ -534,9 +641,7 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
       ${versionHtml}
     </table>
 
-    <!-- Files modified -->
-    <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#166534;text-transform:uppercase;letter-spacing:0.5px;">Files Modified</p>
-    <div style="margin:0 0 24px 0;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;font-family:monospace;font-size:13px;color:#334155;line-height:1.8;white-space:pre-line;overflow-wrap:break-word;">${safeFiles}</div>
+    ${buildWhatChangedHtml(input.diffSummary, input.filesModified)}
 
     <!-- Action callout -->
     <div style="padding:14px 16px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;margin-bottom:24px;">

@@ -8,7 +8,8 @@
  * Required env vars (data): PR_URL, PR_NUMBER, ISSUE_NUMBER, ISSUE_TITLE,
  *   FILES_MODIFIED, COMPILATION, CONFIDENCE, FIX_ATTEMPTS, PIPELINE_MODE
  * Optional env vars: AUTH_TOKEN (for reject button), ALPHA_VERSION,
- *   ISSUE_BODY_FILE (path to file with issue body), QA_SUMMARY_FILE (path to QA summary)
+ *   ISSUE_BODY_FILE (path to file with issue body), QA_SUMMARY_FILE (path to QA summary),
+ *   DIFF_SUMMARY_FILE (path to file with git diff --stat output)
  */
 
 import { readFileSync } from "node:fs";
@@ -48,6 +49,7 @@ async function main(): Promise<void> {
     pipelineMode: process.env.PIPELINE_MODE || "full",
     issueBody: readFileSafe(process.env.ISSUE_BODY_FILE),
     qaSummary: readFileSafe(process.env.QA_SUMMARY_FILE),
+    diffSummary: readFileSafe(process.env.DIFF_SUMMARY_FILE),
   });
 }
 

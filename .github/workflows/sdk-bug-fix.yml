@@ -409,6 +409,28 @@ jobs:
             git push origin "$BRANCH"
           fi
 
+      # BA-008.1 AC2: Generate diff summary for "What Changed" email section
+      - name: Generate diff summary for email
+        id: diff-summary
+        if: >-
+          (steps.guard.outputs.blocked || 'false') != 'true' &&
+          ((env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes == 'true' && steps.fix.outputs.applied == 'true')
+          || (env.PIPELINE_MODE == 'qa-only' && steps.fix.outputs.applied == 'true'))
+        working-directory: game-repo
+        run: |
+          DIFF_SUMMARY_FILE="/tmp/diff-summary.txt"
+          # Generate per-file diff stats comparing fix branch to main
+          git diff --stat main...HEAD > "$DIFF_SUMMARY_FILE" 2>/dev/null || true
+
+          if [ -s "$DIFF_SUMMARY_FILE" ]; then
+            echo "has_diff=true" >> $GITHUB_OUTPUT
+            echo "Diff summary generated:"
+            cat "$DIFF_SUMMARY_FILE"
+          else
+            echo "has_diff=false" >> $GITHUB_OUTPUT
+            echo "No diff summary available"
+          fi
+
       # ── PR creation: handles both full and qa-only modes ──
 
       # PV2-4.4 AC3f: Create PR on success (works for both full and qa-only)
@@ -665,6 +687,7 @@ jobs:
           PIPELINE_MODE: ${{ env.PIPELINE_MODE }}
           ISSUE_BODY_FILE: /tmp/issue-body.txt
           QA_SUMMARY_FILE: /tmp/qa-summary-email.txt
+          DIFF_SUMMARY_FILE: /tmp/diff-summary.txt
         run: node dist/send-pr-email.js
         continue-on-error: true
 

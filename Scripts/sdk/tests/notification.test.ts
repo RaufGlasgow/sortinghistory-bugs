@@ -3,11 +3,20 @@
  *
  * Tests shouldSendEmail() for all routing action types.
  * Tests sendActionNeededEmail() graceful handling of missing env vars.
+ * Tests BA-008.1 AC2: diff summary parsing and "What Changed" HTML builder.
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import * as assert from "node:assert/strict";
-import { shouldSendEmail, sendActionNeededEmail, sendPRCreatedEmail, sendHandoffEmail } from "../lib/notification.js";
+import {
+  shouldSendEmail,
+  sendActionNeededEmail,
+  sendPRCreatedEmail,
+  sendHandoffEmail,
+  parseDiffStatLine,
+  parseDiffStatSummary,
+  buildWhatChangedHtml,
+} from "../lib/notification.js";
 import type { RoutingAction } from "../lib/routing.js";
 
 // ---------------------------------------------------------------------------
@@ -358,6 +367,227 @@ describe("sendHandoffEmail", () => {
       attemptSummary: "Attempt 1: failed\nAttempt 2: failed\nAttempt 3: failed",
       modelsUsed: ["haiku", "sonnet"],
       issueBody: "## Bug Description\nThe app crashes when loading.\n\n**Steps to reproduce:**\n1. Tap play\n2. Wait\n\n**Expected behavior:**\nGame loads",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BA-008.1 AC2: parseDiffStatLine tests
+// ---------------------------------------------------------------------------
+
+describe("parseDiffStatLine", () => {
+  it("parses a line with insertions and deletions", () => {
+    const result = parseDiffStatLine(" Views/GameSetupView.swift | 12 +++---");
+    assert.ok(result);
+    assert.equal(result.file, "Views/GameSetupView.swift");
+    assert.equal(result.insertions, 3);
+    assert.equal(result.deletions, 3);
+  });
+
+  it("parses a line with only insertions", () => {
+    const result = parseDiffStatLine(" Models/NewFile.swift | 45 +++++++++++++++");
+    assert.ok(result);
+    assert.equal(result.file, "Models/NewFile.swift");
+    assert.equal(result.insertions, 15);
+    assert.equal(result.deletions, 0);
+  });
+
+  it("parses a line with only deletions", () => {
+    const result = parseDiffStatLine(" Views/OldView.swift | 8 --------");
+    assert.ok(result);
+    assert.equal(result.file, "Views/OldView.swift");
+    assert.equal(result.insertions, 0);
+    assert.equal(result.deletions, 8);
+  });
+
+  it("handles file paths with spaces", () => {
+    const result = parseDiffStatLine(" Data/some file.json | 3 +++");
+    assert.ok(result);
+    assert.equal(result.file, "Data/some file.json");
+    assert.equal(result.insertions, 3);
+    assert.equal(result.deletions, 0);
+  });
+
+  it("returns null for the summary line", () => {
+    const result = parseDiffStatLine(" 3 files changed, 25 insertions(+), 8 deletions(-)");
+    assert.equal(result, null);
+  });
+
+  it("returns null for empty lines", () => {
+    assert.equal(parseDiffStatLine(""), null);
+    assert.equal(parseDiffStatLine("   "), null);
+  });
+
+  it("parses a line with rename arrow", () => {
+    const result = parseDiffStatLine(" Views/{Old => New}View.swift | 5 ++---");
+    assert.ok(result);
+    assert.equal(result.file, "Views/{Old => New}View.swift");
+    assert.equal(result.insertions, 2);
+    assert.equal(result.deletions, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BA-008.1 AC2: parseDiffStatSummary tests
+// ---------------------------------------------------------------------------
+
+describe("parseDiffStatSummary", () => {
+  it("parses a full summary with insertions and deletions", () => {
+    const lines = [
+      " Views/GameSetupView.swift | 12 +++---",
+      " Models/Game.swift         |  4 ++--",
+      " 2 files changed, 8 insertions(+), 8 deletions(-)",
+    ];
+    const result = parseDiffStatSummary(lines);
+    assert.equal(result, "2 files changed, +8 -8");
+  });
+
+  it("parses summary with only insertions", () => {
+    const lines = [
+      " NewFile.swift | 50 ++++++++",
+      " 1 file changed, 50 insertions(+)",
+    ];
+    const result = parseDiffStatSummary(lines);
+    assert.equal(result, "1 file changed, +50 -0");
+  });
+
+  it("parses summary with only deletions", () => {
+    const lines = [
+      " OldFile.swift | 10 ----------",
+      " 1 file changed, 10 deletions(-)",
+    ];
+    const result = parseDiffStatSummary(lines);
+    assert.equal(result, "1 file changed, +0 -10");
+  });
+
+  it("returns empty string when no summary line found", () => {
+    const result = parseDiffStatSummary(["just some random text", "no summary here"]);
+    assert.equal(result, "");
+  });
+
+  it("pluralizes correctly for multiple files", () => {
+    const lines = [" 5 files changed, 100 insertions(+), 20 deletions(-)"];
+    const result = parseDiffStatSummary(lines);
+    assert.equal(result, "5 files changed, +100 -20");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BA-008.1 AC2: buildWhatChangedHtml tests
+// ---------------------------------------------------------------------------
+
+describe("buildWhatChangedHtml", () => {
+  it("falls back to plain file list when diffSummary is undefined", () => {
+    const html = buildWhatChangedHtml(undefined, "Views/GameSetupView.swift");
+    assert.ok(html.includes("Files Modified"));
+    assert.ok(html.includes("Views/GameSetupView.swift"));
+    assert.ok(!html.includes("What Changed"));
+  });
+
+  it("falls back to plain file list when diffSummary is empty string", () => {
+    const html = buildWhatChangedHtml("", "2 files");
+    assert.ok(html.includes("Files Modified"));
+    assert.ok(!html.includes("What Changed"));
+  });
+
+  it("renders What Changed section with diff stats", () => {
+    const diffSummary = [
+      " Views/GameSetupView.swift | 12 +++---",
+      " Models/Game.swift         |  4 ++--",
+      " 2 files changed, 8 insertions(+), 8 deletions(-)",
+    ].join("\n");
+
+    const html = buildWhatChangedHtml(diffSummary, "2");
+    assert.ok(html.includes("What Changed"));
+    assert.ok(html.includes("Views/GameSetupView.swift"));
+    assert.ok(html.includes("Models/Game.swift"));
+    assert.ok(html.includes("2 files changed, +8 -8"));
+    // Check for colored insertion/deletion markers
+    assert.ok(html.includes("+"));
+    assert.ok(html.includes("-"));
+  });
+
+  it("escapes HTML in file names", () => {
+    const diffSummary = ' File<script>.swift | 3 +++\n 1 file changed, 3 insertions(+)';
+    const html = buildWhatChangedHtml(diffSummary, "1");
+    assert.ok(html.includes("File&lt;script&gt;.swift"));
+    assert.ok(!html.includes("<script>"));
+  });
+
+  it("truncates beyond 30 files", () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 35; i++) {
+      lines.push(` File${i}.swift | 2 +-`);
+    }
+    lines.push(" 35 files changed, 35 insertions(+), 35 deletions(-)");
+    const diffSummary = lines.join("\n");
+
+    const html = buildWhatChangedHtml(diffSummary, "35");
+    assert.ok(html.includes("File0.swift"));
+    assert.ok(html.includes("File29.swift"));
+    assert.ok(!html.includes("File30.swift"));
+    assert.ok(html.includes("...and 5 more files"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BA-008.1 AC2: sendPRCreatedEmail with diffSummary
+// ---------------------------------------------------------------------------
+
+describe("sendPRCreatedEmail with diffSummary", () => {
+  let origResend: string | undefined;
+  let origOwner: string | undefined;
+
+  beforeEach(() => {
+    origResend = process.env.RESEND_API_KEY;
+    origOwner = process.env.OWNER_EMAIL;
+  });
+
+  afterEach(() => {
+    if (origResend !== undefined) {
+      process.env.RESEND_API_KEY = origResend;
+    } else {
+      delete process.env.RESEND_API_KEY;
+    }
+    if (origOwner !== undefined) {
+      process.env.OWNER_EMAIL = origOwner;
+    } else {
+      delete process.env.OWNER_EMAIL;
+    }
+  });
+
+  it("does not throw with diffSummary provided", async () => {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.OWNER_EMAIL;
+
+    await sendPRCreatedEmail({
+      issueNumber: 121,
+      issueTitle: "Daily Challenge in English when Portuguese",
+      prNumber: 140,
+      prUrl: "https://github.com/RaufGlasgow/Sorting-History/pull/140",
+      filesModified: "2",
+      compilation: "success",
+      confidence: "high",
+      fixAttempts: 1,
+      pipelineMode: "full",
+      diffSummary: " Views/DailyChallengeView.swift | 12 +++---\n Models/Locale.swift | 4 ++--\n 2 files changed, 8 insertions(+), 8 deletions(-)",
+    });
+  });
+
+  it("does not throw when diffSummary is undefined", async () => {
+    delete process.env.RESEND_API_KEY;
+    delete process.env.OWNER_EMAIL;
+
+    await sendPRCreatedEmail({
+      issueNumber: 121,
+      issueTitle: "Daily Challenge in English when Portuguese",
+      prNumber: 140,
+      prUrl: "https://github.com/RaufGlasgow/Sorting-History/pull/140",
+      filesModified: "Views/DailyChallengeView.swift",
+      compilation: "success",
+      confidence: "high",
+      fixAttempts: 1,
+      pipelineMode: "full",
     });
   });
 });
