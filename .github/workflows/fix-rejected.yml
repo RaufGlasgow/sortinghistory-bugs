@@ -80,7 +80,8 @@ jobs:
           # Count previous rejections to determine current attempt
           if [ -n "$ISSUE_NUM_FROM_PR" ]; then
             PREV_REJECTIONS=$(gh api "repos/$PRIVATE_REPO/issues/$ISSUE_NUM_FROM_PR/comments" \
-              --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt"))] | length' 2>/dev/null || echo "0")
+              --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt"))] | length' 2>/dev/null || true)
+            [ -z "$PREV_REJECTIONS" ] && PREV_REJECTIONS=0
           else
             PREV_REJECTIONS="0"
           fi

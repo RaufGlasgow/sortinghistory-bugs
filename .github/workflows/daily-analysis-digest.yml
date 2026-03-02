@@ -42,7 +42,8 @@ jobs:
           echo "confidence_json=${CONFIDENCE_JSON}" >> "$GITHUB_OUTPUT"
 
           # Extract needs-attention count for subject line
-          ATTENTION_COUNT=$(echo "$CONFIDENCE_JSON" | jq '.needs_attention | length' 2>/dev/null || echo "0")
+          ATTENTION_COUNT=$(echo "$CONFIDENCE_JSON" | jq '.needs_attention | length' 2>/dev/null || true)
+          [ -z "$ATTENTION_COUNT" ] && ATTENTION_COUNT=0
           echo "attention_count=${ATTENTION_COUNT}" >> "$GITHUB_OUTPUT"
 
           # Build needs-attention HTML section via jq
@@ -189,9 +190,11 @@ jobs:
           SEVEN_DAYS_AGO=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-7d '+%Y-%m-%dT%H:%M:%SZ')
 
           TRIAGE_RUNS=$(gh api "repos/${BUGS_REPO}/actions/workflows/bug-analysis.yml/runs?created=%3E${SEVEN_DAYS_AGO}&per_page=100" \
-            --jq '.total_count' 2>/dev/null || echo "0")
+            --jq '.total_count' 2>/dev/null || true)
+          [ -z "$TRIAGE_RUNS" ] && TRIAGE_RUNS=0
           FIX_RUNS=$(gh api "repos/${BUGS_REPO}/actions/workflows/sdk-bug-fix.yml/runs?created=%3E${SEVEN_DAYS_AGO}&per_page=100" \
-            --jq '.total_count' 2>/dev/null || echo "0")
+            --jq '.total_count' 2>/dev/null || true)
+          [ -z "$FIX_RUNS" ] && FIX_RUNS=0
 
           echo "triage_runs_7d=${TRIAGE_RUNS}" >> "$GITHUB_OUTPUT"
           echo "fix_runs_7d=${FIX_RUNS}" >> "$GITHUB_OUTPUT"
@@ -200,7 +203,8 @@ jobs:
           # AC4: Monthly cost approximation (fix runs this month x ~$7 average)
           MONTH_START=$(date -u '+%Y-%m-01T00:00:00Z')
           FIX_RUNS_MONTH=$(gh api "repos/${BUGS_REPO}/actions/workflows/sdk-bug-fix.yml/runs?created=%3E${MONTH_START}&per_page=100" \
-            --jq '.total_count' 2>/dev/null || echo "0")
+            --jq '.total_count' 2>/dev/null || true)
+          [ -z "$FIX_RUNS_MONTH" ] && FIX_RUNS_MONTH=0
           ESTIMATED_COST=$((FIX_RUNS_MONTH * 7))
 
           echo "fix_runs_month=${FIX_RUNS_MONTH}" >> "$GITHUB_OUTPUT"
