@@ -178,7 +178,8 @@ jobs:
 
           # Deduplicate by issue number (an issue can have multiple labels)
           STUCK_ISSUES=$(printf '%b' "$STUCK_ISSUES" | sort -t'|' -k1 -un | grep -v '^$' || true)
-          STUCK_COUNT=$(echo "$STUCK_ISSUES" | grep -c '.' 2>/dev/null || echo "0")
+          STUCK_COUNT=$(echo "$STUCK_ISSUES" | grep -c '.' 2>/dev/null || true)
+          [ -z "$STUCK_COUNT" ] && STUCK_COUNT=0
 
           echo "stuck_count=${STUCK_COUNT}" >> "$GITHUB_OUTPUT"
           printf '%s' "$STUCK_ISSUES" > /tmp/stuck_issues.txt
