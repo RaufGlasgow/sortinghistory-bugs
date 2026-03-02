@@ -50,14 +50,15 @@ const TARGET_LANGUAGES = ["Spanish", "French", "German", "Portuguese", "Dutch"] 
 /** Languages with formal agent rules (from translation-agent.md) */
 const AGENT_SUPPORTED_LANGUAGES = new Set(["Spanish", "German", "Portuguese", "Dutch"]);
 
-/** Language name to ISO code mapping (for grep patterns in LocalizationHelper.swift) */
-const LANGUAGE_CODES: Record<string, string> = {
-  English: "en",
-  Spanish: "es",
-  French: "fr",
-  German: "de",
-  Portuguese: "pt",
-  Dutch: "nl",
+/** Language name to Swift enum value mapping (for grep patterns in LocalizationHelper.swift).
+ *  The file uses `localizedStrings[.english]` syntax, not string codes. */
+const LANGUAGE_ENUM_VALUES: Record<string, string> = {
+  English: "english",
+  Spanish: "spanish",
+  French: "french",
+  German: "german",
+  Portuguese: "portuguese",
+  Dutch: "dutch",
 };
 
 // ------------------------------------------------------------------
@@ -155,7 +156,7 @@ function extractKeysFromSection(
 
 /**
  * Dynamically detect language section boundaries in LocalizationHelper.swift.
- * Greps for `localizedStrings["XX"]` patterns and computes start/end line pairs.
+ * Greps for `localizedStrings[.english]` etc. and computes start/end line pairs.
  * Returns empty object if detection fails (caller should handle gracefully).
  */
 function findLanguageSections(
@@ -165,18 +166,18 @@ function findLanguageSections(
 
   try {
     const output = execSync(
-      "grep -n 'localizedStrings\\[\"' " + JSON.stringify(filePath),
+      "grep -n 'localizedStrings\\[\\.' " + JSON.stringify(filePath),
       { encoding: "utf-8", timeout: 10_000 },
     ).trim();
 
     for (const line of output.split("\n")) {
-      // Pattern: "31:        localizedStrings["en"] = ["
-      const lineMatch = line.match(/^(\d+):.*localizedStrings\["(\w+)"\]/);
+      // Pattern: "31:        localizedStrings[.english] = ["
+      const lineMatch = line.match(/^(\d+):.*localizedStrings\[\.(\w+)\]/);
       if (lineMatch) {
         const lineNum = parseInt(lineMatch[1], 10);
-        const code = lineMatch[2];
-        // Reverse lookup: code -> language name
-        const langEntry = Object.entries(LANGUAGE_CODES).find(([, c]) => c === code);
+        const enumVal = lineMatch[2];
+        // Reverse lookup: enum value -> language name
+        const langEntry = Object.entries(LANGUAGE_ENUM_VALUES).find(([, v]) => v === enumVal);
         if (langEntry) {
           sections.push({ language: langEntry[0], start: lineNum });
         }
@@ -411,7 +412,7 @@ function buildFixerUserPrompt(
   keys: Array<{ key: string; englishValue: string; fixType: "missing" | "wrong" }>,
   locHelperPath: string,
 ): string {
-  const langCode = LANGUAGE_CODES[language] ?? language.toLowerCase();
+  const langEnum = LANGUAGE_ENUM_VALUES[language] ?? language.toLowerCase();
   const keysBlock = keys.map(k =>
     '"' + k.key + '": "' + k.englishValue + '",'
   ).join("\n");
@@ -420,7 +421,7 @@ function buildFixerUserPrompt(
   const wrongKeys = keys.filter(k => k.fixType === "wrong");
 
   const instructions: string[] = [
-    "Fix translation keys in LocalizationHelper.swift for **" + language + "** (" + langCode + ").",
+    "Fix translation keys in LocalizationHelper.swift for **" + language + "** (." + langEnum + ").",
     "",
     "FILE: " + locHelperPath,
     "",
@@ -449,7 +450,7 @@ function buildFixerUserPrompt(
 
   instructions.push(
     "INSTRUCTIONS:",
-    "1. Read " + locHelperPath + " to find the " + language + " section (look for `localizedStrings[\"" + langCode + "\"]`)",
+    "1. Read " + locHelperPath + " to find the " + language + " section (look for `localizedStrings[." + langEnum + "]`)",
     "2. For MISSING keys: translate each English value to " + language + ", then use the Edit tool to add the entries inside the " + language + " dictionary, before the closing bracket `]`",
     "3. For WRONG keys: translate correctly, then use Edit to replace the existing entry",
     "4. Match the file's existing indentation (typically 12 spaces before each key)",
