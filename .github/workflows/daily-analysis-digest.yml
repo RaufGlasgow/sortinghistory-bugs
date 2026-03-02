@@ -169,7 +169,7 @@ jobs:
           # AC1: Query issues with attention-needed labels
           STUCK_ISSUES=""
           STUCK_COUNT=0
-          for LABEL in dispatch-pending needs-manual-fix fix-failed triage-failed; do
+          for LABEL in dispatch-pending needs-manual-fix fix-failed triage-failed translation-fix-failed; do
             ISSUES=$(gh api "repos/${PRIVATE_REPO}/issues?labels=${LABEL}&state=open&per_page=100" \
               --jq '.[] | "\(.number)|\(.title)|\(.html_url)"' 2>/dev/null || echo "")
             if [ -n "$ISSUES" ]; then
