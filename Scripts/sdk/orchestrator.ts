@@ -605,7 +605,8 @@ async function main(): Promise<void> {
     case "translation-fix": {
       // BA-008.2: Translation fix command -- analyzes issue, pauses for approval
       const issueNumber = parseIssueFlag();
-      const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
+      const repoRoot = process.env.GITHUB_WORKSPACE ?? resolve(process.cwd(), "../..");
+      const gameRepo = resolve(repoRoot, parseFlag("game-repo") ?? PATHS.GAME_REPO);
 
       // Read issue body and title from temp files (written by YAML workflow)
       // or fetch via gh CLI
@@ -653,7 +654,8 @@ async function main(): Promise<void> {
       // BA-008.2: Resume translation workflow after approval
       const issueNumber = parseIssueFlag();
       const action = parseActionFlag();
-      const gameRepo = parseFlag("game-repo") ?? PATHS.GAME_REPO;
+      const repoRoot = process.env.GITHUB_WORKSPACE ?? resolve(process.cwd(), "../..");
+      const gameRepo = resolve(repoRoot, parseFlag("game-repo") ?? PATHS.GAME_REPO);
 
       console.log("[orchestrator] Translation resume: issue=#" + issueNumber + " action=" + action);
 

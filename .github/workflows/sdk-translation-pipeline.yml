@@ -145,6 +145,83 @@ jobs:
           git diff --cached --quiet && echo "No state changes to commit" || \
             (git commit -m "state: translation resume complete for issue #$RESUME_ISSUE" && git push)
 
+      # === FAILURE HANDLING ===
+      # When any translation step crashes, mark the issue so it's visible in the digest
+      - name: "Label issue on failure"
+        if: failure() && (github.event.action == 'sdk-translation-fix' || github.event.action == 'sdk-translation-resume')
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          ISSUE="${{ github.event.client_payload.issue_number }}"
+          PRIVATE_REPO="RaufGlasgow/Sorting-History"
+
+          # Add failure label so pipeline health catches it
+          gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
+            --add-label "translation-fix-failed" 2>/dev/null || true
+
+          # Remove sdk-routed so the digest shows the issue again
+          gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
+            --remove-label "sdk-routed" 2>/dev/null || true
+
+          echo "Issue #$ISSUE labeled as translation-fix-failed, sdk-routed removed"
+
+      - name: "Send failure email"
+        if: failure() && (github.event.action == 'sdk-translation-fix' || github.event.action == 'sdk-translation-resume')
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+        run: |
+          ISSUE="${{ github.event.client_payload.issue_number }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE}"
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
+            echo "WARNING: Email secrets not configured — skipping failure email"
+            exit 0
+          fi
+
+          cat > /tmp/translation-failure-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Pipeline Error</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Translation Pipeline Failed</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">Translation fix for <strong>issue #${ISSUE}</strong> crashed. The issue has been labeled <code>translation-fix-failed</code> and will appear in your next digest.</p>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">Check the workflow log to see what went wrong, then fix and re-dispatch.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${ISSUE_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Issue</a>
+              </div>
+              <p style="text-align:center;margin-top:12px;"><a href="${RUN_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;">View workflow log &rarr;</a></p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Translation failure alert</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Pipeline Failed: Translation fix crashed for issue #${ISSUE}" \
+            --rawfile html /tmp/translation-failure-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
+
       # === TEST SUITE (manual / schedule / push) ===
       - name: "Run test suite"
         if: github.event.action != 'sdk-translation-fix' && github.event.action != 'sdk-translation-resume'

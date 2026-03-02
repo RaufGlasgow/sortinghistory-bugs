@@ -26,7 +26,9 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { LIMITS, PATHS, ROUTING, MODELS, type WorkflowStatus } from "../config.js";
+import { LIMITS, PATHS, ROUTING, MODELS, FIXER_TOOLS, type WorkflowStatus } from "../config.js";
+import { spawnSubagent } from "../lib/subagent.js";
+import { buildBugFixHooksConfig } from "../lib/hooks.js";
 import {
   createWorkflowState,
   updateWorkflowState,
@@ -47,6 +49,16 @@ const TARGET_LANGUAGES = ["Spanish", "French", "German", "Portuguese", "Dutch"] 
 
 /** Languages with formal agent rules (from translation-agent.md) */
 const AGENT_SUPPORTED_LANGUAGES = new Set(["Spanish", "German", "Portuguese", "Dutch"]);
+
+/** Language name to ISO code mapping (for grep patterns in LocalizationHelper.swift) */
+const LANGUAGE_CODES: Record<string, string> = {
+  English: "en",
+  Spanish: "es",
+  French: "fr",
+  German: "de",
+  Portuguese: "pt",
+  Dutch: "nl",
+};
 
 // ------------------------------------------------------------------
 // Types
@@ -103,27 +115,32 @@ export interface TranslationFinding {
 
 /**
  * Extract key-value pairs from a language section of LocalizationHelper.swift.
- * Uses grep to avoid reading the entire 64K file.
+ * Uses sed + grep to search only within bounded line ranges, avoiding false
+ * matches from other language sections.
  */
 function extractKeysFromSection(
   filePath: string,
   searchKeys: string[],
   sectionStartLine?: number,
+  sectionEndLine?: number,
 ): Record<string, string> {
   const result: Record<string, string> = {};
 
   for (const key of searchKeys) {
     try {
-      let grepCmd = "grep -n '\"" + key + "\"' " + JSON.stringify(filePath);
+      let grepCmd: string;
       if (sectionStartLine) {
-        // Search only from the section start line onwards
-        grepCmd = "sed -n '" + sectionStartLine + ",$p' " + JSON.stringify(filePath) +
-          " | grep -n '\"" + key + "\"'";
+        const endExpr = sectionEndLine ? String(sectionEndLine) : "$";
+        grepCmd = "sed -n '" + sectionStartLine + "," + endExpr + "p' " + JSON.stringify(filePath) +
+          " | grep '\"" + key + "\"'";
+      } else {
+        grepCmd = "grep '\"" + key + "\"' " + JSON.stringify(filePath);
       }
       const output = execSync(grepCmd, { encoding: "utf-8", timeout: 10_000 }).trim();
       if (output) {
-        // Parse "key": "value" pattern
-        const match = output.match(/"([^"]+)":\s*"([^"]*)"/);
+        // Parse "key": "value" pattern -- take first match line
+        const firstLine = output.split("\n")[0];
+        const match = firstLine.match(/"([^"]+)":\s*"([^"]*)"/);
         if (match && match[1] === key) {
           result[key] = match[2];
         }
@@ -137,6 +154,70 @@ function extractKeysFromSection(
 }
 
 /**
+ * Dynamically detect language section boundaries in LocalizationHelper.swift.
+ * Greps for `localizedStrings["XX"]` patterns and computes start/end line pairs.
+ * Returns empty object if detection fails (caller should handle gracefully).
+ */
+function findLanguageSections(
+  filePath: string,
+): Record<string, { start: number; end: number }> {
+  const sections: Array<{ language: string; start: number }> = [];
+
+  try {
+    const output = execSync(
+      "grep -n 'localizedStrings\\[\"' " + JSON.stringify(filePath),
+      { encoding: "utf-8", timeout: 10_000 },
+    ).trim();
+
+    for (const line of output.split("\n")) {
+      // Pattern: "31:        localizedStrings["en"] = ["
+      const lineMatch = line.match(/^(\d+):.*localizedStrings\["(\w+)"\]/);
+      if (lineMatch) {
+        const lineNum = parseInt(lineMatch[1], 10);
+        const code = lineMatch[2];
+        // Reverse lookup: code -> language name
+        const langEntry = Object.entries(LANGUAGE_CODES).find(([, c]) => c === code);
+        if (langEntry) {
+          sections.push({ language: langEntry[0], start: lineNum });
+        }
+      }
+    }
+  } catch {
+    console.error("[translation-e2e] WARNING: Could not detect language sections via grep");
+    return {};
+  }
+
+  // Sort by start line
+  sections.sort((a, b) => a.start - b.start);
+
+  // Get total line count for the last section's end boundary
+  let totalLines: number;
+  try {
+    const wcOutput = execSync(
+      "wc -l < " + JSON.stringify(filePath),
+      { encoding: "utf-8", timeout: 5_000 },
+    ).trim();
+    totalLines = parseInt(wcOutput, 10);
+  } catch {
+    totalLines = 999999;
+  }
+
+  // Build result with end boundaries (each section ends where the next begins)
+  const result: Record<string, { start: number; end: number }> = {};
+  for (let i = 0; i < sections.length; i++) {
+    const endLine = i + 1 < sections.length ? sections[i + 1].start - 1 : totalLines;
+    result[sections[i].language] = { start: sections[i].start, end: endLine };
+  }
+
+  console.log("[translation-e2e] Detected language sections:");
+  for (const [lang, bounds] of Object.entries(result)) {
+    console.log("  " + lang + ": lines " + bounds.start + "-" + bounds.end);
+  }
+
+  return result;
+}
+
+/**
  * Analyze the bug report to determine which keys and languages are affected.
  * Scans LocalizationHelper.swift for the English keys and checks each language section.
  */
@@ -144,7 +225,7 @@ export function analyzeTranslationBug(
   issueBody: string,
   gameRepoPath: string,
 ): { findings: TranslationFinding[]; englishKeys: Record<string, string> } {
-  const locHelperPath = path.join(gameRepoPath, "Utilities", "LocalizationHelper.swift");
+  const locHelperPath = path.join(gameRepoPath, "Localization", "LocalizationHelper.swift");
 
   if (!fs.existsSync(locHelperPath)) {
     throw new Error("LocalizationHelper.swift not found at: " + locHelperPath);
@@ -184,15 +265,11 @@ export function analyzeTranslationBug(
   const keysArray = Array.from(mentionedKeys);
   const englishKeys = extractKeysFromSection(locHelperPath, keysArray);
 
-  // Check each non-English language section
-  // Known section start lines (from story docs)
-  const languageSections: Record<string, number> = {
-    Spanish: 941,
-    French: 1130,
-    German: 1177,
-    Portuguese: 2036,
-    Dutch: 2908,
-  };
+  // Dynamically detect language section boundaries
+  const languageSections = findLanguageSections(locHelperPath);
+  if (Object.keys(languageSections).length === 0) {
+    throw new Error("Could not detect language sections in LocalizationHelper.swift");
+  }
 
   const findings: TranslationFinding[] = [];
 
@@ -200,13 +277,13 @@ export function analyzeTranslationBug(
     const missingIn: string[] = [];
     const wrongIn: string[] = [];
 
-    for (const [language, startLine] of Object.entries(languageSections)) {
-      const langKeys = extractKeysFromSection(locHelperPath, [key], startLine);
+    for (const language of TARGET_LANGUAGES) {
+      const section = languageSections[language];
+      if (!section) continue;
+      const langKeys = extractKeysFromSection(locHelperPath, [key], section.start, section.end);
       if (!(key in langKeys)) {
         missingIn.push(language);
       }
-      // For wrong translations, we would need the bug report to specify which are wrong
-      // For now, focus on missing keys (Bug A pattern)
     }
 
     if (missingIn.length > 0 || wrongIn.length > 0) {
@@ -318,6 +395,184 @@ function buildTranslationPrDescription(
     "---",
     "*Generated by SDK translation E2E pipeline (BA-008.2). Do NOT auto-merge.*",
   ].join("\n");
+}
+
+// ------------------------------------------------------------------
+// Fixer Helpers
+// ------------------------------------------------------------------
+
+/**
+ * Build the user prompt for a translation fixer subagent.
+ * Tells the subagent exactly which file to edit, what keys to translate,
+ * and which language section to target.
+ */
+function buildFixerUserPrompt(
+  language: string,
+  keys: Array<{ key: string; englishValue: string; fixType: "missing" | "wrong" }>,
+  locHelperPath: string,
+): string {
+  const langCode = LANGUAGE_CODES[language] ?? language.toLowerCase();
+  const keysBlock = keys.map(k =>
+    '"' + k.key + '": "' + k.englishValue + '",'
+  ).join("\n");
+
+  const missingKeys = keys.filter(k => k.fixType === "missing");
+  const wrongKeys = keys.filter(k => k.fixType === "wrong");
+
+  const instructions: string[] = [
+    "Fix translation keys in LocalizationHelper.swift for **" + language + "** (" + langCode + ").",
+    "",
+    "FILE: " + locHelperPath,
+    "",
+    "ENGLISH SOURCE KEYS:",
+    "```swift",
+    keysBlock,
+    "```",
+    "",
+  ];
+
+  if (missingKeys.length > 0) {
+    instructions.push(
+      "MISSING KEYS (add to the " + language + " section):",
+      missingKeys.map(k => "- `" + k.key + "`").join("\n"),
+      "",
+    );
+  }
+
+  if (wrongKeys.length > 0) {
+    instructions.push(
+      "WRONG KEYS (replace existing translation in the " + language + " section):",
+      wrongKeys.map(k => "- `" + k.key + "`").join("\n"),
+      "",
+    );
+  }
+
+  instructions.push(
+    "INSTRUCTIONS:",
+    "1. Read " + locHelperPath + " to find the " + language + " section (look for `localizedStrings[\"" + langCode + "\"]`)",
+    "2. For MISSING keys: translate each English value to " + language + ", then use the Edit tool to add the entries inside the " + language + " dictionary, before the closing bracket `]`",
+    "3. For WRONG keys: translate correctly, then use Edit to replace the existing entry",
+    "4. Match the file's existing indentation (typically 12 spaces before each key)",
+    "5. After editing, use Read to verify your changes are present in the " + language + " section",
+    "",
+    "CRITICAL RULES:",
+    "- NEVER modify the English section or any other language section",
+    "- NEVER translate the key names (left side of colon) — only translate values (right side)",
+    "- Preserve ALL format specifiers exactly: %d, %@, %lld, %.1f",
+    "- Use proper Unicode diacritics for " + language + " (NEVER ASCII substitutes)",
+    "",
+    "After completing, output a JSON summary:",
+    '{"language": "' + language + '", "keys_fixed": [' +
+      keys.map(k => '"' + k.key + '"').join(", ") +
+    '], "success": true}',
+  );
+
+  return instructions.join("\n");
+}
+
+/**
+ * Re-check specific translation keys after a fix attempt.
+ * Returns only the keys that are STILL missing (empty = all fixed).
+ */
+function recheckTranslationKeys(
+  filePath: string,
+  keys: string[],
+  languages: string[],
+  sections: Record<string, { start: number; end: number }>,
+): TranslationFinding[] {
+  const englishKeys = extractKeysFromSection(filePath, keys);
+  const findings: TranslationFinding[] = [];
+
+  for (const key of keys) {
+    if (!(key in englishKeys)) continue;
+    const missingIn: string[] = [];
+
+    for (const language of languages) {
+      const section = sections[language];
+      if (!section) continue;
+      const langKeys = extractKeysFromSection(filePath, [key], section.start, section.end);
+      if (!(key in langKeys)) {
+        missingIn.push(language);
+      }
+    }
+
+    if (missingIn.length > 0) {
+      findings.push({ key, englishValue: englishKeys[key], missingIn, wrongIn: [] });
+    }
+  }
+
+  return findings;
+}
+
+/**
+ * Create a branch, commit changes, push, and create a PR in the game repo.
+ * Returns { prNumber, prUrl } or null on failure.
+ */
+function createTranslationPR(
+  gameRepoPath: string,
+  branch: string,
+  baseBranch: string,
+  findings: TranslationFinding[],
+  workflowId: string,
+  fixAttempts: number,
+  issueNumber: number,
+): { prNumber: number; prUrl: string } | null {
+  const repo = ROUTING.PRIVATE_REPO;
+  const prDescription = buildTranslationPrDescription(findings, workflowId, fixAttempts, issueNumber);
+
+  try {
+    // Create branch and commit
+    execSync("git checkout -b " + branch, { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 });
+    execSync('git config user.name "sdk-bot"', { cwd: gameRepoPath, encoding: "utf-8", timeout: 5_000 });
+    execSync('git config user.email "sdk-bot@users.noreply.github.com"', { cwd: gameRepoPath, encoding: "utf-8", timeout: 5_000 });
+    execSync("git add Localization/LocalizationHelper.swift", { cwd: gameRepoPath, encoding: "utf-8", timeout: 10_000 });
+
+    // Check if there are actual changes
+    try {
+      execSync("git diff --cached --quiet", { cwd: gameRepoPath, encoding: "utf-8", timeout: 5_000 });
+      console.log("[translation-e2e] WARNING: No changes to commit in game repo");
+      return null;
+    } catch {
+      // Non-zero exit = there ARE changes, which is what we want
+    }
+
+    execSync(
+      'git commit -m "fix(i18n): add missing translations for #' + issueNumber + '"',
+      { cwd: gameRepoPath, encoding: "utf-8", timeout: 15_000 },
+    );
+    execSync("git push origin " + branch, { cwd: gameRepoPath, encoding: "utf-8", timeout: 30_000 });
+
+    // Create PR
+    const tmpFile = path.join(tmpdir(), "pr-body-" + Date.now() + ".md");
+    fs.writeFileSync(tmpFile, prDescription, "utf-8");
+
+    const prOutput = execSync(
+      "gh pr create --repo " + repo +
+      " --head " + branch +
+      " --base " + baseBranch +
+      ' --title "fix(i18n): missing translations for #' + issueNumber + '"' +
+      " --body-file " + tmpFile,
+      { cwd: gameRepoPath, encoding: "utf-8", timeout: 30_000 },
+    ).trim();
+
+    try { fs.unlinkSync(tmpFile); } catch { /* cleanup */ }
+
+    // Parse PR URL and number from gh output
+    const prUrlMatch = prOutput.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
+    if (prUrlMatch) {
+      return {
+        prNumber: parseInt(prUrlMatch[1], 10),
+        prUrl: prUrlMatch[0],
+      };
+    }
+
+    console.log("[translation-e2e] PR created but could not parse URL: " + prOutput);
+    return null;
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[translation-e2e] Failed to create PR: " + errMsg);
+    return null;
+  }
 }
 
 // ------------------------------------------------------------------
@@ -567,7 +822,7 @@ export async function resumeTranslationE2E(
   });
 
   // Re-extract English keys from the file (we need fresh values)
-  const locHelperPath = path.join(gameRepoPath, "Utilities", "LocalizationHelper.swift");
+  const locHelperPath = path.join(gameRepoPath, "Localization", "LocalizationHelper.swift");
   const keysToTranslate = translationFindings.map(f => f.key);
   const englishKeys = extractKeysFromSection(locHelperPath, keysToTranslate);
 
@@ -581,42 +836,225 @@ export async function resumeTranslationE2E(
   console.log("[translation-e2e] Languages to fix: " + Array.from(allMissingLanguages).join(", "));
   console.log("[translation-e2e] Keys to translate: " + keysToTranslate.join(", "));
 
-  // NOTE: In a real pipeline, we would call the AI fixer subagent here per language.
-  // For the MVP, the orchestrator framework and state machine are in place.
-  // The actual fix application will be done by the GitHub Actions workflow
-  // that spawns Claude Code with the translation-fixer.md prompt.
-  //
-  // For now, this orchestrator:
-  // 1. Sets the state to fixing
-  // 2. Prepares the context (English keys, target languages, finding details)
-  // 3. The YAML workflow handles the actual subagent invocation
-  //
-  // This matches the content pipeline pattern where content-e2e.ts delegates
-  // the actual fixing to the retry loop (retry-loop.ts) which spawns subagents.
+  // Load fixer system prompt
+  const repoRoot = process.env.GITHUB_WORKSPACE ?? path.resolve(process.cwd(), "../..");
+  const promptPath = path.join(repoRoot, "Scripts", "sdk", "prompts", "translation-fixer.md");
+  let fixerSystemPrompt: string;
+  try {
+    fixerSystemPrompt = fs.readFileSync(promptPath, "utf-8");
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[translation-e2e] Could not read fixer prompt at " + promptPath);
+    await updateWorkflowState(workflowId, { status: "escalated", error: "Missing fixer prompt: " + errMsg });
+    return {
+      status: "escalated",
+      workflowId,
+      totalKeys: translationFindings.length,
+      languagesAffected: allMissingLanguages.size,
+      fixAttempts: 0,
+      prNumber: null,
+      prUrl: null,
+      error: "Missing fixer prompt: " + errMsg,
+    };
+  }
 
-  await updateWorkflowState(workflowId, {
-    status: "re_verifying",
-    fix_attempts: 1,
-  });
+  // Detect current section boundaries (fresh read, post-approval)
+  const sections = findLanguageSections(locHelperPath);
+  if (Object.keys(sections).length === 0) {
+    const secErr = "Could not detect language sections in LocalizationHelper.swift";
+    await updateWorkflowState(workflowId, { status: "escalated", error: secErr });
+    return {
+      status: "escalated",
+      workflowId,
+      totalKeys: translationFindings.length,
+      languagesAffected: allMissingLanguages.size,
+      fixAttempts: 0,
+      prNumber: null,
+      prUrl: null,
+      error: secErr,
+    };
+  }
 
-  console.log("[translation-e2e] Status: re_verifying");
-  console.log("[translation-e2e] Fix attempt completed, running verification...");
+  // ---------------------------------------------------
+  // Fix loop with retry
+  // ---------------------------------------------------
+  let fixAttempt = 0;
+  let remainingFindings = translationFindings;
+
+  while (fixAttempt < LIMITS.MAX_FIX_ATTEMPTS && remainingFindings.length > 0) {
+    fixAttempt++;
+    console.log("");
+    console.log("--- Fix Attempt " + fixAttempt + "/" + LIMITS.MAX_FIX_ATTEMPTS + " ---");
+
+    await updateWorkflowState(workflowId, {
+      status: "fixing",
+      fix_attempts: fixAttempt,
+    });
+
+    // Run fixer for each affected language (one at a time to avoid conflicts)
+    for (const language of Array.from(allMissingLanguages)) {
+      const keysForLang = remainingFindings
+        .filter(f => f.missingIn.includes(language) || f.wrongIn.includes(language))
+        .map(f => ({
+          key: f.key,
+          englishValue: englishKeys[f.key] ?? f.englishValue,
+          fixType: (f.missingIn.includes(language) ? "missing" : "wrong") as "missing" | "wrong",
+        }));
+
+      if (keysForLang.length === 0) continue;
+
+      const userPrompt = buildFixerUserPrompt(language, keysForLang, locHelperPath);
+
+      console.log("[translation-e2e] Fixing " + keysForLang.length + " key(s) in " + language + "...");
+
+      const fixResult = await spawnSubagent({
+        model: MODELS.FIXER,
+        tools: [...FIXER_TOOLS],
+        prompt: userPrompt,
+        systemPrompt: fixerSystemPrompt,
+        hooks: buildBugFixHooksConfig(gameRepoPath),
+        cwd: repoRoot,
+        maxTurns: 15,
+      });
+
+      console.log("[translation-e2e] Fixer " + language + ": success=" + fixResult.success +
+        " cost=$" + fixResult.costUsd.toFixed(4) +
+        " tools=[" + fixResult.toolsUsed.join(",") + "]");
+
+      if (!fixResult.success) {
+        console.error("[translation-e2e] Fixer failed for " + language + ": " + fixResult.error);
+      }
+    }
+
+    // ---------------------------------------------------
+    // Verify: re-detect sections (may have shifted) and re-check keys
+    // ---------------------------------------------------
+    await updateWorkflowState(workflowId, { status: "re_verifying" });
+
+    const freshSections = findLanguageSections(locHelperPath);
+    const languagesToCheck = Array.from(allMissingLanguages);
+
+    remainingFindings = recheckTranslationKeys(
+      locHelperPath,
+      keysToTranslate,
+      languagesToCheck,
+      freshSections,
+    );
+
+    if (remainingFindings.length === 0) {
+      console.log("[translation-e2e] All keys verified present after attempt " + fixAttempt);
+    } else {
+      console.log("[translation-e2e] Still " + remainingFindings.length +
+        " finding(s) after attempt " + fixAttempt + ":");
+      for (const f of remainingFindings) {
+        console.log("  - " + f.key + ": still missing in [" + f.missingIn.join(", ") + "]");
+      }
+    }
+  }
 
   // Clean up session
   await removeSession(workflowId);
 
-  // The actual verification and PR creation happen in the YAML workflow
-  // after the fixer subagent writes its changes.
-  // This function returns the state for the YAML to pick up.
+  // ---------------------------------------------------
+  // Result: Create PR or escalate
+  // ---------------------------------------------------
+  if (remainingFindings.length === 0) {
+    // All keys fixed — create PR
+    console.log("");
+    console.log("--- Creating PR ---");
+
+    const pr = createTranslationPR(
+      gameRepoPath, branch, baseBranch,
+      translationFindings, workflowId, fixAttempt,
+      state.issue_number ?? 0,
+    );
+
+    if (pr) {
+      await updateWorkflowState(workflowId, {
+        status: "complete",
+        pr_number: pr.prNumber,
+        fix_attempts: fixAttempt,
+      });
+
+      if (state.issue_number) {
+        postIssueComment(
+          state.issue_number,
+          "## Translation Fix Complete\n\n" +
+          "PR #" + pr.prNumber + " created with translations for " +
+          translationFindings.length + " key(s) across " + allMissingLanguages.size + " language(s).\n\n" +
+          "**Fix attempts:** " + fixAttempt + "\n" +
+          "**Workflow:** `" + workflowId + "`\n\n" +
+          "*Do NOT auto-merge — human review required.*",
+        );
+      }
+
+      console.log("[translation-e2e] PR created: " + pr.prUrl);
+
+      return {
+        status: "complete",
+        workflowId,
+        totalKeys: translationFindings.length,
+        languagesAffected: allMissingLanguages.size,
+        fixAttempts: fixAttempt,
+        prNumber: pr.prNumber,
+        prUrl: pr.prUrl,
+        error: null,
+      };
+    }
+
+    // PR creation failed but fixes were applied
+    console.error("[translation-e2e] Fixes applied but PR creation failed");
+    await updateWorkflowState(workflowId, {
+      status: "escalated",
+      fix_attempts: fixAttempt,
+      error: "Fixes applied but PR creation failed",
+    });
+
+    return {
+      status: "escalated",
+      workflowId,
+      totalKeys: translationFindings.length,
+      languagesAffected: allMissingLanguages.size,
+      fixAttempts: fixAttempt,
+      prNumber: null,
+      prUrl: null,
+      error: "Fixes applied but PR creation failed — check game-repo for uncommitted changes",
+    };
+  }
+
+  // Exhausted retries — escalate
+  console.error("[translation-e2e] Exhausted " + LIMITS.MAX_FIX_ATTEMPTS + " fix attempts");
+
+  await updateWorkflowState(workflowId, {
+    status: "escalated",
+    fix_attempts: fixAttempt,
+    error: "Exhausted " + fixAttempt + " fix attempts, " + remainingFindings.length + " finding(s) remain",
+  });
+
+  if (state.issue_number) {
+    addHandoffLabel(state.issue_number);
+    postIssueComment(
+      state.issue_number,
+      "## Translation Fix Escalated\n\n" +
+      "After **" + fixAttempt + "** attempt(s), **" + remainingFindings.length +
+      "** finding(s) still need manual translation.\n\n" +
+      "### Remaining Issues\n" +
+      remainingFindings.map(f =>
+        "- `" + f.key + "`: missing in " + f.missingIn.join(", "),
+      ).join("\n") + "\n\n" +
+      "**Workflow:** `" + workflowId + "`\n\n" +
+      "Manual intervention is required.",
+    );
+  }
 
   return {
-    status: "re_verifying",
+    status: "escalated",
     workflowId,
     totalKeys: translationFindings.length,
     languagesAffected: allMissingLanguages.size,
-    fixAttempts: 1,
+    fixAttempts: fixAttempt,
     prNumber: null,
     prUrl: null,
-    error: null,
+    error: "Exhausted " + fixAttempt + " fix attempts",
   };
 }
