@@ -292,3 +292,173 @@ jobs:
           gh issue comment "$ISSUE_NUM" --repo "$PRIVATE_REPO" -F /tmp/escalation-comment.md
 
           echo "Issue #$ISSUE_NUM escalated — needs-manual-fix label applied"
+
+      # BA-008.1 AC4: Send rejection confirmation email (retry or escalation variant)
+      - name: Send rejection email
+        if: always() && steps.extract.outputs.issue_found == 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
+          ATTEMPT: ${{ steps.count.outputs.attempt }}
+          MAX_ATTEMPTS: ${{ steps.config.outputs.max_attempts }}
+          SHOULD_RETRY: ${{ steps.count.outputs.should_retry }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
+            echo "WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send rejection email"
+            exit 0
+          fi
+
+          ISSUE_URL="https://github.com/${PRIVATE_REPO}/issues/${ISSUE_NUM}"
+
+          # Fetch issue title safely via jq
+          ISSUE_TITLE=$(gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}" --jq '.title // "Unknown"' 2>/dev/null || echo "Unknown")
+
+          # Build action buttons
+          VIEW_BUTTON="<a href=\"${ISSUE_URL}\" style=\"display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;\">View Issue</a>"
+          COMMENT_BUTTON=""
+          if [ -n "$AUTH_TOKEN" ]; then
+            ENCODED_TOKEN=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$AUTH_TOKEN'))")
+            COMMENT_URL="https://sortinghistory.com/api/pipeline/comment?issue=${ISSUE_NUM}&amp;token=${ENCODED_TOKEN}"
+            COMMENT_BUTTON="<a href=\"${COMMENT_URL}\" style=\"display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;\">Provide Guidance</a>"
+          fi
+
+          # Escape rejection reason for HTML display
+          SAFE_REASON=$(echo "$REJECTION_REASON" | python3 -c "import sys,html; print(html.escape(sys.stdin.read().strip()))")
+
+          if [ "$SHOULD_RETRY" = "true" ]; then
+            # ── Retry variant ──
+            SUBJECT="Fix Rejected: #${ISSUE_NUM} — retry in progress (attempt ${ATTEMPT}/${MAX_ATTEMPTS})"
+            HEADER_BG="#d97706"
+            BADGE_BG="#92400e"
+            BADGE_TEXT="Retry"
+            HEADLINE="Fix Rejected — Retry in Progress"
+
+            cat > /tmp/rejection-email.html << EMAILEOF
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+              <div style="background:${HEADER_BG};padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+                <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+                <div style="display:inline-block;padding:4px 14px;background:${BADGE_BG};border-radius:20px;margin-bottom:8px;">
+                  <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">${BADGE_TEXT}</span>
+                </div>
+                <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">${HEADLINE}</h1>
+              </div>
+              <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+                <div style="margin:0 0 20px 0;padding:14px 16px;background:#faf8f4;border-left:4px solid #DAA520;border-radius:4px;">
+                  <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug #${ISSUE_NUM}</p>
+                  <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${ISSUE_TITLE}</p>
+                </div>
+                <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #dc2626;border-radius:4px;">
+                  <p style="margin:0 0 4px 0;font-size:12px;color:#dc2626;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Your Rejection Reason</p>
+                  <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${SAFE_REASON}</p>
+                </div>
+                <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+                  <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#faf8f4;color:#8B6914;font-size:13px;">Attempt</td><td style="padding:8px 12px;background:#faf8f4;font-size:14px;color:#333333;">${ATTEMPT} of ${MAX_ATTEMPTS} failed</td></tr>
+                  <tr><td style="padding:8px 12px;font-weight:600;color:#8B6914;font-size:13px;">Status</td><td style="padding:8px 12px;font-size:14px;color:#333333;">Retry dispatched</td></tr>
+                </table>
+                <div style="padding:14px 16px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;margin-bottom:24px;">
+                  <p style="margin:0;font-weight:700;color:#166534;font-size:14px;">A new fix attempt is running now. You will get another PR email in approximately 10 minutes.</p>
+                </div>
+                <div style="text-align:center;">
+                  ${VIEW_BUTTON}
+                  ${COMMENT_BUTTON}
+                </div>
+              </div>
+              <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+                <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+                <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+                <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+                  <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+                  &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                  <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+                  &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                  <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+                </p>
+              </div>
+              <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+                <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Rejection notification</p>
+              </div>
+            </div>
+          EMAILEOF
+
+          else
+            # ── Escalation variant ──
+            SUBJECT="Fix Rejected: #${ISSUE_NUM} — all ${MAX_ATTEMPTS} attempts exhausted"
+            HEADER_BG="#b91c1c"
+            BADGE_BG="#7f1d1d"
+            BADGE_TEXT="Escalated"
+            HEADLINE="All Automated Attempts Exhausted"
+
+            # Fetch rejection history
+            REASONS_HTML=$(gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/comments" \
+              --paginate --jq '[.[] | select(.body | contains("## Fix Rejected (Attempt")) | .body | capture("\\*\\*Rejection reason:\\*\\* (?<r>.+)") | .r] | to_entries | map("<li><strong>Attempt \(.key + 1):</strong> \(.value)</li>") | join("")' 2>/dev/null || echo "")
+            if [ -z "$REASONS_HTML" ]; then
+              REASONS_HTML="<li>Could not retrieve rejection reasons</li>"
+            fi
+
+            cat > /tmp/rejection-email.html << EMAILEOF
+            <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+              <div style="background:${HEADER_BG};padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+                <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+                <div style="display:inline-block;padding:4px 14px;background:${BADGE_BG};border-radius:20px;margin-bottom:8px;">
+                  <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">${BADGE_TEXT}</span>
+                </div>
+                <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">${HEADLINE}</h1>
+              </div>
+              <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+                <div style="margin:0 0 20px 0;padding:14px 16px;background:#faf8f4;border-left:4px solid #DAA520;border-radius:4px;">
+                  <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Bug #${ISSUE_NUM}</p>
+                  <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${ISSUE_TITLE}</p>
+                </div>
+                <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #dc2626;border-radius:4px;">
+                  <p style="margin:0 0 4px 0;font-size:12px;color:#dc2626;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Latest Rejection</p>
+                  <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;">${SAFE_REASON}</p>
+                </div>
+                <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
+                  <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Rejection History</p>
+                  <ul style="margin:4px 0 0 0;padding-left:20px;font-size:14px;color:#333333;line-height:1.8;">${REASONS_HTML}</ul>
+                </div>
+                <div style="padding:14px 16px;background:#fef2f2;border:2px solid #fca5a5;border-radius:8px;margin-bottom:24px;">
+                  <p style="margin:0;font-weight:700;color:#991b1b;font-size:14px;">This bug needs manual investigation. The issue has been labeled <code style="background:#fef2f2;padding:1px 4px;border-radius:3px;font-size:13px;">needs-manual-fix</code>. No further automated attempts will be made.</p>
+                </div>
+                <div style="text-align:center;">
+                  ${VIEW_BUTTON}
+                  ${COMMENT_BUTTON}
+                </div>
+              </div>
+              <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+                <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+                <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+                <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+                  <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+                  &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                  <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+                  &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                  <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+                </p>
+              </div>
+              <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+                <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Escalation notification</p>
+              </div>
+            </div>
+          EMAILEOF
+          fi
+
+          # Build JSON safely using jq --rawfile
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "$SUBJECT" \
+            --rawfile html /tmp/rejection-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Rejection email send failed (non-fatal)"
+
+          echo "Rejection email sent for issue #${ISSUE_NUM} (retry=$SHOULD_RETRY)"

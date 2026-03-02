@@ -86,25 +86,86 @@ jobs:
         run: node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
         timeout-minutes: 5
 
-      # C11: Send branded failure notification on triage crash
+      # BA-008.1 AC3a+AC5: Branded failure email with jq-safe JSON
       - name: Notify on failure
         if: failure()
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           ISSUE="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          if [ -n "$RESEND_API_KEY" ] && [ -n "$OWNER_EMAIL" ]; then
-            curl -s -X POST https://api.resend.com/emails \
-              -H "Authorization: Bearer $RESEND_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"from\": \"SortingHistory Pipeline <bugs@sortinghistory.com>\",
-                \"to\": [\"$OWNER_EMAIL\"],
-                \"subject\": \"Pipeline Failed: Triage crashed for issue #${ISSUE}\",
-                \"html\": \"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;'><div style='background:#b91c1c;padding:24px;text-align:center;border-radius:12px 12px 0 0;'><h1 style='color:#fff;margin:0;font-size:20px;'>Triage Pipeline Crashed</h1></div><div style='padding:24px;background:#fff;border:1px solid #e5e1d8;'><p>Bug triage for <strong>issue #${ISSUE}</strong> failed.</p><p><a href='${RUN_URL}'>View workflow run</a></p><p style='color:#888;font-size:12px;'>This is likely an API billing error or infrastructure issue.</p></div></div>\"
-              }" || echo "Email send failed (non-fatal)"
-          else
+          ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE}"
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
             echo "WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send failure email"
+            exit 0
           fi
+
+          # Build retry button if AUTH_TOKEN available
+          RETRY_BUTTON=""
+          if [ -n "$AUTH_TOKEN" ]; then
+            ENCODED_TOKEN=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$AUTH_TOKEN'))")
+            RETRY_URL="https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE}&amp;token=${ENCODED_TOKEN}"
+            RETRY_BUTTON="<a href=\"${RETRY_URL}\" style=\"display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;\">Retry Triage</a>"
+          fi
+
+          # Write branded HTML to file (avoids JSON escaping issues)
+          cat > /tmp/triage-failure-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Pipeline Error</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Triage Pipeline Crashed</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">Bug triage for <strong>issue #${ISSUE}</strong> crashed before it could finish classifying the bug.</p>
+              </div>
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Likely Cause</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">This is usually caused by an API billing error (Anthropic credits depleted) or a transient infrastructure issue. Check your <a href="https://console.anthropic.com/settings/billing" style="color:#2563eb;">Anthropic billing dashboard</a>.</p>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">What to do: Check API credits, then retry triage. If credits are fine, check the workflow log for errors.</p>
+              </div>
+              <div style="text-align:center;">
+                ${RETRY_BUTTON}
+                <a href="${ISSUE_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Issue</a>
+              </div>
+              <p style="text-align:center;margin-top:12px;"><a href="${RUN_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;">View workflow log &rarr;</a></p>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+              <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+                <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+              </p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Triage failure alert</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          # Build JSON safely using jq --rawfile
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Pipeline Failed: Triage crashed for issue #${ISSUE}" \
+            --rawfile html /tmp/triage-failure-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Email send failed (non-fatal)"

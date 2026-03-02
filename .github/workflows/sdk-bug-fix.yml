@@ -627,11 +627,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
-          # Fetch issue body and truncate for email safety (max 2000 chars)
+          # Fetch full issue body for email context (stripIssueBody in TypeScript handles size limits)
           BODY=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}" --jq '.body // ""' 2>/dev/null || echo "")
-          TRUNCATED="${BODY:0:2000}"
           # Write to file to avoid shell quoting issues
-          printf '%s' "$TRUNCATED" > /tmp/issue-body.txt
+          printf '%s' "$BODY" > /tmp/issue-body.txt
           echo "has_body=true" >> $GITHUB_OUTPUT
 
       - name: Read QA summary for email context
@@ -640,8 +639,8 @@ jobs:
         run: |
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
           if [ -f "$QA_SUMMARY_FILE" ]; then
-            # Truncate QA summary to 3000 chars for email
-            head -c 3000 "$QA_SUMMARY_FILE" > /tmp/qa-summary-email.txt
+            # Pass full QA summary — TypeScript handles size limits for email
+            cp "$QA_SUMMARY_FILE" /tmp/qa-summary-email.txt
             echo "has_qa=true" >> $GITHUB_OUTPUT
           else
             echo "has_qa=false" >> $GITHUB_OUTPUT
@@ -736,16 +735,22 @@ jobs:
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --remove-label "pr-created" 2>/dev/null || true
 
-      # BA-007.1 AC8: Send branded failure email when fix pipeline fails
+      # BA-008.1 AC3b+AC5: Branded failure email with jq-safe JSON
       - name: Send fix failure email
         if: always() && (steps.guard.outputs.blocked || 'false') != 'true' && (steps.fix.outputs.applied != 'true' || (env.PIPELINE_MODE == 'full' && steps.changes.outputs.has_changes != 'true'))
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           # Skip if PR was created (success path)
           if [ -n "${{ steps.create-pr.outputs.pr_url }}" ]; then
             echo "PR was created, skipping failure email"
+            exit 0
+          fi
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
+            echo "WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send failure email"
             exit 0
           fi
 
@@ -758,23 +763,81 @@ jobs:
           if [ "$MODE" = "qa-only" ]; then
             SUBJECT="Pipeline Failed: QA re-run failed for issue #${ISSUE}"
             HEADLINE="QA Re-Run Failed"
-            DETAIL="The QA-only re-run could not approve the existing fix."
+            BADGE_TEXT="QA Failed"
+            DETAIL="The QA-only re-run could not approve the existing fix for issue #${ISSUE}."
+            NEXT_STEP="Re-trigger a full pipeline run, or review the fix branch manually and merge if acceptable."
           else
             SUBJECT="Pipeline Failed: Fix attempts exhausted for issue #${ISSUE}"
             HEADLINE="Fix Pipeline Failed"
-            DETAIL="All fix attempts have been exhausted (${FIX_ATTEMPTS:-0} attempt(s))."
+            BADGE_TEXT="Fix Failed"
+            DETAIL="All fix attempts have been exhausted (${FIX_ATTEMPTS:-0} attempt(s)) for issue #${ISSUE}."
+            NEXT_STEP="Review the issue, then either fix manually or re-trigger the pipeline. Consider adding guidance comments before retrying."
           fi
 
-          if [ -n "$RESEND_API_KEY" ] && [ -n "$OWNER_EMAIL" ]; then
-            curl -s -X POST https://api.resend.com/emails \
-              -H "Authorization: Bearer $RESEND_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"from\": \"SortingHistory Pipeline <bugs@sortinghistory.com>\",
-                \"to\": [\"$OWNER_EMAIL\"],
-                \"subject\": \"$SUBJECT\",
-                \"html\": \"<div style='font-family:sans-serif;max-width:600px;margin:0 auto;'><div style='background:#b91c1c;padding:24px;text-align:center;border-radius:12px 12px 0 0;'><h1 style='color:#fff;margin:0;font-size:20px;'>$HEADLINE</h1></div><div style='padding:24px;background:#fff;border:1px solid #e5e1d8;'><p>$DETAIL</p><p><strong>Issue:</strong> <a href='${ISSUE_URL}'>#${ISSUE}</a></p><p><strong>What to do:</strong> Review the issue, then either fix manually or re-trigger the pipeline with different parameters.</p><p><a href='${RUN_URL}'>View workflow run</a></p></div></div>\"
-              }" || echo "Email send failed (non-fatal)"
-          else
-            echo "WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send failure email"
+          # Build retry button if AUTH_TOKEN available
+          RETRY_BUTTON=""
+          if [ -n "$AUTH_TOKEN" ]; then
+            ENCODED_TOKEN=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$AUTH_TOKEN'))")
+            RETRY_URL="https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE}&amp;token=${ENCODED_TOKEN}"
+            RETRY_BUTTON="<a href=\"${RETRY_URL}\" style=\"display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;\">Retry Fix</a>"
           fi
+
+          # Write branded HTML to file
+          cat > /tmp/fix-failure-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">${BADGE_TEXT}</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">${HEADLINE}</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">${DETAIL}</p>
+              </div>
+              <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+                <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#faf8f4;color:#8B6914;font-size:13px;">Issue</td><td style="padding:8px 12px;background:#faf8f4;font-size:14px;color:#333333;"><a href="${ISSUE_URL}" style="color:#2563eb;">#${ISSUE}</a></td></tr>
+                <tr><td style="padding:8px 12px;font-weight:600;color:#8B6914;font-size:13px;">Mode</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${MODE}</td></tr>
+                <tr><td style="padding:8px 12px;font-weight:600;background:#faf8f4;color:#8B6914;font-size:13px;">Attempts</td><td style="padding:8px 12px;background:#faf8f4;font-size:14px;color:#333333;">${FIX_ATTEMPTS:-0}</td></tr>
+              </table>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">What to do: ${NEXT_STEP}</p>
+              </div>
+              <div style="text-align:center;">
+                ${RETRY_BUTTON}
+                <a href="${ISSUE_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Issue</a>
+              </div>
+              <p style="text-align:center;margin-top:12px;"><a href="${RUN_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;">View workflow log &rarr;</a></p>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0 0 12px 0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+              <p style="margin:0;font-size:13px;color:#888888;text-align:center;">
+                <a href="https://sortinghistory.com" style="color:#8B6914;text-decoration:none;">Website</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://x.com/SortingHistory" style="color:#8B6914;text-decoration:none;">X/Twitter</a>
+                &nbsp;&nbsp;&#183;&nbsp;&nbsp;
+                <a href="https://instagram.com/sortinghistory" style="color:#8B6914;text-decoration:none;">Instagram</a>
+              </p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Fix failure alert</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          # Build JSON safely using jq --rawfile
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "$SUBJECT" \
+            --rawfile html /tmp/fix-failure-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
