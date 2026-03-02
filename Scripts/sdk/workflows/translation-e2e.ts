@@ -144,7 +144,7 @@ export function analyzeTranslationBug(
   issueBody: string,
   gameRepoPath: string,
 ): { findings: TranslationFinding[]; englishKeys: Record<string, string> } {
-  const locHelperPath = path.join(gameRepoPath, "Utilities", "LocalizationHelper.swift");
+  const locHelperPath = path.join(gameRepoPath, "Localization", "LocalizationHelper.swift");
 
   if (!fs.existsSync(locHelperPath)) {
     throw new Error("LocalizationHelper.swift not found at: " + locHelperPath);
@@ -567,7 +567,7 @@ export async function resumeTranslationE2E(
   });
 
   // Re-extract English keys from the file (we need fresh values)
-  const locHelperPath = path.join(gameRepoPath, "Utilities", "LocalizationHelper.swift");
+  const locHelperPath = path.join(gameRepoPath, "Localization", "LocalizationHelper.swift");
   const keysToTranslate = translationFindings.map(f => f.key);
   const englishKeys = extractKeysFromSection(locHelperPath, keysToTranslate);
 
