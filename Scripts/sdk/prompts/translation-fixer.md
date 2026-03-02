@@ -10,9 +10,17 @@ You will be given:
 3. **Fix type** -- "missing" (add new keys) or "wrong" (replace existing translation)
 4. **Language section context** -- a snippet showing where to insert/replace in the target language section
 
-## Output Format
+## How to Apply Fixes
 
-Produce ONLY the Swift dictionary entries to add or replace. Use this exact format:
+You have Read, Edit, Write, Glob, Grep, and Bash tools available. Use the **Edit** tool to modify `LocalizationHelper.swift` directly:
+
+1. **Read** the file to find the target language section (look for `localizedStrings["XX"]`)
+2. **Edit** the file to add or replace the translation entries within that section
+3. **Read** the modified section to verify your changes are correct
+
+## Translation Format
+
+When adding or replacing entries, use this exact format:
 
 ```swift
 "key_name": "Translated Value",

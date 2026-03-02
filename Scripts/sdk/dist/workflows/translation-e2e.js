@@ -27,7 +27,7 @@ import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { LIMITS, PATHS, ROUTING, MODELS, FIXER_TOOLS } from "../config.js";
 import { spawnSubagent } from "../lib/subagent.js";
-import { buildHooksConfig } from "../lib/hooks.js";
+import { buildBugFixHooksConfig } from "../lib/hooks.js";
 import { createWorkflowState, updateWorkflowState, loadWorkflowState, } from "../lib/state.js";
 import { saveSession, removeSession } from "../lib/session.js";
 // ------------------------------------------------------------------
@@ -677,7 +677,7 @@ export async function resumeTranslationE2E(workflowId, action, options) {
                 tools: [...FIXER_TOOLS],
                 prompt: userPrompt,
                 systemPrompt: fixerSystemPrompt,
-                hooks: buildHooksConfig(),
+                hooks: buildBugFixHooksConfig(gameRepoPath),
                 cwd: repoRoot,
                 maxTurns: 15,
             });
