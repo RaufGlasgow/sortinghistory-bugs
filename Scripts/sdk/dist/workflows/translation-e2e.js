@@ -37,14 +37,15 @@ import { saveSession, removeSession } from "../lib/session.js";
 const TARGET_LANGUAGES = ["Spanish", "French", "German", "Portuguese", "Dutch"];
 /** Languages with formal agent rules (from translation-agent.md) */
 const AGENT_SUPPORTED_LANGUAGES = new Set(["Spanish", "German", "Portuguese", "Dutch"]);
-/** Language name to ISO code mapping (for grep patterns in LocalizationHelper.swift) */
-const LANGUAGE_CODES = {
-    English: "en",
-    Spanish: "es",
-    French: "fr",
-    German: "de",
-    Portuguese: "pt",
-    Dutch: "nl",
+/** Language name to Swift enum value mapping (for grep patterns in LocalizationHelper.swift).
+ *  The file uses `localizedStrings[.english]` syntax, not string codes. */
+const LANGUAGE_ENUM_VALUES = {
+    English: "english",
+    Spanish: "spanish",
+    French: "french",
+    German: "german",
+    Portuguese: "portuguese",
+    Dutch: "dutch",
 };
 // ------------------------------------------------------------------
 // Internal Helpers
@@ -85,21 +86,21 @@ function extractKeysFromSection(filePath, searchKeys, sectionStartLine, sectionE
 }
 /**
  * Dynamically detect language section boundaries in LocalizationHelper.swift.
- * Greps for `localizedStrings["XX"]` patterns and computes start/end line pairs.
+ * Greps for `localizedStrings[.english]` etc. and computes start/end line pairs.
  * Returns empty object if detection fails (caller should handle gracefully).
  */
 function findLanguageSections(filePath) {
     const sections = [];
     try {
-        const output = execSync("grep -n 'localizedStrings\\[\"' " + JSON.stringify(filePath), { encoding: "utf-8", timeout: 10_000 }).trim();
+        const output = execSync("grep -n 'localizedStrings\\[\\.' " + JSON.stringify(filePath), { encoding: "utf-8", timeout: 10_000 }).trim();
         for (const line of output.split("\n")) {
-            // Pattern: "31:        localizedStrings["en"] = ["
-            const lineMatch = line.match(/^(\d+):.*localizedStrings\["(\w+)"\]/);
+            // Pattern: "31:        localizedStrings[.english] = ["
+            const lineMatch = line.match(/^(\d+):.*localizedStrings\[\.(\w+)\]/);
             if (lineMatch) {
                 const lineNum = parseInt(lineMatch[1], 10);
-                const code = lineMatch[2];
-                // Reverse lookup: code -> language name
-                const langEntry = Object.entries(LANGUAGE_CODES).find(([, c]) => c === code);
+                const enumVal = lineMatch[2];
+                // Reverse lookup: enum value -> language name
+                const langEntry = Object.entries(LANGUAGE_ENUM_VALUES).find(([, v]) => v === enumVal);
                 if (langEntry) {
                     sections.push({ language: langEntry[0], start: lineNum });
                 }
@@ -293,12 +294,12 @@ function buildTranslationPrDescription(findings, workflowId, fixAttempts, issueN
  * and which language section to target.
  */
 function buildFixerUserPrompt(language, keys, locHelperPath) {
-    const langCode = LANGUAGE_CODES[language] ?? language.toLowerCase();
+    const langEnum = LANGUAGE_ENUM_VALUES[language] ?? language.toLowerCase();
     const keysBlock = keys.map(k => '"' + k.key + '": "' + k.englishValue + '",').join("\n");
     const missingKeys = keys.filter(k => k.fixType === "missing");
     const wrongKeys = keys.filter(k => k.fixType === "wrong");
     const instructions = [
-        "Fix translation keys in LocalizationHelper.swift for **" + language + "** (" + langCode + ").",
+        "Fix translation keys in LocalizationHelper.swift for **" + language + "** (." + langEnum + ").",
         "",
         "FILE: " + locHelperPath,
         "",
@@ -314,7 +315,7 @@ function buildFixerUserPrompt(language, keys, locHelperPath) {
     if (wrongKeys.length > 0) {
         instructions.push("WRONG KEYS (replace existing translation in the " + language + " section):", wrongKeys.map(k => "- `" + k.key + "`").join("\n"), "");
     }
-    instructions.push("INSTRUCTIONS:", "1. Read " + locHelperPath + " to find the " + language + " section (look for `localizedStrings[\"" + langCode + "\"]`)", "2. For MISSING keys: translate each English value to " + language + ", then use the Edit tool to add the entries inside the " + language + " dictionary, before the closing bracket `]`", "3. For WRONG keys: translate correctly, then use Edit to replace the existing entry", "4. Match the file's existing indentation (typically 12 spaces before each key)", "5. After editing, use Read to verify your changes are present in the " + language + " section", "", "CRITICAL RULES:", "- NEVER modify the English section or any other language section", "- NEVER translate the key names (left side of colon) — only translate values (right side)", "- Preserve ALL format specifiers exactly: %d, %@, %lld, %.1f", "- Use proper Unicode diacritics for " + language + " (NEVER ASCII substitutes)", "", "After completing, output a JSON summary:", '{"language": "' + language + '", "keys_fixed": [' +
+    instructions.push("INSTRUCTIONS:", "1. Read " + locHelperPath + " to find the " + language + " section (look for `localizedStrings[." + langEnum + "]`)", "2. For MISSING keys: translate each English value to " + language + ", then use the Edit tool to add the entries inside the " + language + " dictionary, before the closing bracket `]`", "3. For WRONG keys: translate correctly, then use Edit to replace the existing entry", "4. Match the file's existing indentation (typically 12 spaces before each key)", "5. After editing, use Read to verify your changes are present in the " + language + " section", "", "CRITICAL RULES:", "- NEVER modify the English section or any other language section", "- NEVER translate the key names (left side of colon) — only translate values (right side)", "- Preserve ALL format specifiers exactly: %d, %@, %lld, %.1f", "- Use proper Unicode diacritics for " + language + " (NEVER ASCII substitutes)", "", "After completing, output a JSON summary:", '{"language": "' + language + '", "keys_fixed": [' +
         keys.map(k => '"' + k.key + '"').join(", ") +
         '], "success": true}');
     return instructions.join("\n");
