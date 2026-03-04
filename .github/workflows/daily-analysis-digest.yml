@@ -86,12 +86,13 @@ jobs:
           # Query both labels separately, then deduplicate
           ISSUES_HR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-human-review&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
           ISSUES_TR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-triage&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ISSUES_SR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=sdk-routed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
 
           # Combine, deduplicate, remove blank lines
-          ALL_NUMBERS=$(printf '%s\n%s\n' "$ISSUES_HR" "$ISSUES_TR" | sort -un | grep -v '^$' || true)
+          ALL_NUMBERS=$(printf '%s\n%s\n%s\n' "$ISSUES_HR" "$ISSUES_TR" "$ISSUES_SR" | sort -un | grep -v '^$' || true)
 
           if [ -z "$ALL_NUMBERS" ]; then
-            echo "No issues found with needs-human-review or needs-triage labels."
+            echo "No issues found with needs-human-review, needs-triage, or sdk-routed labels."
             echo "issue_count=0" >> "$GITHUB_OUTPUT"
             echo "issue_list=" >> "$GITHUB_OUTPUT"
             exit 0
@@ -101,7 +102,7 @@ jobs:
           FILTERED=""
           for NUM in $ALL_NUMBERS; do
             LABELS=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/labels" --jq '.[].name' 2>/dev/null || echo "")
-            if echo "$LABELS" | grep -qE '^(approved|pr-created|sdk-routed|needs-handoff-review)$'; then
+            if echo "$LABELS" | grep -qE '^(approved|pr-created|needs-handoff-review)$'; then
               echo "Skipping issue #${NUM} (already triaged or has PR)"
               continue
             fi
