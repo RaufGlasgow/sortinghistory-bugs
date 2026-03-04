@@ -366,6 +366,7 @@ jobs:
               # Build action URLs
               APPROVE_URL="https://sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
               REJECT_URL="https://sortinghistory.com/api/pipeline/reject?issue=${NUM}&token=${AUTH_TOKEN}"
+              REWORK_URL="https://sortinghistory.com/api/pipeline/rework?issue=${NUM}&token=${AUTH_TOKEN}"
               INFO_URL="https://sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
 
               # Build card HTML
@@ -387,6 +388,7 @@ jobs:
               CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
               CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
               CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+              CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
               CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
               CARD="${CARD}</div></div>"
 
