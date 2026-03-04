@@ -1,10 +1,10 @@
 {
   "workflow_id": "tv-2026-03-03-001",
   "workflow_type": "translation_verification",
-  "status": "awaiting_approval",
+  "status": "complete",
   "session_id": null,
   "created_at": "2026-03-03T13:39:22.435Z",
-  "updated_at": "2026-03-03T13:39:22.599Z",
+  "updated_at": "2026-03-04T15:56:35.623Z",
   "trigger": "dispatch",
   "category": null,
   "findings": [
@@ -72,12 +72,76 @@
       "severity": "high"
     }
   ],
-  "approved_findings": [],
+  "approved_findings": [
+    {
+      "event_id": "daily_challenge_title",
+      "event_title": "Key: daily_challenge_title",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"Daily Challenge\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    },
+    {
+      "event_id": "daily_challenge_play",
+      "event_title": "Key: daily_challenge_play",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"Play\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    },
+    {
+      "event_id": "daily_challenge_events_count",
+      "event_title": "Key: daily_challenge_events_count",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"%d events\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    },
+    {
+      "event_id": "daily_challenge_completed",
+      "event_title": "Key: daily_challenge_completed",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"Completed!\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    },
+    {
+      "event_id": "daily_challenge_come_back",
+      "event_title": "Key: daily_challenge_come_back",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"Come back tomorrow\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    },
+    {
+      "event_id": "daily_challenge_score",
+      "event_title": "Key: daily_challenge_score",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"Score: %d\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    },
+    {
+      "event_id": "daily_challenge_accuracy",
+      "event_title": "Key: daily_challenge_accuracy",
+      "gates_failed": [
+        "MISSING_IN:Spanish,French,German,Portuguese,Dutch"
+      ],
+      "details": "English: \"%d/%d correct\" | Missing in: Spanish, French, German, Portuguese, Dutch | Wrong in: none",
+      "severity": "high"
+    }
+  ],
   "rejected_findings": [],
-  "fix_attempts": 0,
+  "fix_attempts": 1,
   "max_fix_attempts": 3,
   "fix_results": [],
-  "pr_number": null,
+  "pr_number": 148,
   "error": null,
   "issue_number": 145,
   "attempt_log": [],

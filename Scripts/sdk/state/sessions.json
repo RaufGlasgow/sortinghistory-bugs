@@ -17,12 +17,6 @@
       "status": "paused",
       "paused_at": "2026-02-15T18:12:48.391Z",
       "resume_step": "fix_approved_findings"
-    },
-    "tv-2026-03-03-001": {
-      "session_id": "sim-tv-2026-03-03-001",
-      "status": "paused",
-      "paused_at": "2026-03-03T13:39:23.587Z",
-      "resume_step": "fix_translation"
     }
   }
 }
