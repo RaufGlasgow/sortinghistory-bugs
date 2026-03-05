@@ -159,11 +159,13 @@ jobs:
           gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
             --add-label "translation-fix-failed" 2>/dev/null || true
 
-          # Remove sdk-routed so the digest shows the issue again
+          # Remove approved so digest skip filter does not hide this issue (parity with sdk-bug-fix.yml)
           gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
-            --remove-label "sdk-routed" 2>/dev/null || true
+            --remove-label "approved" 2>/dev/null || true
 
-          echo "Issue #$ISSUE labeled as translation-fix-failed, sdk-routed removed"
+          # Keep sdk-routed so digest System A query still finds the issue (PIPE-007.1 added sdk-routed to query)
+
+          echo "Issue #$ISSUE labeled as translation-fix-failed, approved removed"
 
       - name: "Send failure email"
         if: failure() && (github.event.action == 'sdk-translation-fix' || github.event.action == 'sdk-translation-resume')
