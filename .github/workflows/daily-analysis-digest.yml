@@ -223,16 +223,24 @@ jobs:
           echo "fix_runs_7d=${FIX_RUNS}" >> "$GITHUB_OUTPUT"
           echo "Pipeline runs (7d): ${TRIAGE_RUNS} triage, ${FIX_RUNS} fix"
 
-          # AC4: Monthly cost approximation (fix runs this month x ~$7 average)
+          # AC4: Monthly cost approximation — only count completed runs (exclude skipped/cancelled)
+          # Rough cost heuristic: $7/fix run (SDK + compile), $5/translation run (SDK only, no compile)
+          # TODO: Refine based on actual Anthropic billing data after 1 month of operation
           MONTH_START=$(date -u '+%Y-%m-01T00:00:00Z')
-          FIX_RUNS_MONTH=$(gh api "repos/${BUGS_REPO}/actions/workflows/sdk-bug-fix.yml/runs?created=%3E${MONTH_START}&per_page=100" \
-            --jq '.total_count' 2>/dev/null || true)
+          FIX_RUNS_MONTH=$(gh api "repos/${BUGS_REPO}/actions/workflows/sdk-bug-fix.yml/runs?created=%3E${MONTH_START}&status=completed&per_page=100" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")] | length' 2>/dev/null || echo "0")
           [ -z "$FIX_RUNS_MONTH" ] && FIX_RUNS_MONTH=0
-          ESTIMATED_COST=$((FIX_RUNS_MONTH * 7))
+
+          TRANSLATION_RUNS_MONTH=$(gh api "repos/${BUGS_REPO}/actions/workflows/sdk-translation-pipeline.yml/runs?created=%3E${MONTH_START}&status=completed&per_page=100" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")] | length' 2>/dev/null || echo "0")
+          [ -z "$TRANSLATION_RUNS_MONTH" ] && TRANSLATION_RUNS_MONTH=0
+
+          ESTIMATED_COST=$(( (FIX_RUNS_MONTH * 7) + (TRANSLATION_RUNS_MONTH * 5) ))
 
           echo "fix_runs_month=${FIX_RUNS_MONTH}" >> "$GITHUB_OUTPUT"
+          echo "translation_runs_month=${TRANSLATION_RUNS_MONTH}" >> "$GITHUB_OUTPUT"
           echo "estimated_cost=${ESTIMATED_COST}" >> "$GITHUB_OUTPUT"
-          echo "Month cost estimate: ${FIX_RUNS_MONTH} fix runs x $7 = \$${ESTIMATED_COST} (budget: \$30)"
+          echo "Month cost estimate: ${FIX_RUNS_MONTH} fix x \$7 + ${TRANSLATION_RUNS_MONTH} translation x \$5 = \$${ESTIMATED_COST} (budget: \$30)"
 
       - name: Build digest email
         id: build
@@ -251,6 +259,7 @@ jobs:
           TRIAGE_RUNS_7D: ${{ steps.pipeline_health.outputs.triage_runs_7d }}
           FIX_RUNS_7D: ${{ steps.pipeline_health.outputs.fix_runs_7d }}
           FIX_RUNS_MONTH: ${{ steps.pipeline_health.outputs.fix_runs_month }}
+          TRANSLATION_RUNS_MONTH: ${{ steps.pipeline_health.outputs.translation_runs_month }}
           ESTIMATED_COST: ${{ steps.pipeline_health.outputs.estimated_cost }}
         run: |
           # Function to escape HTML entities
@@ -681,7 +690,7 @@ jobs:
           EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 6px 0;font-size:13px;color:#555;\">Last 7 days: ${TRIAGE_RUNS_7D:-0} triage run(s) + ${FIX_RUNS_7D:-0} fix run(s)</p>"
 
           # AC4: Monthly cost approximation
-          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 16px 0;font-size:13px;color:#555;\">Month to date: ${FIX_RUNS_MONTH:-0} fix run(s) &mdash; ~\$${ESTIMATED_COST:-0} estimated (budget: \$30)</p>"
+          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 16px 0;font-size:13px;color:#555;\">Month to date: ${FIX_RUNS_MONTH:-0} fix + ${TRANSLATION_RUNS_MONTH:-0} translation run(s) &mdash; ~\$${ESTIMATED_COST:-0} estimated (budget: \$30)</p>"
 
           EMAIL_HTML="${EMAIL_HTML}</div>"
 

@@ -178,3 +178,14 @@ jobs:
             -H "Authorization: Bearer $RESEND_API_KEY" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
+
+      - name: Label triage failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          if [ -n "$ISSUE_NUMBER" ]; then
+            gh issue edit "$ISSUE_NUMBER" --repo "RaufGlasgow/Sorting-History" \
+              --add-label "triage-failed" 2>/dev/null || true
+            echo "Added triage-failed label to issue #$ISSUE_NUMBER"
+          fi
