@@ -50,7 +50,7 @@ jobs:
           # Only render if there are flagged issues
           if [ "$ATTENTION_COUNT" -gt 0 ]; then
             ATTENTION_HTML="<div style=\"margin-bottom:20px;padding:16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;\">"
-            ATTENTION_HTML="${ATTENTION_HTML}<h3 style=\"margin:0 0 12px 0;font-size:16px;color:#991b1b;\">Needs Attention</h3>"
+            ATTENTION_HTML="${ATTENTION_HTML}<h3 style=\"margin:0 0 12px 0;font-size:16px;color:#991b1b;\">Classification Review Needed</h3>"
             ATTENTION_HTML="${ATTENTION_HTML}<p style=\"margin:0 0 12px 0;font-size:13px;color:#991b1b;\">These bugs were flagged during triage &mdash; review classifications before acting.</p>"
 
             # Build a card per flagged issue
@@ -83,29 +83,51 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
-          # Query both labels separately, then deduplicate
+          # Query all actionable labels separately, then deduplicate
           ISSUES_HR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-human-review&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
           ISSUES_TR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-triage&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
           ISSUES_SR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=sdk-routed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ISSUES_FF=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=fix-failed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ISSUES_TF=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=translation-fix-failed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ISSUES_HO=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-handoff-review&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ISSUES_TRF=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=triage-failed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
 
           # Combine, deduplicate, remove blank lines
-          ALL_NUMBERS=$(printf '%s\n%s\n%s\n' "$ISSUES_HR" "$ISSUES_TR" "$ISSUES_SR" | sort -un | grep -v '^$' || true)
+          ALL_NUMBERS=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$ISSUES_HR" "$ISSUES_TR" "$ISSUES_SR" "$ISSUES_FF" "$ISSUES_TF" "$ISSUES_HO" "$ISSUES_TRF" | sort -un | grep -v '^$' || true)
 
           if [ -z "$ALL_NUMBERS" ]; then
-            echo "No issues found with needs-human-review, needs-triage, or sdk-routed labels."
+            echo "No issues found with needs-human-review, needs-triage, sdk-routed, fix-failed, translation-fix-failed, needs-handoff-review, or triage-failed labels."
             echo "issue_count=0" >> "$GITHUB_OUTPUT"
             echo "issue_list=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Filter out issues that already have approved or pr-created labels
+          # Filter out issues that are genuinely in-progress (approved/pr-created)
+          # but NEVER skip issues with failure labels or needs-handoff-review
           FILTERED=""
           for NUM in $ALL_NUMBERS; do
             LABELS=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/labels" --jq '.[].name' 2>/dev/null || echo "")
-            if echo "$LABELS" | grep -qE '^(approved|pr-created|needs-handoff-review)$'; then
-              echo "Skipping issue #${NUM} (already triaged or has PR)"
-              continue
+
+            # Check for failure labels -- if ANY present, never skip
+            HAS_FAILURE=""
+            if echo "$LABELS" | grep -qE '^(fix-failed|translation-fix-failed|needs-manual-fix|triage-failed)$'; then
+              HAS_FAILURE="true"
             fi
+
+            # Check for needs-handoff-review -- never skip (content pipeline escalation signal)
+            HAS_HANDOFF=""
+            if echo "$LABELS" | grep -qE '^needs-handoff-review$'; then
+              HAS_HANDOFF="true"
+            fi
+
+            # Only skip if pr-created or (approved WITHOUT failure/handoff)
+            if [ -z "$HAS_FAILURE" ] && [ -z "$HAS_HANDOFF" ]; then
+              if echo "$LABELS" | grep -qE '^(approved|pr-created)$'; then
+                echo "Skipping issue #${NUM} (in progress, no failures)"
+                continue
+              fi
+            fi
+
             FILTERED="${FILTERED}${NUM}\n"
           done
 
@@ -563,10 +585,13 @@ jobs:
             ATTENTION_SECTION=$(cat /tmp/attention_section.html)
           fi
 
-          # Subject line
+          # Subject line — include stuck issues in the count
           TOTAL_ITEMS=$((ANALYZED_COUNT + ACTUAL_PR_COUNT))
-          if [ "$TOTAL_ITEMS" -eq 0 ]; then
+          TOTAL_WITH_STUCK=$((TOTAL_ITEMS + ${STUCK_COUNT:-0}))
+          if [ "$TOTAL_WITH_STUCK" -eq 0 ]; then
             SUBJECT="SortingHistory: All clear -- pipeline healthy"
+          elif [ "${STUCK_COUNT:-0}" -gt 0 ] && [ "$TOTAL_ITEMS" -eq 0 ]; then
+            SUBJECT="SortingHistory: ${STUCK_COUNT} stuck issue(s) -- attention needed"
           elif [ "$ANALYZED_COUNT" -gt 0 ] && [ "$ACTUAL_PR_COUNT" -gt 0 ]; then
             SUBJECT="SortingHistory: ${ANALYZED_COUNT} bug(s) + ${ACTUAL_PR_COUNT} PR(s) -- review needed"
           elif [ "$ANALYZED_COUNT" -gt 0 ]; then
@@ -580,11 +605,15 @@ jobs:
           EMAIL_HTML="${EMAIL_HTML}<body style=\"margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f0e8;\">"
           EMAIL_HTML="${EMAIL_HTML}<div style=\"max-width:600px;margin:0 auto;padding:0;background:#fffdf8;\">"
 
-          # Branded header
-          if [ "$TOTAL_ITEMS" -eq 0 ]; then
+          # Branded header — green only when truly all clear
+          if [ "$TOTAL_WITH_STUCK" -eq 0 ]; then
             HEADER_BG="#22863a"
             HEADER_BADGE="All Clear"
             HEADER_TITLE="Pipeline Healthy"
+          elif [ "${STUCK_COUNT:-0}" -gt 0 ] && [ "$TOTAL_ITEMS" -eq 0 ]; then
+            HEADER_BG="#b45309"
+            HEADER_BADGE="Attention Needed"
+            HEADER_TITLE="${STUCK_COUNT} Stuck Issue(s)"
           else
             HEADER_BG="#8B6914"
             HEADER_BADGE="Action Needed"
@@ -599,7 +628,7 @@ jobs:
           # Main content area
           EMAIL_HTML="${EMAIL_HTML}<div style=\"padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;\">"
 
-          if [ "$TOTAL_ITEMS" -eq 0 ]; then
+          if [ "$TOTAL_WITH_STUCK" -eq 0 ]; then
             EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 20px 0;font-size:15px;color:#444;line-height:1.6;\">No bugs awaiting review and no PRs pending. The pipeline is running smoothly.</p>"
             if [ "$PENDING_COUNT" -gt 0 ]; then
               EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
