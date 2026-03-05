@@ -83,69 +83,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
-          # Query all actionable labels separately, then deduplicate
-          ISSUES_HR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-human-review&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-          ISSUES_TR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-triage&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-          ISSUES_SR=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=sdk-routed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-          ISSUES_FF=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=fix-failed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-          ISSUES_TF=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=translation-fix-failed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-          ISSUES_HO=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=needs-handoff-review&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-          ISSUES_TRF=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=triage-failed&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
-
-          # Combine, deduplicate, remove blank lines
-          ALL_NUMBERS=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$ISSUES_HR" "$ISSUES_TR" "$ISSUES_SR" "$ISSUES_FF" "$ISSUES_TF" "$ISSUES_HO" "$ISSUES_TRF" | sort -un | grep -v '^$' || true)
+          # Single query: all open issues with from-app label. No filtering.
+          # Close the issue when done — that's the only way it leaves the digest.
+          ALL_NUMBERS=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=from-app&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          ALL_NUMBERS=$(echo "$ALL_NUMBERS" | grep -v '^$' | sort -un || true)
 
           if [ -z "$ALL_NUMBERS" ]; then
-            echo "No issues found with needs-human-review, needs-triage, sdk-routed, fix-failed, translation-fix-failed, needs-handoff-review, or triage-failed labels."
+            echo "No open from-app issues found."
             echo "issue_count=0" >> "$GITHUB_OUTPUT"
             echo "issue_list=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Filter out issues that are genuinely in-progress (approved/pr-created)
-          # but NEVER skip issues with failure labels or needs-handoff-review
-          FILTERED=""
-          for NUM in $ALL_NUMBERS; do
-            LABELS=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/labels" --jq '.[].name' 2>/dev/null || echo "")
-
-            # Check for failure labels -- if ANY present, never skip
-            HAS_FAILURE=""
-            if echo "$LABELS" | grep -qE '^(fix-failed|translation-fix-failed|needs-manual-fix|triage-failed)$'; then
-              HAS_FAILURE="true"
-            fi
-
-            # Check for needs-handoff-review -- never skip (content pipeline escalation signal)
-            HAS_HANDOFF=""
-            if echo "$LABELS" | grep -qE '^needs-handoff-review$'; then
-              HAS_HANDOFF="true"
-            fi
-
-            # Only skip if pr-created or (approved WITHOUT failure/handoff)
-            if [ -z "$HAS_FAILURE" ] && [ -z "$HAS_HANDOFF" ]; then
-              if echo "$LABELS" | grep -qE '^(approved|pr-created)$'; then
-                echo "Skipping issue #${NUM} (in progress, no failures)"
-                continue
-              fi
-            fi
-
-            FILTERED="${FILTERED}${NUM}\n"
-          done
-
-          FILTERED=$(printf '%b' "$FILTERED" | grep -v '^$' || true)
-
-          if [ -z "$FILTERED" ]; then
-            echo "All issues already approved or have PRs."
-            echo "issue_count=0" >> "$GITHUB_OUTPUT"
-            echo "issue_list=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          COUNT=$(echo "$FILTERED" | wc -l | tr -d ' ')
-          echo "Found ${COUNT} issues needing review."
+          COUNT=$(echo "$ALL_NUMBERS" | wc -l | tr -d ' ')
+          echo "Found ${COUNT} open from-app issues."
           echo "issue_count=${COUNT}" >> "$GITHUB_OUTPUT"
 
           # Store issue numbers as space-separated list
-          ISSUE_LIST=$(echo "$FILTERED" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          ISSUE_LIST=$(echo "$ALL_NUMBERS" | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           echo "issue_list=${ISSUE_LIST}" >> "$GITHUB_OUTPUT"
 
       - name: Query open pipeline PRs
