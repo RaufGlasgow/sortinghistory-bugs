@@ -1,0 +1,32 @@
+{
+  "workflow_id": "cv-2026-03-05-001",
+  "workflow_type": "content_verification",
+  "status": "complete",
+  "session_id": "2888688c-f696-4751-bf16-00250fe4dce2",
+  "created_at": "2026-03-05T07:03:20.196Z",
+  "updated_at": "2026-03-05T07:03:29.086Z",
+  "trigger": "manual",
+  "category": null,
+  "findings": [
+    {
+      "event_id": "us_3",
+      "event_title": "Salem Witch Trials Begin",
+      "gates_failed": [
+        "proof_check"
+      ],
+      "details": "Third event in USHistory.json: \"Salem Witch Trials Begin\" (1692)",
+      "severity": "info"
+    }
+  ],
+  "approved_findings": [],
+  "rejected_findings": [],
+  "fix_attempts": 0,
+  "max_fix_attempts": 3,
+  "fix_results": [],
+  "pr_number": null,
+  "error": null,
+  "issue_number": null,
+  "attempt_log": [],
+  "qa_results": [],
+  "models_used": []
+}
