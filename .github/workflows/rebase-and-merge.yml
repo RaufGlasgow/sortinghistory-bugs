@@ -240,6 +240,12 @@ jobs:
           git push --force-with-lease origin "${HEAD_BRANCH}"
           echo "Force-pushed rebased branch ${HEAD_BRANCH}"
 
+      - name: Wait for GitHub to sync force-push
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'clean' && steps.rebase.outputs.rebase_needed == 'true'
+        run: |
+          echo "Waiting 10s for GitHub to update PR head ref after force-push..."
+          sleep 10
+
       - name: Squash merge PR
         if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'clean'
         id: merge
@@ -247,8 +253,18 @@ jobs:
           PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
           ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
 
-          # Merge via GitHub API
-          if gh pr merge "${PR_NUMBER}" --squash --repo "${PRIVATE_REPO}"; then
+          # Merge via GitHub API (retry up to 3 times for force-push propagation delay)
+          MERGE_OK=false
+          for attempt in 1 2 3; do
+            if gh pr merge "${PR_NUMBER}" --squash --repo "${PRIVATE_REPO}"; then
+              MERGE_OK=true
+              break
+            fi
+            echo "Merge attempt ${attempt} failed, waiting 10s..."
+            sleep 10
+          done
+
+          if [ "$MERGE_OK" = true ]; then
             echo "merge_result=success" >> "$GITHUB_OUTPUT"
             echo "PR #${PR_NUMBER} merged successfully."
 
