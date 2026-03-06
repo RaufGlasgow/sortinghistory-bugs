@@ -135,7 +135,7 @@ jobs:
 
           # Remove pipeline progress labels (fix-failed added later only if NOT retrying)
           gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" \
-            --remove-label "fix-generated,pr-created,build-passed,tests-passed,tests-passing" 2>/dev/null || true
+            --remove-label "fix-generated,pr-created,build-passed,tests-passed,tests-passing,approved" 2>/dev/null || true
 
           echo "Pipeline labels removed from issue #$ISSUE_NUM"
 

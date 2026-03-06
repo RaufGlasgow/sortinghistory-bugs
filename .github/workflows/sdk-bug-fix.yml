@@ -60,11 +60,16 @@ jobs:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           LABELS=$(gh api repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels --jq '.[].name')
-          if echo "$LABELS" | grep -qE "^(approved|pr-created)$"; then
-            MATCHED=$(echo "$LABELS" | grep -oE "^(approved|pr-created)$" | head -1)
-            echo "Issue #${{ env.ISSUE_NUM }} already has '$MATCHED' label — skipping to prevent duplicate work."
+
+          HAS_PR_CREATED=$(echo "$LABELS" | grep -c "^pr-created$" || true)
+          HAS_FIX_FAILED=$(echo "$LABELS" | grep -c "^fix-failed$" || true)
+
+          # Block only if a PR is open AND the fix hasn't failed yet
+          # fix-failed overrides pr-created: the PR was closed by rejection, allow retry
+          if [ "$HAS_PR_CREATED" -gt 0 ] && [ "$HAS_FIX_FAILED" -eq 0 ]; then
+            echo "Issue #${{ env.ISSUE_NUM }} has 'pr-created' label and no 'fix-failed' — skipping to prevent duplicate work."
             echo "blocked=true" >> $GITHUB_OUTPUT
-            echo "label=$MATCHED" >> $GITHUB_OUTPUT
+            echo "label=pr-created" >> $GITHUB_OUTPUT
           else
             echo "blocked=false" >> $GITHUB_OUTPUT
           fi
