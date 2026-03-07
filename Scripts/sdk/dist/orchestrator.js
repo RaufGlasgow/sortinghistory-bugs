@@ -22,6 +22,7 @@ import { runRealTriage } from "./workflows/triage.js";
 import { runBugFix } from "./workflows/bug-fix.js";
 import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
 import { runTranslationE2E, resumeTranslationE2E } from "./workflows/translation-e2e.js";
+import { validateFix } from "./lib/validate-fix.js";
 /**
  * Parse a named flag from process.argv.
  * Supports: `--flag value` syntax.
@@ -197,7 +198,7 @@ async function main() {
     const command = process.argv[2];
     const payload = process.argv[3];
     if (!command) {
-        console.error("Usage: orchestrator.ts <run|resume|status|proof|triage|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test|bug-fix> <payload>");
+        console.error("Usage: orchestrator.ts <run|resume|status|proof|triage|triage-test|pause-resume|pause|resume-test|route|routing-test|resume-by-issue-test|content-verify|content-verify-test|content-fix|content-fix-test|content-e2e|content-e2e-test|bug-fix|validate-fix> <payload>");
         process.exit(1);
     }
     switch (command) {
@@ -564,8 +565,46 @@ async function main() {
             }
             break;
         }
+        case "validate-fix": {
+            // Story 2.0b: Validate a fix diff against the original issue before PR creation
+            // Usage: orchestrator.ts validate-fix --issue <number> --diff <path>
+            const issueNumber = parseIssueFlag();
+            const diffPath = parseFlag("diff");
+            if (!diffPath) {
+                console.error("validate-fix requires --diff <path> flag");
+                console.error("Usage: orchestrator.ts validate-fix --issue <number> --diff <path>");
+                process.exit(1);
+            }
+            // Fetch issue data via gh CLI (read-only — AC13 compliant)
+            let issueBody = "";
+            let issueLabels = [];
+            try {
+                issueBody = execSync("gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body", { encoding: "utf-8", timeout: 30_000 }).trim();
+                const labelsJson = execSync("gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'", { encoding: "utf-8", timeout: 30_000 }).trim();
+                issueLabels = JSON.parse(labelsJson);
+            }
+            catch (fetchErr) {
+                const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+                const errorResult = { valid: false, reason: "issue-fetch-error", details: "Failed to fetch issue #" + issueNumber + ": " + fetchMsg };
+                console.log(JSON.stringify(errorResult));
+                process.exit(1);
+            }
+            const issueData = {
+                number: issueNumber,
+                body: issueBody,
+                labels: issueLabels,
+            };
+            const result = validateFix(issueData, diffPath);
+            // AC9: stdout JSON before exit, even on failure
+            console.log(JSON.stringify(result));
+            // AC9: exit code 0 on pass, 1 on failure
+            if (!result.valid) {
+                process.exit(1);
+            }
+            break;
+        }
         default:
-            console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test, bug-fix, translation-fix, translation-resume`);
+            console.error(`Unknown command: ${command}. Use: run, resume, status, proof, triage, triage-test, pause-resume, pause, resume-test, route, routing-test, resume-by-issue-test, content-verify, content-verify-test, content-fix, content-fix-test, content-e2e, content-e2e-test, bug-fix, translation-fix, translation-resume, validate-fix`);
             process.exit(1);
     }
 }
