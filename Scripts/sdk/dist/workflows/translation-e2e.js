@@ -26,6 +26,7 @@ import * as fs from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { LIMITS, PATHS, ROUTING, MODELS, FIXER_TOOLS } from "../config.js";
+import { runValidateFixGate, handleValidationFailure } from "./content-e2e.js";
 import { spawnSubagent } from "../lib/subagent.js";
 import { buildBugFixHooksConfig } from "../lib/hooks.js";
 import { createWorkflowState, updateWorkflowState, loadWorkflowState, } from "../lib/state.js";
@@ -713,6 +714,49 @@ export async function resumeTranslationE2E(workflowId, action, options) {
     // Result: Create PR or escalate
     // ---------------------------------------------------
     if (remainingFindings.length === 0) {
+        // ---------------------------------------------------
+        // Story 2.0c AC2: Validate-fix gate before PR creation
+        // ---------------------------------------------------
+        if (state.issue_number) {
+            console.log("");
+            console.log("--- Validate-Fix Gate (2.0c) ---");
+            // Fetch issue body and labels for validation
+            let issueBody = "";
+            let issueLabels = [];
+            try {
+                issueBody = execSync("gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body", { encoding: "utf-8", timeout: 30_000 }).trim();
+                const labelsJson = execSync("gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'", { encoding: "utf-8", timeout: 30_000 }).trim();
+                issueLabels = JSON.parse(labelsJson);
+            }
+            catch (fetchErr) {
+                const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+                console.log("[translation-e2e] WARNING: Could not fetch issue data for validation: " + fetchMsg);
+            }
+            if (issueBody.length > 0) {
+                const validationResult = runValidateFixGate(state.issue_number, issueBody, issueLabels, gameRepoPath);
+                // AC7: On failure, do NOT create PR, exit cleanly
+                if (!validationResult.valid) {
+                    handleValidationFailure(state.issue_number, validationResult);
+                    await updateWorkflowState(workflowId, {
+                        status: "escalated",
+                        fix_attempts: fixAttempt,
+                        error: "Validate-fix gate failed: " + (validationResult.reason ?? "unknown"),
+                    });
+                    await removeSession(workflowId);
+                    return {
+                        status: "escalated",
+                        workflowId,
+                        totalKeys: translationFindings.length,
+                        languagesAffected: allMissingLanguages.size,
+                        fixAttempts: fixAttempt,
+                        prNumber: null,
+                        prUrl: null,
+                        error: "Validate-fix gate failed: " + (validationResult.reason ?? "unknown") +
+                            " -- " + (validationResult.details ?? ""),
+                    };
+                }
+            }
+        }
         // All keys fixed — create PR
         console.log("");
         console.log("--- Creating PR ---");

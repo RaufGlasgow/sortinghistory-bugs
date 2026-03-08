@@ -40,6 +40,7 @@ import * as fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { validateFix, type IssueData, type ValidationResult } from "../lib/validate-fix.js";
 import { LIMITS, PATHS, ROUTING, type WorkflowStatus } from "../config.js";
 import {
   createWorkflowState,
@@ -420,6 +421,126 @@ function addHandoffLabel(issueNumber: number): void {
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.log("[content-e2e] WARNING: Could not add needs-handoff-review label: " + errMsg);
+  }
+}
+
+/**
+ * Story 2.0c: Run validate-fix gate between re-verify and PR creation.
+ *
+ * AC1/AC2: Called in both resumeContentE2E and resumeTranslationE2E
+ * AC3: Captures git diff to temp file before calling validateFix
+ * AC9: Direct function call, not subprocess
+ * AC10: Logs when validate-fix runs, result, and action taken
+ *
+ * Returns the validation result. Caller handles failure actions.
+ */
+export function runValidateFixGate(
+  issueNumber: number,
+  issueBody: string,
+  issueLabels: string[],
+  gameRepoPath: string,
+): ValidationResult {
+  console.log("[validate-fix-gate] Running pre-PR validation for issue #" + issueNumber);
+
+  // AC3: Capture git diff to temp file
+  const diffPath = path.join(tmpdir(), "validate-fix-diff-" + issueNumber + "-" + Date.now() + ".patch");
+  try {
+    const diffOutput = execSync("git diff HEAD", { cwd: gameRepoPath, encoding: "utf-8", timeout: 30_000 });
+    // If git diff HEAD is empty (changes already staged/committed), try --staged
+    const diffContent = diffOutput.trim().length > 0
+      ? diffOutput
+      : execSync("git diff --staged", { cwd: gameRepoPath, encoding: "utf-8", timeout: 30_000 });
+    fs.writeFileSync(diffPath, diffContent, "utf-8");
+    console.log("[validate-fix-gate] Diff captured to: " + diffPath + " (" + diffContent.length + " bytes)");
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[validate-fix-gate] WARNING: Could not capture diff: " + errMsg);
+    // Write empty file so validateFix can detect empty-diff
+    fs.writeFileSync(diffPath, "", "utf-8");
+  }
+
+  // AC9: Direct function call to validateFix
+  const issueData: IssueData = {
+    number: issueNumber,
+    body: issueBody,
+    labels: issueLabels,
+  };
+
+  const result = validateFix(issueData, diffPath);
+
+  // AC10: Log result and action
+  if (result.valid) {
+    console.log("[validate-fix-gate] PASSED -- proceeding to PR creation");
+  } else {
+    console.log("[validate-fix-gate] FAILED -- reason: " + result.reason);
+    console.log("[validate-fix-gate] Details: " + (result.details ?? "none"));
+    console.log("[validate-fix-gate] Action: blocking PR creation, posting comment, adding validation-failed label");
+  }
+
+  // Cleanup diff file (best-effort)
+  try { fs.unlinkSync(diffPath); } catch { /* cleanup best-effort */ }
+
+  return result;
+}
+
+/**
+ * Story 2.0c: Handle validate-fix failure -- post comment, add/remove labels.
+ *
+ * AC4: Post comment with failure details
+ * AC5: Add validation-failed label (NOT fix-failed)
+ * AC6: Remove fix-in-progress label if present
+ */
+export function handleValidationFailure(
+  issueNumber: number,
+  result: ValidationResult,
+): void {
+  const repo = ROUTING.PRIVATE_REPO;
+
+  // AC4: Post comment with failure details
+  const comment = "## Pre-PR Validation Failed\n\n" +
+    "The automated fix was blocked by the validate-fix gate.\n\n" +
+    "**Reason:** `" + (result.reason ?? "unknown") + "`\n\n" +
+    "**Details:** " + (result.details ?? "No additional details.") + "\n\n" +
+    "This issue requires manual review. The same fix will fail validation every time -- retrying will not help.\n\n" +
+    "*Label: `validation-failed` added. `fix-in-progress` removed (if present).*";
+
+  const tmpFile = path.join(tmpdir(), "gh-validate-fail-" + issueNumber + "-" + Date.now() + ".md");
+  try {
+    fs.writeFileSync(tmpFile, comment, "utf-8");
+    execSync(
+      "gh issue comment " + issueNumber + " --repo " + repo + " --body-file " + tmpFile,
+      { encoding: "utf-8", timeout: 30_000 },
+    );
+    console.log("[validate-fix-gate] Posted validation-failed comment on issue #" + issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.log("[validate-fix-gate] WARNING: Could not post comment: " + errMsg);
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch { /* cleanup */ }
+  }
+
+  // AC5: Add validation-failed label (NOT fix-failed)
+  try {
+    execSync(
+      "gh issue edit " + issueNumber + " --repo " + repo + " --add-label validation-failed",
+      { encoding: "utf-8", timeout: 15_000 },
+    );
+    console.log("[validate-fix-gate] Added validation-failed label to issue #" + issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.log("[validate-fix-gate] WARNING: Could not add validation-failed label: " + errMsg);
+  }
+
+  // AC6: Remove fix-in-progress label if present
+  try {
+    execSync(
+      "gh issue edit " + issueNumber + " --repo " + repo + " --remove-label fix-in-progress",
+      { encoding: "utf-8", timeout: 15_000 },
+    );
+    console.log("[validate-fix-gate] Removed fix-in-progress label from issue #" + issueNumber);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.log("[validate-fix-gate] WARNING: Could not remove fix-in-progress label: " + errMsg);
   }
 }
 
@@ -1214,10 +1335,71 @@ export async function resumeContentE2E(
   }
 
   // ---------------------------------------------------
-  // Step 5: Finalize (using shared helper)
+  // Step 5: Validate-fix gate (Story 2.0c AC1)
+  // ---------------------------------------------------
+  if (retryResult.success && state.issue_number) {
+    console.log("");
+    console.log("--- Resume Step 3: Validate-Fix Gate (2.0c) ---");
+
+    // Fetch issue body and labels for validation
+    let issueBody = "";
+    let issueLabels: string[] = [];
+    try {
+      issueBody = execSync(
+        "gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body",
+        { encoding: "utf-8", timeout: 30_000 },
+      ).trim();
+      const labelsJson = execSync(
+        "gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'",
+        { encoding: "utf-8", timeout: 30_000 },
+      ).trim();
+      issueLabels = JSON.parse(labelsJson) as string[];
+    } catch (fetchErr: unknown) {
+      const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      console.log("[resume] WARNING: Could not fetch issue data for validation: " + fetchMsg);
+      // Continue without validation -- non-fatal (issue data fetch is best-effort in resume)
+    }
+
+    if (issueBody.length > 0) {
+      const validationResult = runValidateFixGate(
+        state.issue_number,
+        issueBody,
+        issueLabels,
+        gameRepoPath,
+      );
+
+      // AC7: On failure, do NOT call createPR, exit cleanly
+      if (!validationResult.valid) {
+        handleValidationFailure(state.issue_number, validationResult);
+
+        await updateWorkflowState(workflowId, {
+          status: "escalated",
+          fix_attempts: retryResult.fixAttemptsUsed,
+          error: "Validate-fix gate failed: " + (validationResult.reason ?? "unknown"),
+        });
+
+        await removeSession(workflowId);
+
+        return {
+          status: "escalated",
+          workflowId,
+          totalFindings: state.findings.length,
+          approvedFindings: approved.length,
+          fixAttempts: retryResult.fixAttemptsUsed,
+          prNumber: null,
+          prUrl: null,
+          error: "Validate-fix gate failed: " + (validationResult.reason ?? "unknown") +
+            " -- " + (validationResult.details ?? ""),
+        };
+      }
+    }
+  }
+
+  // ---------------------------------------------------
+  // Step 6: Finalize (using shared helper)
   // ---------------------------------------------------
   console.log("");
-  console.log("--- Resume Step 3: Finalize ---");
+  console.log("--- Resume Step 4: Finalize ---");
 
   const finalResult = await finalizeWorkflow(
     updatedState,
