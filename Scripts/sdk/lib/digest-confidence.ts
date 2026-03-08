@@ -282,3 +282,50 @@ export function formatClassificationDisplay(
   }
   return classification + " (" + Math.round(confidence * 100) + "%)";
 }
+
+// ---------------------------------------------------------------------------
+// P0 Digest Highlighting (Story 2.5 AC6)
+// ---------------------------------------------------------------------------
+
+/** Issue data for P0 highlighting in digest */
+export interface DigestIssueData {
+  number: number;
+  title: string;
+  severity: string;
+  classification: string;
+  url: string;
+}
+
+/**
+ * Render P0 issues with prominent highlighting in the digest email (AC6).
+ *
+ * P0 bugs get a red banner with bold styling that visually differentiates
+ * them from P2/P3 issues. This ensures the owner notices critical crash
+ * reports immediately.
+ *
+ * Returns empty string when there are no P0 issues.
+ */
+export function renderP0HighlightHtml(
+  issues: DigestIssueData[],
+): string {
+  const p0Issues = issues.filter((i) => i.severity === "P0" || i.severity === "P1");
+  if (p0Issues.length === 0) {
+    return "";
+  }
+
+  let html = "<div style=\"margin-bottom:20px;padding:16px;background:#fef2f2;border:2px solid #dc2626;border-radius:8px;\">";
+  html += "<h3 style=\"margin:0 0 12px 0;font-size:18px;color:#991b1b;font-weight:800;\">CRITICAL: " + p0Issues.length + " P0/P1 Bug" + (p0Issues.length > 1 ? "s" : "") + " Reported</h3>";
+  html += "<p style=\"margin:0 0 12px 0;font-size:14px;color:#991b1b;font-weight:600;\">These bugs describe crashes or data loss. Investigate immediately.</p>";
+
+  for (const issue of p0Issues) {
+    html += "<div style=\"margin-bottom:10px;padding:12px 16px;background:#fff5f5;border-left:4px solid #dc2626;border-radius:4px;\">";
+    html += "<a href=\"" + issue.url + "\" style=\"color:#1d4ed8;font-weight:bold;font-size:15px;text-decoration:none;\">#" + issue.number + "</a>";
+    html += " &mdash; <strong style=\"color:#991b1b;\">" + issue.title + "</strong>";
+    html += "<br><span style=\"font-size:13px;color:#dc2626;font-weight:700;\">" + issue.severity + "</span>";
+    html += " &middot; <span style=\"font-size:13px;color:#6b7280;\">" + issue.classification + "</span>";
+    html += "</div>";
+  }
+
+  html += "</div>";
+  return html;
+}
