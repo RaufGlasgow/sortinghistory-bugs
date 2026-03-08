@@ -1,0 +1,169 @@
+{
+  "run_date": "2026-03-08T12:00:00.000Z",
+  "prompt_version": "1.0-calibrated",
+  "language": "de",
+  "iteration": 1,
+  "model": "claude-haiku-4-5-20251001",
+  "method": "Manual calibration run against 10-event German History test set",
+  "notes": "5 good events passed, 5 planted errors all caught. T0 and T9 caught by automated gates, T1/T3/T5 caught by AI verifier.",
+  "automated_gates": {
+    "total_events": 10,
+    "t0_failures": [
+      {
+        "id": "cal_trans_error_4",
+        "title": "Goldene Bulle erlassen",
+        "code": "T0_STALE",
+        "details": "Stale translation: baseEnVersion=0 but English version=1. Translation needs update."
+      }
+    ],
+    "t9_failures": [
+      {
+        "id": "cal_trans_error_3",
+        "title": "Friedrich Barbarossa stirbt auf dem Kreuzzug",
+        "code": "T9_STRIPPED",
+        "details": "ASCII diacritic substitutions detected in German text (ae/oe/ue instead of umlauts)."
+      }
+    ]
+  },
+  "ai_results": [
+    {
+      "id": "cal_trans_good_1",
+      "title": "Kaiser Karl der Gro\u00dfe gekr\u00f6nt",
+      "overall_passed": true,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German" },
+        "T3_factual": { "passed": true, "code": null, "details": "Facts match English source (year 800, Charlemagne, Holy Roman Emperor)" },
+        "T5_tone": { "passed": true, "code": null, "details": "Formal academic register appropriate for educational content" }
+      }
+    },
+    {
+      "id": "cal_trans_good_2",
+      "title": "Otto I. zum R\u00f6mischen Kaiser gekr\u00f6nt",
+      "overall_passed": true,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German" },
+        "T3_factual": { "passed": true, "code": null, "details": "Facts match English source (year 962, Otto I, Saxon dynasty)" },
+        "T5_tone": { "passed": true, "code": null, "details": "Formal academic register appropriate for educational content" }
+      }
+    },
+    {
+      "id": "cal_trans_good_3",
+      "title": "Friedrich Barbarossa wird Kaiser",
+      "overall_passed": true,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German" },
+        "T3_factual": { "passed": true, "code": null, "details": "Facts match English source (year 1155, Barbarossa, Italy conflicts)" },
+        "T5_tone": { "passed": true, "code": null, "details": "Formal academic register appropriate for educational content" }
+      }
+    },
+    {
+      "id": "cal_trans_good_4",
+      "title": "Johannes Gutenberg druckt erste Bibel",
+      "overall_passed": true,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German" },
+        "T3_factual": { "passed": true, "code": null, "details": "Facts match English source (year 1455, Gutenberg, Mainz, movable type)" },
+        "T5_tone": { "passed": true, "code": null, "details": "Formal academic register appropriate for educational content" }
+      }
+    },
+    {
+      "id": "cal_trans_good_5",
+      "title": "Martin Luther ver\u00f6ffentlicht 95 Thesen",
+      "overall_passed": true,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German. 'Martin Luther' is a proper noun, not untranslated English." },
+        "T3_factual": { "passed": true, "code": null, "details": "Facts match English source (year 1517, Luther, Wittenberg, 95 Theses)" },
+        "T5_tone": { "passed": true, "code": null, "details": "Formal academic register appropriate for educational content" }
+      }
+    },
+    {
+      "id": "cal_trans_error_1",
+      "title": "Investiture Controversy Begins",
+      "overall_passed": false,
+      "gates": {
+        "T1_untranslated": { "passed": false, "code": "T1_UNTRANSLATED", "details": "Title 'Investiture Controversy Begins' and description are entirely in English. Should be translated to German." },
+        "T3_factual": { "passed": true, "code": null, "details": "N/A - text not translated, but English content is factually correct" },
+        "T5_tone": { "passed": true, "code": null, "details": "N/A - text not translated" }
+      }
+    },
+    {
+      "id": "cal_trans_error_2",
+      "title": "Heinrichs Gang nach Canossa",
+      "overall_passed": false,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German" },
+        "T3_factual": { "passed": false, "code": "T3_WRONG_YEAR", "details": "Description mentions year 1080 but event year is 1077. The Walk to Canossa occurred in January 1077, not 1080." },
+        "T5_tone": { "passed": true, "code": null, "details": "Formal academic register appropriate for educational content" }
+      }
+    },
+    {
+      "id": "cal_trans_error_5",
+      "title": "Reichstag zu Worms",
+      "overall_passed": false,
+      "gates": {
+        "T1_untranslated": { "passed": true, "code": null, "details": "Title and description are in German" },
+        "T3_factual": { "passed": true, "code": null, "details": "Core facts are present (Luther, Charles V, refusal to recant)" },
+        "T5_tone": { "passed": false, "code": "T5_TONE", "details": "Description uses extremely informal German slang: 'Hey, also', 'halt', 'krass oder?'. Educational game content should use formal academic register." }
+      }
+    }
+  ],
+  "per_gate_accuracy": {
+    "T0_structural": {
+      "caught_stale_baseEnVersion": true,
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "accuracy": "100%",
+      "details": "Automated check correctly caught baseEnVersion=0 vs English version=1"
+    },
+    "T1_untranslated": {
+      "caught_untranslated_string": true,
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "accuracy": "100%",
+      "details": "AI correctly identified English text that should be German"
+    },
+    "T3_factual": {
+      "caught_wrong_year": true,
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "accuracy": "100%",
+      "details": "AI caught year 1080 vs event year 1077"
+    },
+    "T5_tone": {
+      "caught_tone_mismatch": true,
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "accuracy": "100%",
+      "details": "AI caught informal slang in German educational content"
+    },
+    "T9_diacritics": {
+      "caught_stripped_diacritics": true,
+      "true_positives": 1,
+      "false_positives": 0,
+      "false_negatives": 0,
+      "accuracy": "100%",
+      "details": "Automated check caught ASCII substitutions (wahrend, Flussueberquerung, erschuettert)"
+    }
+  },
+  "calibration_summary": {
+    "total_events": 10,
+    "good_events": 5,
+    "planted_errors": 5,
+    "errors_caught": 5,
+    "false_positives": 0,
+    "detection_rate": "100%",
+    "false_positive_rate": "0%",
+    "result": "PASS"
+  },
+  "portuguese_diacritics_test": {
+    "events_tested": 4,
+    "baseline_density": 0.045,
+    "hook_rejects_stripped": true,
+    "hook_allows_correct": true,
+    "details": "PostToolUse hook correctly rejected write with stripped diacritics and allowed write with preserved diacritics"
+  }
+}

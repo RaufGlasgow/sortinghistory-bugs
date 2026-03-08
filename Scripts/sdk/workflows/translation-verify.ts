@@ -91,6 +91,289 @@ function isValidSwiftDictEntry(key: string, value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Event-level translation verification (Story 2.4a calibration)
+// ---------------------------------------------------------------------------
+
+/** Single translated event from the game data */
+export interface TranslatedEvent {
+  id: string;
+  title: string;
+  version: number;
+  baseEnVersion: number;
+  description: string;
+  year: number;
+  month?: number;
+  day?: number;
+  category: string;
+  difficulty: number;
+  imageURL?: string | null;
+  _planted_error?: string;
+}
+
+/** Single English source event */
+export interface EnglishEvent {
+  id: string;
+  title: string;
+  version: number;
+  description: string;
+  year: number;
+  month?: number;
+  day?: number;
+  category: string;
+  difficulty: number;
+  imageURL?: string | null;
+}
+
+/** Result of automated T0 gate check on a single event */
+export interface T0GateResult {
+  event_id: string;
+  title: string;
+  passed: boolean;
+  code: string | null;
+  details: string;
+}
+
+/** Result of automated T9 diacritics gate check on a single event */
+export interface T9GateResult {
+  event_id: string;
+  title: string;
+  passed: boolean;
+  code: string | null;
+  details: string;
+  diacritics_count: number;
+}
+
+/** Words that are identical across languages and should never be flagged as untranslated */
+const CROSS_LANGUAGE_WHITELIST = new Set([
+  "Version", "Build", "iPhone", "iPad", "App Store", "App",
+  "Martin Luther", "Friedrich Barbarossa", "Otto", "Karl",
+  "Gutenberg", "Canossa", "Wittenberg", "Mainz", "Worms",
+  "Internet", "Computer", "Software", "Hardware", "Email",
+  "GPS", "USB", "PDF", "URL", "API",
+]);
+
+/**
+ * T0 Structural Gate: Check if translation baseEnVersion matches English version.
+ * This is an automated check, not an AI check.
+ */
+export function runT0StructuralCheck(
+  translatedEvent: TranslatedEvent,
+  englishEvent: EnglishEvent,
+): T0GateResult {
+  if (translatedEvent.baseEnVersion < englishEvent.version) {
+    return {
+      event_id: translatedEvent.id,
+      title: translatedEvent.title,
+      passed: false,
+      code: "T0_STALE",
+      details: "Stale translation: baseEnVersion=" + translatedEvent.baseEnVersion +
+        " but English version=" + englishEvent.version +
+        ". Translation needs update.",
+    };
+  }
+
+  return {
+    event_id: translatedEvent.id,
+    title: translatedEvent.title,
+    passed: true,
+    code: null,
+    details: "baseEnVersion matches English version",
+  };
+}
+
+/** Count diacritics characters in a string */
+export function countDiacritics(text: string): number {
+  // Match common diacritics: accented Latin chars, umlauts, cedillas, tildes, etc.
+  const diacriticsRegex = /[\u00C0-\u00FF\u0100-\u017F]/g;
+  const matches = text.match(diacriticsRegex);
+  return matches ? matches.length : 0;
+}
+
+/**
+ * T9 Diacritics Gate: Check if translated event has expected diacritics for language.
+ * Verifies diacritics are present and not stripped to ASCII substitutes.
+ */
+export function runT9DiacriticsCheck(
+  translatedEvent: TranslatedEvent,
+  language: string,
+): T9GateResult {
+  const fullText = translatedEvent.title + " " + translatedEvent.description;
+  const diacriticsCount = countDiacritics(fullText);
+
+  const expectedDiacritics = LANGUAGE_DIACRITICS[language];
+  if (!expectedDiacritics) {
+    return {
+      event_id: translatedEvent.id,
+      title: translatedEvent.title,
+      passed: true,
+      code: null,
+      details: "No diacritics rules defined for language: " + language,
+      diacritics_count: diacriticsCount,
+    };
+  }
+
+  // Check if any expected diacritics are present
+  if (!expectedDiacritics.test(fullText) && fullText.length > 20) {
+    return {
+      event_id: translatedEvent.id,
+      title: translatedEvent.title,
+      passed: false,
+      code: "T9_STRIPPED",
+      details: "No expected " + language + " diacritics found in text (" +
+        fullText.length + " chars). Likely stripped to ASCII.",
+      diacritics_count: diacriticsCount,
+    };
+  }
+
+  // Check for ASCII substitutions in German
+  if (language === "German") {
+    // Check for common German ASCII substitutions: ue, ae, oe within words
+    const uePattern = /(?<=[a-z])ue(?=[a-z])/i;
+    const aePattern = /(?<=[a-z])ae(?=[a-z])/i;
+    const oePattern = /(?<=[a-z])oe(?=[a-z])/i;
+    if (uePattern.test(fullText) || aePattern.test(fullText) || oePattern.test(fullText)) {
+      return {
+        event_id: translatedEvent.id,
+        title: translatedEvent.title,
+        passed: false,
+        code: "T9_STRIPPED",
+        details: "ASCII diacritic substitutions detected in German text (ae/oe/ue instead of umlauts).",
+        diacritics_count: diacriticsCount,
+      };
+    }
+  }
+
+  return {
+    event_id: translatedEvent.id,
+    title: translatedEvent.title,
+    passed: true,
+    code: null,
+    details: "Diacritics check passed (" + diacriticsCount + " diacritics found)",
+    diacritics_count: diacriticsCount,
+  };
+}
+
+/**
+ * Check if a translated event's text is still in English (untranslated).
+ * Uses heuristic: if most words in the description match common English words
+ * and the text lacks language-specific diacritics, it's likely untranslated.
+ * Also checks title against the English source.
+ */
+export function isLikelyUntranslated(
+  translatedEvent: TranslatedEvent,
+  englishEvent: EnglishEvent,
+  whitelist: Set<string> = CROSS_LANGUAGE_WHITELIST,
+): boolean {
+  // Direct title match (excluding whitelisted terms)
+  const translatedTitle = translatedEvent.title;
+  const englishTitle = englishEvent.title;
+
+  // If title is identical to English and not a whitelisted term, likely untranslated
+  if (translatedTitle === englishTitle) {
+    const isWhitelisted = whitelist.has(translatedTitle);
+    if (!isWhitelisted) return true;
+  }
+
+  // If description is identical to English, likely untranslated
+  if (translatedEvent.description === englishEvent.description) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Validate diacritics density for Portuguese text.
+ * Returns the density (diacritics per character) and whether it meets the baseline.
+ * Used by the PostToolUse hook to reject writes that strip diacritics.
+ */
+export function validatePortugueseDiacritics(
+  text: string,
+  baselineDensity?: number,
+): { density: number; diacriticsCount: number; charCount: number; passed: boolean; details: string } {
+  const charCount = text.length;
+  const diacriticsCount = countDiacritics(text);
+  const density = charCount > 0 ? diacriticsCount / charCount : 0;
+
+  // Default baseline: Portuguese text typically has ~3-8% diacritics density
+  const threshold = baselineDensity ?? 0.02; // 2% minimum
+
+  if (density < threshold) {
+    return {
+      density,
+      diacriticsCount,
+      charCount,
+      passed: false,
+      details: "Diacritics density " + (density * 100).toFixed(2) + "% is below threshold " +
+        (threshold * 100).toFixed(2) + "% (" + diacriticsCount + " diacritics in " + charCount + " chars)",
+    };
+  }
+
+  return {
+    density,
+    diacriticsCount,
+    charCount,
+    passed: true,
+    details: "Diacritics density " + (density * 100).toFixed(2) + "% meets threshold (" +
+      diacriticsCount + " diacritics in " + charCount + " chars)",
+  };
+}
+
+/**
+ * Run all automated translation gates on a set of translated events.
+ * Returns per-event results for T0 (structural) and T9 (diacritics).
+ * T1-T8 (translation quality) require AI verification and are not run here.
+ */
+export function runTranslationAutomatedChecks(
+  translatedEvents: TranslatedEvent[],
+  englishEvents: EnglishEvent[],
+  language: string,
+): {
+  t0Results: T0GateResult[];
+  t9Results: T9GateResult[];
+  automatedFailures: Array<{ id: string; title: string; gate: string; code: string; details: string }>;
+} {
+  const englishMap = new Map(englishEvents.map(e => [e.id, e]));
+  const t0Results: T0GateResult[] = [];
+  const t9Results: T9GateResult[] = [];
+  const automatedFailures: Array<{ id: string; title: string; gate: string; code: string; details: string }> = [];
+
+  for (const event of translatedEvents) {
+    const englishEvent = englishMap.get(event.id);
+
+    // T0: Structural check (baseEnVersion)
+    if (englishEvent) {
+      const t0 = runT0StructuralCheck(event, englishEvent);
+      t0Results.push(t0);
+      if (!t0.passed) {
+        automatedFailures.push({
+          id: event.id,
+          title: event.title,
+          gate: "T0",
+          code: t0.code!,
+          details: t0.details,
+        });
+      }
+    }
+
+    // T9: Diacritics check
+    const t9 = runT9DiacriticsCheck(event, language);
+    t9Results.push(t9);
+    if (!t9.passed) {
+      automatedFailures.push({
+        id: event.id,
+        title: event.title,
+        gate: "T9",
+        code: t9.code!,
+        details: t9.details,
+      });
+    }
+  }
+
+  return { t0Results, t9Results, automatedFailures };
+}
+
+// ---------------------------------------------------------------------------
 // Main verification function
 // ---------------------------------------------------------------------------
 

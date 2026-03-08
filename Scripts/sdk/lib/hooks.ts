@@ -68,22 +68,101 @@ export function createJsonValidationHook(): HookCallbackMatcher {
   return { matcher: "Write|Edit", hooks: [validateJson] };
 }
 
-/** Diacritics density check for Portuguese translations (stub — implemented in Story 3.2) */
-export function createDiacriticsHook(): HookCallbackMatcher {
+/**
+ * Diacritics density check for Portuguese translations (Story 2.4a).
+ *
+ * PostToolUse hook that validates diacritics density has not decreased
+ * after a Write/Edit to a Portuguese translation file (_pt.json).
+ * If the fixer strips diacritics, the hook logs the rejection.
+ *
+ * NOTE: PostToolUse hooks cannot actually reject writes (the write already happened).
+ * The hook records the violation so the orchestrator can detect it and retry.
+ * For true blocking, a PreToolUse hook is needed (Story 3.2).
+ */
+export function createDiacriticsHook(
+  /** Optional callback to record diacritics violations for test observability */
+  onViolation?: (filePath: string, before: number, after: number) => void,
+): HookCallbackMatcher {
+  /** Store pre-write diacritics counts keyed by file path */
+  const preWriteCounts = new Map<string, number>();
+
+  const recordPreWrite: HookCallback = async (input, _toolUseID, _options) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+
+    const preInput = input as PreToolUseHookInput;
+    const filePath = getFilePath(preInput.tool_input);
+    if (!filePath?.includes("_pt.json") && !filePath?.includes("_pt-")) return {};
+
+    // Read file content before the write to count diacritics
+    try {
+      const fs = await import("node:fs");
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        const diacriticsRegex = /[\u00C0-\u00FF\u0100-\u017F]/g;
+        const matches = content.match(diacriticsRegex);
+        const count = matches ? matches.length : 0;
+        preWriteCounts.set(filePath, count);
+        console.log(`[hook:diacritics] Pre-write diacritics count for ${filePath}: ${count}`);
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.log(`[hook:diacritics] WARNING: Could not read pre-write content: ${errMsg}`);
+    }
+
+    return {};
+  };
+
   const checkDiacritics: HookCallback = async (input, _toolUseID, _options) => {
     if (input.hook_event_name !== "PostToolUse") return {};
 
     const postInput = input as PostToolUseHookInput;
     const filePath = getFilePath(postInput.tool_input);
-    if (!filePath?.includes("_pt.json")) return {};
+    if (!filePath?.includes("_pt.json") && !filePath?.includes("_pt-")) return {};
 
-    // TODO: Story 3.2 — compare diacritics density before/after write
-    // If density decreased, reject write and force retry
     console.log(`[hook:diacritics] Checking Portuguese diacritics in ${filePath}`);
+
+    // Read file content after the write to count diacritics
+    try {
+      const fs = await import("node:fs");
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, "utf-8");
+        const diacriticsRegex = /[\u00C0-\u00FF\u0100-\u017F]/g;
+        const matches = content.match(diacriticsRegex);
+        const afterCount = matches ? matches.length : 0;
+        const beforeCount = preWriteCounts.get(filePath) ?? afterCount;
+
+        console.log(`[hook:diacritics] Post-write diacritics count: ${afterCount} (was ${beforeCount})`);
+
+        // If diacritics decreased by more than 10%, flag as violation
+        if (beforeCount > 0 && afterCount < beforeCount * 0.9) {
+          const message = `DIACRITICS VIOLATION: Portuguese diacritics decreased from ${beforeCount} to ${afterCount} in ${filePath}. Write should be rejected.`;
+          console.error(`[hook:diacritics] ${message}`);
+
+          if (onViolation) {
+            onViolation(filePath, beforeCount, afterCount);
+          }
+
+          // Record violation in hook output
+          return {
+            hookSpecificOutput: {
+              hookEventName: "PostToolUse" as const,
+              diacriticsViolation: true,
+              beforeCount,
+              afterCount,
+              message,
+            },
+          };
+        }
+      }
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.log(`[hook:diacritics] WARNING: Could not check post-write diacritics: ${errMsg}`);
+    }
+
     return {};
   };
 
-  return { matcher: "Write|Edit", hooks: [checkDiacritics] };
+  return { matcher: "Write|Edit", hooks: [recordPreWrite, checkDiacritics] };
 }
 
 /** Build the complete hooks configuration for query() options.hooks */
