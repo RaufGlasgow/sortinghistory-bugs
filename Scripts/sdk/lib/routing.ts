@@ -225,21 +225,23 @@ function routeByClassification(classification: Classification, input: RoutingInp
 
     case "ui_bug": {
       // SDK-BF.3 AC1: ALL ui_bug severities → label with classification + severity, wait for /approve
+      // AC4: needs-claude-code so it appears in "Code bugs — queued for Claude Code session" digest section
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
-        labels: [ROUTING.LABEL_UI_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
+        labels: [ROUTING.LABEL_UI_BUG, "severity/" + input.severity, ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
       };
     }
 
     case "gameplay_bug": {
       // SDK-BF.3 AC2: ALL gameplay_bug severities → label with classification + severity, wait for /approve
+      // AC4: needs-claude-code so it appears in "Code bugs — queued for Claude Code session" digest section
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
-        labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
+        labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/" + input.severity, ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
       };
     }
 
@@ -301,12 +303,12 @@ function routeByClassification(classification: Classification, input: RoutingInp
     }
 
     case "feature_request": {
-      // AC-6: backlog
+      // AC-6: backlog — feature requests get feature-request + backlog labels (AC5/FR32)
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
-        labels: [ROUTING.LABEL_FEATURE_REQUEST, ROUTING.LABEL_ROUTED],
+        labels: [ROUTING.LABEL_FEATURE_REQUEST, "backlog", ROUTING.LABEL_ROUTED],
       };
     }
 

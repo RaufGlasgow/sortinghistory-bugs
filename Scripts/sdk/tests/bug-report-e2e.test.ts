@@ -41,6 +41,8 @@ import {
   type DigestIssueData,
 } from "../lib/digest-confidence.js";
 
+import { generateTriageHandoff, type TriageOnlyHandoffInput } from "../lib/handoff-generator.js";
+
 import { ROUTING, CLASSIFICATIONS } from "../config.js";
 
 // ------------------------------------------------------------------
@@ -134,15 +136,13 @@ describe("Story 2.5: Bug Report E2E", () => {
     assert.ok(issueBody.includes("iPhone 13 Pro Max"), "Body should contain device model");
     assert.ok(issueBody.includes("iOS 18.3"), "Body should contain OS version");
 
-    // Step 5: Verify the label contract -- Worker code adds from-app and needs-triage
-    // (We verify the contract expectation; actual label application is in the Worker)
-    const expectedLabels = ["from-app", "needs-triage"];
-    for (const label of expectedLabels) {
-      assert.ok(
-        expectedLabels.includes(label),
-        "Expected label '" + label + "' in the from-app issue creation contract",
-      );
-    }
+    // Step 5: Worker label contract documentation
+    // The Worker applies ["from-app", "needs-triage"] labels when creating the GitHub issue.
+    // This happens in the Worker's private repo code (handleBugsWebhook in index.ts),
+    // which is outside this SDK repo's test scope. The contract is:
+    //   - "from-app" identifies issues submitted via the app (vs manually filed)
+    //   - "needs-triage" signals the triage workflow to pick up the issue
+    // Verified by Worker tests in the private repo (handleBugsWebhook.test.ts).
 
     // Step 6: Verify the issue body includes structured fields for pipeline parsing
     assert.ok(issueBody.includes("**Expected behavior:**"), "Body should have Expected behavior section");
@@ -248,7 +248,7 @@ describe("Story 2.5: Bug Report E2E", () => {
 
   it("triage classifies gameplay bug with P0 severity", () => {
     // Given a crash/gameplay bug report (P0 severity)
-    const input = makeRoutingInput("gameplay_bug", "P1", 0.95, 202, {
+    const input = makeRoutingInput("gameplay_bug", "P0", 0.95, 202, {
       issueTitle: "[Bug] Game crashes every time I start epic mode with Science History",
       issueBody: "Game crashes immediately when selecting Science History in epic mode.\n\nSteps:\n1. Open Epic Mode\n2. Select Science History\n3. App crashes",
     });
@@ -273,6 +273,12 @@ describe("Story 2.5: Bug Report E2E", () => {
     assert.ok(
       action.labels.includes(ROUTING.LABEL_ROUTED),
       "Labels should include sdk-routed",
+    );
+
+    // AC4: needs-claude-code label so it appears in digest's "Code bugs" section
+    assert.ok(
+      action.labels.includes(ROUTING.LABEL_NEEDS_CLAUDE_CODE),
+      "Labels should include needs-claude-code for manual queue visibility",
     );
 
     // Verify it is NOT an SDK pipeline issue (gameplay bugs don't auto-fix)
@@ -307,6 +313,12 @@ describe("Story 2.5: Bug Report E2E", () => {
     assert.ok(
       action.labels.includes(ROUTING.LABEL_ROUTED),
       "Labels should include sdk-routed",
+    );
+
+    // AC5: backlog label for feature requests
+    assert.ok(
+      action.labels.includes("backlog"),
+      "Feature request labels should include backlog",
     );
 
     // Verify NO pipeline-related labels are applied (FR32)
@@ -358,6 +370,12 @@ describe("Story 2.5: Bug Report E2E", () => {
     assert.ok(
       action.labels.includes(ROUTING.LABEL_ROUTED),
       "Labels should include sdk-routed",
+    );
+
+    // AC4: needs-claude-code label so UI bugs appear in digest's "Code bugs" section
+    assert.ok(
+      action.labels.includes(ROUTING.LABEL_NEEDS_CLAUDE_CODE),
+      "UI bug labels should include needs-claude-code for manual queue visibility",
     );
 
     // Verify it is NOT an SDK pipeline issue (UI bugs need developer review)
@@ -552,5 +570,79 @@ describe("Story 2.5: Bug Report E2E", () => {
     ];
     const noHighlight = renderP0HighlightHtml(noP0Issues);
     assert.strictEqual(noHighlight, "", "No P0/P1 issues should produce empty HTML");
+  });
+
+  // ------------------------------------------------------------------
+  // Test 9: FR30 — gameplay/code bug diagnosis includes root cause analysis
+  // ------------------------------------------------------------------
+
+  it("FR30: gameplay bug diagnosis includes file paths, reasoning, and suggested approach", () => {
+    // Given a gameplay bug that routes to handoff_to_dev (via generateTriageHandoff),
+    // the diagnosis output MUST include:
+    //   - Root cause analysis (reasoning)
+    //   - Relevant source files (extracted_context.file_path)
+    //   - Suggested approach (classification-specific guidance)
+
+    const handoffInput: TriageOnlyHandoffInput = {
+      issueNumber: 400,
+      issueTitle: "[Bug] Game crashes when selecting Science History in epic mode",
+      issueBody: "Steps:\n1. Open Epic Mode\n2. Select Science History\n3. App crashes immediately\n\nDevice: iPhone 13 Pro Max, iOS 18.3",
+      classification: "gameplay_bug",
+      confidence: 0.95,
+      severity: "P0",
+      reasoning: "The crash occurs in the game setup flow when filtering events by the Science History category. The root cause is likely a nil array access in GameSetupView.swift where the category filter is applied before the event list is populated.",
+      extractedContext: {
+        file_path: "Views/GameSetupView.swift",
+        category: "Science History",
+        event_id: null,
+      },
+    };
+
+    const markdown = generateTriageHandoff(handoffInput);
+
+    // Verify root cause analysis is present (from reasoning field)
+    assert.ok(
+      markdown.includes("root cause"),
+      "Diagnosis should include root cause analysis from triage reasoning",
+    );
+    assert.ok(
+      markdown.includes("## Reasoning"),
+      "Diagnosis should have a Reasoning section",
+    );
+
+    // Verify relevant source files are extracted and displayed
+    assert.ok(
+      markdown.includes("Views/GameSetupView.swift"),
+      "Diagnosis should include the relevant source file path",
+    );
+    assert.ok(
+      markdown.includes("## Relevant Code Paths"),
+      "Diagnosis should have a Relevant Code Paths section",
+    );
+
+    // Verify classification-specific suggested approach
+    assert.ok(
+      markdown.includes("## Suggested Approach"),
+      "Diagnosis should have a Suggested Approach section",
+    );
+    assert.ok(
+      markdown.includes("gameplay bug"),
+      "Suggested approach should reference the gameplay bug classification",
+    );
+
+    // Verify severity and classification are included in the summary table
+    assert.ok(markdown.includes("`gameplay_bug`"), "Should show classification in summary");
+    assert.ok(markdown.includes("`P0`"), "Should show severity in summary");
+    assert.ok(markdown.includes("95%"), "Should show confidence percentage");
+
+    // Verify the original bug report is included for developer context
+    assert.ok(
+      markdown.includes("Science History"),
+      "Diagnosis should preserve the category from the report",
+    );
+    assert.ok(
+      markdown.includes("## Bug Report"),
+      "Diagnosis should include the original bug report",
+    );
   });
 });

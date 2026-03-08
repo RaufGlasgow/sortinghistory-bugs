@@ -79,7 +79,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_UI_BUG, "severity/P4", ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_UI_BUG, "severity/P4", ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
     },
   },
 
@@ -97,7 +97,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_UI_BUG, "severity/P1", ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_UI_BUG, "severity/P1", ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
     },
   },
 
@@ -115,11 +115,11 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P2", ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P2", ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
     },
   },
 
-  // --- route-6: feature_request -> label feature-request (AC-6) ---
+  // --- route-6: feature_request -> label feature-request + backlog (AC-6, AC5) ---
   {
     id: "route-6",
     description: "feature_request routes to backlog label",
@@ -133,7 +133,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_FEATURE_REQUEST, ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_FEATURE_REQUEST, "backlog", ROUTING.LABEL_ROUTED],
     },
   },
 
@@ -207,7 +207,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_UI_BUG, "severity/P2", ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_UI_BUG, "severity/P2", ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
     },
   },
 
@@ -225,7 +225,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P4", ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_GAMEPLAY_BUG, "severity/P4", ROUTING.LABEL_NEEDS_CLAUDE_CODE, ROUTING.LABEL_ROUTED],
     },
   },
 
@@ -493,7 +493,7 @@ export const ROUTING_FIXTURES: RoutingFixture[] = [
     expected: {
       type: "label",
       repo: ROUTING.PRIVATE_REPO,
-      labels: [ROUTING.LABEL_FEATURE_REQUEST, ROUTING.LABEL_ROUTED],
+      labels: [ROUTING.LABEL_FEATURE_REQUEST, "backlog", ROUTING.LABEL_ROUTED],
     },
   },
 ];
