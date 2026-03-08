@@ -12,6 +12,19 @@
  * - 0: Success (verification completed, results returned)
  * - 1: Failure (could not run verification pipeline)
  */
+/** Single event from the fixture/category file */
+interface GameEvent {
+    title: string;
+    year: number;
+    description: string;
+    category: string;
+    difficulty: number;
+    month?: number;
+    day?: number;
+    version?: number;
+    imageURL?: string | null;
+    _planted_error?: string;
+}
 /** Automated gate failure from validate_content.py or inline fallback */
 interface AutomatedFailure {
     title: string;
@@ -52,5 +65,13 @@ export interface ContentVerifyInput {
     /** Category name (used for logging) */
     category?: string;
 }
+/**
+ * Run inline automated checks as a fallback when validate_content.py is unavailable.
+ * Checks: G0 (category string), P1/P2 (word count), P4 (country context), P5 (date spoiler), D2 (near-duplicates).
+ */
+export declare function runInlineAutomatedChecks(events: GameEvent[]): {
+    passed: GameEvent[];
+    failed: AutomatedFailure[];
+};
 export declare function runContentVerify(input: ContentVerifyInput): Promise<ContentVerificationResult>;
 export {};

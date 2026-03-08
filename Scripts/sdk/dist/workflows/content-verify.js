@@ -71,7 +71,7 @@ const COUNTRY_CONTEXT_TERMS = [
  * Run inline automated checks as a fallback when validate_content.py is unavailable.
  * Checks: G0 (category string), P1/P2 (word count), P4 (country context), P5 (date spoiler), D2 (near-duplicates).
  */
-function runInlineAutomatedChecks(events) {
+export function runInlineAutomatedChecks(events) {
     const passed = [];
     const failed = [];
     // Build title index for duplicate detection
