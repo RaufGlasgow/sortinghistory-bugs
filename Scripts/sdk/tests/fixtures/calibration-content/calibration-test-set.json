@@ -1,0 +1,130 @@
+{
+  "category": "US History",
+  "events": [
+    {
+      "id": "cal_good_1",
+      "title": "Declaration of Independence Signed",
+      "version": 1,
+      "description": "American colonies formally declared independence from Britain establishing new nation founded on principles of liberty and self-governance.",
+      "year": 1776,
+      "month": 7,
+      "day": 4,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null
+    },
+    {
+      "id": "cal_good_2",
+      "title": "Moon Landing",
+      "version": 1,
+      "description": "American astronauts Neil Armstrong and Buzz Aldrin became first humans to walk on the lunar surface during Apollo 11 mission.",
+      "year": 1969,
+      "month": 7,
+      "day": 20,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null
+    },
+    {
+      "id": "cal_good_3",
+      "title": "Louisiana Purchase Completed",
+      "version": 1,
+      "description": "United States acquired vast western territory from France doubling the young nation's size under President Thomas Jefferson.",
+      "year": 1803,
+      "month": 4,
+      "day": 30,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null
+    },
+    {
+      "id": "cal_good_4",
+      "title": "Rosa Parks Refuses to Give Up Seat",
+      "version": 1,
+      "description": "African American civil rights activist Rosa Parks refused to surrender her Montgomery Alabama bus seat sparking historic boycott movement.",
+      "year": 1955,
+      "month": 12,
+      "day": 1,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null
+    },
+    {
+      "id": "cal_good_5",
+      "title": "Transcontinental Railroad Completed",
+      "version": 1,
+      "description": "Golden spike ceremony at Promontory Summit Utah connected eastern and western American rail networks transforming continental transportation.",
+      "year": 1869,
+      "month": 5,
+      "day": 10,
+      "category": "US History",
+      "difficulty": 3,
+      "imageURL": null
+    },
+    {
+      "id": "cal_error_1",
+      "title": "Columbus Reaches Americas",
+      "version": 1,
+      "description": "Italian explorer Christopher Columbus sailing for Spain reached Caribbean islands beginning era of European colonization of New World.",
+      "year": 1493,
+      "month": 10,
+      "day": 12,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null,
+      "_planted_error": "WRONG YEAR: Should be 1492 not 1493. Gate: F1 factual accuracy."
+    },
+    {
+      "id": "cal_error_2",
+      "title": "First Telephone Call Made",
+      "version": 1,
+      "description": "Scottish-born American inventor Alexander Graham Bell successfully transmitted the first clear telephone message to his assistant Thomas Watson in their Boston laboratory workshop establishing a revolutionary new form of long-distance human communication technology.",
+      "year": 1876,
+      "month": 3,
+      "day": 10,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null,
+      "_planted_error": "DESCRIPTION TOO LONG: 36 words, exceeds 23-word maximum. Gate: P2 (parameter violation)."
+    },
+    {
+      "id": "cal_error_3",
+      "title": "Boston Tea Party",
+      "version": 1,
+      "description": "French revolutionaries in Paris dumped imported tea into the Seine River protesting high taxation imposed by the monarchy.",
+      "year": 1773,
+      "month": 12,
+      "day": 16,
+      "category": "US History",
+      "difficulty": 2,
+      "imageURL": null,
+      "_planted_error": "WRONG COUNTRY CONTEXT: Boston Tea Party happened in Boston (American colonies), not Paris (France). Gate: F2 factual inaccuracy."
+    },
+    {
+      "id": "cal_error_4",
+      "title": "Declaration of Independence Signed",
+      "version": 1,
+      "description": "American colonies formally declared independence from Britain establishing new nation founded on principles of liberty and self-governance.",
+      "year": 1776,
+      "month": 7,
+      "day": 4,
+      "category": "US History",
+      "difficulty": 1,
+      "imageURL": null,
+      "_planted_error": "EXACT DUPLICATE: Identical title to good event #1. Gate: D1 duplicate detection."
+    },
+    {
+      "id": "cal_error_5",
+      "title": "Salem Witch Executions",
+      "version": 1,
+      "description": "Accused witches were slowly strangled by hanging ropes while spectators watched their bodies convulse and twitch in prolonged gruesome agony.",
+      "year": 1692,
+      "month": 6,
+      "day": 10,
+      "category": "US History",
+      "difficulty": 3,
+      "imageURL": null,
+      "_planted_error": "AGE-INAPPROPRIATE: Graphic violence description with disturbing execution details. Gate: A1."
+    }
+  ]
+}
