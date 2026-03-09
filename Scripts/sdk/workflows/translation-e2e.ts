@@ -39,6 +39,7 @@ import {
 } from "../lib/state.js";
 import { saveSession, removeSession } from "../lib/session.js";
 import { verifyTranslations, type TranslationVerifyInput, type TranslationVerifyResult } from "./translation-verify.js";
+import { logSubagentAttempt, logModelUsage } from "../lib/audit-trail.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -921,6 +922,25 @@ export async function resumeTranslationE2E(
       console.log("[translation-e2e] Fixer " + language + ": success=" + fixResult.success +
         " cost=$" + fixResult.costUsd.toFixed(4) +
         " tools=[" + fixResult.toolsUsed.join(",") + "]");
+
+      // Story 3.6 AC3: persist attempt and model usage to workflow state file
+      try {
+        await logSubagentAttempt(workflowId, {
+          model: fixResult.model ?? MODELS.FIXER,
+          approach: "translation_fix_" + language + "_attempt_" + fixAttempt,
+          result: fixResult.success ? "success" : "error",
+          error_output: fixResult.success ? null : (fixResult.error ?? null),
+        });
+        await logModelUsage(workflowId, {
+          step: "translation_fix_" + language + "_attempt_" + fixAttempt,
+          model: fixResult.model ?? MODELS.FIXER,
+          input_tokens: fixResult.inputTokens,
+          output_tokens: fixResult.outputTokens,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log("[translation-e2e] WARNING: audit-trail logging failed: " + msg);
+      }
 
       if (!fixResult.success) {
         console.error("[translation-e2e] Fixer failed for " + language + ": " + fixResult.error);
