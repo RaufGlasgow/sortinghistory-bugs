@@ -28,6 +28,96 @@ import { generateTriageHandoff, postHandoffComment } from "../lib/handoff-genera
 import type { TriageData } from "../lib/types.js";
 
 // ---------------------------------------------------------------------------
+// Story 3.5: Contextual signal extraction for enhanced triage handoffs
+// ---------------------------------------------------------------------------
+
+const GAME_CATEGORIES = [
+  "world history", "us history", "european history", "ancient history", "modern history",
+  "science history", "technology history", "music history", "art history", "literature history",
+  "sports history", "tv history", "film history", "food history", "fashion history",
+  "military history", "space history", "medical history", "business history", "political history",
+];
+
+const GAME_MODES = [
+  "daily challenge", "epic mode", "epic", "solo", "multiplayer", "timed mode",
+];
+
+/**
+ * Extract contextual signals from a bug report for the triage handoff.
+ * Story 3.5 AC2: Identifies what signals ARE present and what's missing.
+ */
+export function extractTriageSignals(body: string, title: string): {
+  found: string[];
+  missing: string[];
+  suggestedSteps: string[];
+} {
+  const text = (body + " " + title).toLowerCase();
+  const found: string[] = [];
+  const missing: string[] = [];
+  const suggestedSteps: string[] = [];
+
+  // Check for category names
+  const foundCategories = GAME_CATEGORIES.filter((cat) => text.includes(cat));
+  if (foundCategories.length > 0) {
+    found.push("category_name: " + foundCategories.join(", "));
+    suggestedSteps.push("Check category assignment for events in: " + foundCategories.join(", "));
+  } else {
+    missing.push("no specific category name mentioned");
+  }
+
+  // Check for game mode references
+  const foundModes = GAME_MODES.filter((mode) => text.includes(mode));
+  if (foundModes.length > 0) {
+    found.push("game_mode: " + foundModes.join(", "));
+    suggestedSteps.push("Review game mode context: " + foundModes.join(", "));
+  } else {
+    missing.push("no game mode reference");
+  }
+
+  // Check for CurrentScreen field
+  const screenMatch = body.match(/CurrentScreen:\s*(\w+)/i);
+  if (screenMatch) {
+    found.push("current_screen: " + screenMatch[1]);
+  } else {
+    missing.push("no CurrentScreen field");
+  }
+
+  // Check for language/locale signals
+  const langSignals = ["german", "dutch", "portuguese", "translation", "translated", "sprache", "vertaling", "deutsch"];
+  const foundLangs = langSignals.filter((l) => text.includes(l));
+  if (foundLangs.length > 0) {
+    found.push("language_signal: " + foundLangs.join(", "));
+    suggestedSteps.push("Check translation files for referenced language");
+  } else {
+    missing.push("no language/translation signal");
+  }
+
+  // Check for event titles or specific dates
+  const dateMatch = text.match(/\b(1[0-9]{3}|20[0-2][0-9])\b/);
+  if (dateMatch) {
+    found.push("date_reference: " + dateMatch[0]);
+    suggestedSteps.push("Verify date accuracy for referenced event");
+  } else {
+    missing.push("no specific date mentioned");
+  }
+
+  // Check for error messages
+  if (text.includes("error") || text.includes("crash") || text.includes("exception")) {
+    found.push("error_keyword: present");
+  } else {
+    missing.push("no error message");
+  }
+
+  // Default suggestions if nothing specific found
+  if (suggestedSteps.length === 0) {
+    suggestedSteps.push("Review the full issue body for additional context");
+    suggestedSteps.push("Ask the reporter for more details (screen, steps to reproduce)");
+  }
+
+  return { found, missing, suggestedSteps };
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -372,6 +462,8 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   // --------------------------------------------------
   if (triageResult.classification === "needs_human_review") {
     try {
+      // Story 3.5: Extract contextual signals for enhanced handoff
+      const signals = extractTriageSignals(issueData.body, issueData.title);
       const handoffMarkdown = generateTriageHandoff({
         issueNumber,
         issueTitle: issueData.title,
@@ -381,6 +473,9 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
         severity: triageResult.severity,
         reasoning: triageResult.reasoning,
         extractedContext: triageResult.extracted_context,
+        signalsFound: signals.found,
+        signalsMissing: signals.missing,
+        suggestedSteps: signals.suggestedSteps,
       });
       postHandoffComment(issueNumber, handoffMarkdown);
       console.log("[triage] Posted triage handoff for needs-human-review issue #" + issueNumber);

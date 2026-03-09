@@ -46,6 +46,7 @@ import type { AttemptLogEntry, QAVerdictEntry, ModelUsageEntry } from "./state.j
 import type { ExtractedImage } from "./image-extract.js";
 import { logPipelineEvent } from "./pipeline-log.js";
 import { sendBillingAlertEmail, sendHandoffEmail } from "./notification.js";
+import { logSubagentAttempt, logModelUsage } from "./audit-trail.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -126,6 +127,10 @@ export interface RetryLoopInput {
   maxAttempts?: number;
   /** Triage analysis comment, if available */
   triageComment?: string | null;
+  /** Workflow state ID for audit-trail persistence (Story 3.6 AC2).
+   *  When provided, attempt logs and model usage are persisted to the
+   *  workflow state file via logSubagentAttempt() and logModelUsage(). */
+  workflowId?: string;
 }
 
 /** Result from the retry loop -- AC8 */
@@ -695,6 +700,8 @@ async function runQAWithInfraRetry(
  */
 export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResult> {
   const maxAttempts = input.maxAttempts ?? LIMITS.MAX_FIX_ATTEMPTS;
+  // Story 3.6 AC2: workflow ID for audit-trail persistence (optional)
+  const auditWorkflowId = input.workflowId ?? null;
 
   console.log("=== PV2-4.1: Retry Loop ===");
   console.log("  Issue: #" + input.issueNumber);
@@ -756,6 +763,41 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
   let fixAttemptsUsed = 0;
   let cumulativeCostUsd = 0;
 
+  // Story 3.6 AC2: helpers that push to in-memory arrays AND persist to state file
+  async function pushAttemptLog(entry: AttemptLogEntry): Promise<void> {
+    attemptLogs.push(entry);
+    if (auditWorkflowId) {
+      try {
+        await logSubagentAttempt(auditWorkflowId, {
+          model: entry.model,
+          approach: entry.approach,
+          result: entry.result,
+          error_output: entry.error_output,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log("[retry-loop] WARNING: audit-trail logSubagentAttempt failed: " + msg);
+      }
+    }
+  }
+
+  async function pushModelUsage(entry: ModelUsageEntry): Promise<void> {
+    modelsUsed.push(entry);
+    if (auditWorkflowId) {
+      try {
+        await logModelUsage(auditWorkflowId, {
+          step: entry.step,
+          model: entry.model,
+          input_tokens: entry.input_tokens,
+          output_tokens: entry.output_tokens,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log("[retry-loop] WARNING: audit-trail logModelUsage failed: " + msg);
+      }
+    }
+  }
+
   // ------------------------------------------------------------------
   // Main retry loop (AC2, AC3)
   // ------------------------------------------------------------------
@@ -791,7 +833,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
           error_output: errMsg,
           timestamp: new Date().toISOString(),
         };
-        attemptLogs.push(logEntry);
+        await pushAttemptLog(logEntry);
 
         previousFailures.push({
           attempt,
@@ -861,7 +903,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: errMsg,
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       previousFailures.push({
         attempt,
@@ -875,7 +917,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     }
 
     // Log fix subagent usage
-    modelsUsed.push({
+    await pushModelUsage({
       step: "fix_attempt_" + attempt,
       model: fixResult.model ?? modelSelection.fixModel,
       input_tokens: fixResult.inputTokens,
@@ -995,7 +1037,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: fixResult.error,
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       previousFailures.push({
         attempt,
@@ -1052,7 +1094,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: "Fix subagent produced no file changes",
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       previousFailures.push({
         attempt,
@@ -1085,7 +1127,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: "Compilation: " + (fixSummary?.compilation_result ?? "unknown"),
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       // AC3: capture failure details, ban approach, escalate on next iteration
       previousFailures.push({
@@ -1132,7 +1174,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: "Diff too large: " + diffLineCount + " lines (max " + MAX_DIFF_LINES_EARLY + "). Fix was too sweeping — needs smaller, targeted changes.",
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       previousFailures.push({
         attempt,
@@ -1177,7 +1219,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     // Log QA model usage and track cost
     if (qaResult.metrics) {
       cumulativeCostUsd += qaResult.metrics.costUsd;
-      modelsUsed.push({
+      await pushModelUsage({
         step: "qa_review_" + attempt,
         model: qaResult.metrics.model ?? modelSelection.qaModel,
         input_tokens: qaResult.metrics.inputTokens,
@@ -1208,7 +1250,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: "qa_infra_failure: " + (qaResult.error ?? "unknown"),
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       // If there are more attempts, retry with escalated model instead of giving up
       if (attempt < maxAttempts) {
@@ -1272,7 +1314,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: "QA rejected: " + verdict.summary,
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       if (attempt < maxAttempts) {
         // Retries remain — treat like needs_revision
@@ -1330,7 +1372,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: "QA needs revision: " + verdict.summary,
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       const qaFeedback = verdict.findings
         .map(f => "[" + f.criterion + "/" + f.severity + "] " + f.file + ": " + f.description)
@@ -1374,7 +1416,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         error_output: qualityGateResult.failures.map(f => "[" + f.check + "] " + f.description).join("; "),
         timestamp: new Date().toISOString(),
       };
-      attemptLogs.push(logEntry);
+      await pushAttemptLog(logEntry);
 
       // AC3: capture failure, ban approach
       previousFailures.push({
@@ -1420,7 +1462,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       error_output: null,
       timestamp: new Date().toISOString(),
     };
-    attemptLogs.push(logEntry);
+    await pushAttemptLog(logEntry);
 
     return {
       success: true,

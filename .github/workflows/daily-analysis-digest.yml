@@ -197,6 +197,22 @@ jobs:
           echo "estimated_cost=${ESTIMATED_COST}" >> "$GITHUB_OUTPUT"
           echo "Month cost estimate: ${FIX_RUNS_MONTH} fix x \$7 + ${TRANSLATION_RUNS_MONTH} translation x \$5 = \$${ESTIMATED_COST} (budget: \$30)"
 
+      - name: Generate health metrics HTML (Story 3.6 AC1)
+        id: health
+        run: |
+          # Run health-metrics CLI to build System Health HTML from workflow state files.
+          # Falls back to empty string if no state files or CLI fails.
+          HEALTH_HTML=$(npx tsx Scripts/sdk/lib/health-metrics-cli.ts 2>/dev/null || echo "")
+          if [ -n "$HEALTH_HTML" ]; then
+            echo "$HEALTH_HTML" > /tmp/health_section.html
+            echo "has_health=true" >> "$GITHUB_OUTPUT"
+            echo "Health metrics HTML generated ($(echo "$HEALTH_HTML" | wc -c | tr -d ' ') bytes)"
+          else
+            echo "" > /tmp/health_section.html
+            echo "has_health=false" >> "$GITHUB_OUTPUT"
+            echo "No health metrics data available"
+          fi
+
       - name: Build digest email
         id: build
         env:
@@ -622,30 +638,21 @@ jobs:
           fi
 
           # =============================================
-          # BA-007.6: Pipeline Health Section
+          # Story 3.6 AC1: System Health Section (replaces BA-007.6)
+          # Uses computeHealthMetrics() output from health-metrics-cli.ts
+          # Provides: pipeline success rates, queue depth, pattern alerts
           # =============================================
-          EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:24px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">Pipeline Health</h3>"
-
-          # AC1 + AC3: Needs Attention list or healthy message
-          if [ "${STUCK_COUNT:-0}" -gt 0 ]; then
-            EMAIL_HTML="${EMAIL_HTML}<div style=\"margin-bottom:16px;padding:12px 16px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;\">"
-            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 8px 0;font-size:14px;font-weight:bold;color:#991b1b;\">Needs Attention &mdash; ${STUCK_COUNT} issue(s)</p>"
-            while IFS='|' read -r SNUM STITLE SURL; do
-              [ -z "$SNUM" ] && continue
-              SAFE_STITLE=$(html_escape "$STITLE")
-              EMAIL_HTML="${EMAIL_HTML}<div style=\"margin-bottom:6px;padding:6px 10px;background:#fff;border-radius:4px;border-left:3px solid #dc2626;font-size:13px;\">"
-              EMAIL_HTML="${EMAIL_HTML}<a href=\"${SURL}\" style=\"color:#1d4ed8;font-weight:bold;text-decoration:none;\">#${SNUM}</a> &mdash; ${SAFE_STITLE}</div>"
-            done < /tmp/stuck_issues.txt
-            EMAIL_HTML="${EMAIL_HTML}</div>"
-          else
-            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 12px 0;font-size:14px;color:#166534;\">Pipeline healthy &mdash; 0 issues need attention</p>"
+          HEALTH_HTML=""
+          if [ -f /tmp/health_section.html ]; then
+            HEALTH_HTML=$(cat /tmp/health_section.html)
           fi
-
-          # AC2: Pipeline run counts (last 7 days)
-          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 6px 0;font-size:13px;color:#555;\">Last 7 days: ${TRIAGE_RUNS_7D:-0} triage run(s) + ${FIX_RUNS_7D:-0} fix run(s)</p>"
-
-          # AC4: Monthly cost approximation
-          EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 16px 0;font-size:13px;color:#555;\">Month to date: ${FIX_RUNS_MONTH:-0} fix + ${TRANSLATION_RUNS_MONTH:-0} translation run(s) &mdash; ~\$${ESTIMATED_COST:-0} estimated (budget: \$30)</p>"
+          if [ -n "$HEALTH_HTML" ]; then
+            EMAIL_HTML="${EMAIL_HTML}${HEALTH_HTML}"
+          else
+            # Fallback: minimal health section when CLI produced no output
+            EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:24px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">System Health</h3>"
+            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 12px 0;font-size:14px;color:#555;font-style:italic;\">No pipeline data yet &mdash; health metrics will appear after the first workflow completes.</p>"
+          fi
 
           EMAIL_HTML="${EMAIL_HTML}</div>"
 

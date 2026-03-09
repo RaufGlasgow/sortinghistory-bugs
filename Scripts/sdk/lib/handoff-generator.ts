@@ -443,6 +443,12 @@ export interface TriageOnlyHandoffInput {
   severity: string;
   reasoning: string;
   extractedContext: Record<string, unknown>;
+  /** Story 3.5: Contextual signals found in the report */
+  signalsFound?: string[];
+  /** Story 3.5: Contextual signals NOT found (what was missing) */
+  signalsMissing?: string[];
+  /** Story 3.5: Suggested investigation steps for the owner */
+  suggestedSteps?: string[];
 }
 
 /**
@@ -477,6 +483,34 @@ export function generateTriageHandoff(input: TriageOnlyHandoffInput): string {
   sections.push("## Reasoning");
   sections.push("");
   sections.push(input.reasoning);
+
+  // -- Story 3.5: Contextual Signals Analysis --
+  if (input.signalsFound && input.signalsFound.length > 0) {
+    sections.push("");
+    sections.push("## Signals Found");
+    sections.push("");
+    for (const signal of input.signalsFound) {
+      sections.push("- " + signal);
+    }
+  }
+
+  if (input.signalsMissing && input.signalsMissing.length > 0) {
+    sections.push("");
+    sections.push("## Signals Missing");
+    sections.push("");
+    for (const signal of input.signalsMissing) {
+      sections.push("- " + signal);
+    }
+  }
+
+  if (input.suggestedSteps && input.suggestedSteps.length > 0) {
+    sections.push("");
+    sections.push("## Suggested Investigation Steps");
+    sections.push("");
+    for (const step of input.suggestedSteps) {
+      sections.push("- " + step);
+    }
+  }
 
   // -- Extracted Context / Relevant Code Paths --
   sections.push("");

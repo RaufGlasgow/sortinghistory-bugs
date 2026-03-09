@@ -61,6 +61,7 @@ import {
 // content-fix.js: no longer importing ContentFinding/ContentFixOutput (unused after PV2-4.3 refactor)
 import { isKnownCategory } from "../lib/categories.js";
 import { safeGitAdd } from "../lib/git-utils.js";
+import { handleWorkflowFailure } from "../lib/audit-trail.js";
 import {
   runRetryLoop,
   type TriageContext,
@@ -375,6 +376,7 @@ async function runContentRetryLoop(
     screenshots: [], // Content bugs do not have screenshots
     gameRepoPath,
     triageComment: null,
+    workflowId: state.workflow_id, // Story 3.6 AC2: audit-trail persistence
   });
 
   return retryResult;
@@ -844,9 +846,10 @@ export async function runContentE2E(
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
+    // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+    await handleWorkflowFailure(state.workflow_id, {
       error: "Verification failed: " + errMsg,
+      targetStatus: "error",
     });
 
     // AC7: Post failure comment

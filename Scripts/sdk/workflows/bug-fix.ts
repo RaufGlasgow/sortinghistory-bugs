@@ -45,6 +45,7 @@ import { runQualityGate } from "../lib/quality-gate.js";
 import { selectModels, determineBugProfile, determineQAProfile } from "../lib/model-router.js";
 import type { TriageData } from "../lib/types.js";
 import { logPipelineEvent } from "../lib/pipeline-log.js";
+import { handleWorkflowFailure } from "../lib/audit-trail.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -758,9 +759,10 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[bug-fix] FATAL: " + errMsg);
 
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
+    // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+    await handleWorkflowFailure(state.workflow_id, {
       error: "Could not fetch issue: " + errMsg,
+      targetStatus: "error",
     });
 
     return {
@@ -855,14 +857,16 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
       screenshots,
       gameRepoPath,
       triageComment: cleanTriageComment,
+      workflowId: state.workflow_id, // Story 3.6 AC2: audit-trail persistence
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.error("[bug-fix] FATAL: Retry loop threw exception: " + errMsg);
 
-    await updateWorkflowState(state.workflow_id, {
-      status: "escalated",
+    // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+    await handleWorkflowFailure(state.workflow_id, {
       error: "Retry loop exception: " + errMsg,
+      targetStatus: "error",
     });
 
     // AC7: Post failure comment on issue (no silent failures)

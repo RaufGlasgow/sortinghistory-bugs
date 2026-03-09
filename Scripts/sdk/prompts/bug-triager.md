@@ -15,6 +15,58 @@ When in doubt, classify as `needs_human_review`. A cheap label is always better 
 - Do NOT force a specific classification just to avoid `needs_human_review`
 - Report your actual confidence honestly -- the routing system has its own safety gates
 
+## Contextual Analysis (Perform BEFORE classifying)
+
+Before choosing a classification, scan the bug report for contextual signals that can narrow the classification. Many vague reports contain enough context to classify if you look for these signals:
+
+### Signal Types
+
+1. **Category names in text:** If the report mentions a game category, it likely relates to content.
+   - Valid categories: World History, US History, European History, Ancient History, Modern History, Science History, Technology History, Music History, Art History, Literature History, Sports History, TV History, Film History, Food History, Fashion History, Military History, Space History, Medical History, Business History, Political History
+   - Category mention + problem description = likely `content_error` or `content_category_error`
+
+2. **Game mode references:** Mentions of specific game modes narrow the scope.
+   - Keywords: "daily challenge", "epic mode", "epic", "solo", "multiplayer", "timed mode"
+   - Game mode + category mention = likely content issue (wrong category in that mode)
+
+3. **CurrentScreen field:** The screen the user was on when reporting.
+   - `BugReportView` = submitted from in-app bug reporter (confirms they were actively using the app)
+   - `ShareCardView` = user was sharing/viewing share card (UI or crash issue during sharing)
+   - `GameView` / `GamePlayView` = user was in active gameplay
+   - `DailyChallengeView` = user was in Daily Challenge mode
+   - `SettingsView` = user was in settings
+
+4. **Language/locale signals:** Mentions of non-English content or specific languages.
+   - "German", "Dutch", "Portuguese", "translation", specific non-English text = likely `translation_error`
+   - Language set to non-English in device info = consider translation issues
+
+5. **Event titles or dates:** Specific historical references.
+   - Named events or dates = likely `content_error` (factual accuracy)
+
+### How Context Changes Classification
+
+- **Example 1:** "I was playing history epic and ancient history card came up" + CurrentScreen: BugReportView
+  - Signals: category name ("ancient history"), game mode ("history epic" = Epic mode)
+  - Classification: `content_category_error` (event from Ancient History appearing in wrong Epic round)
+  - Confidence: 0.55-0.65 (contextual evidence but no explicit problem statement)
+
+- **Example 2:** "Game froze when I shared my score" + CurrentScreen: ShareCardView
+  - Signals: sharing context, screen confirms location, "froze" = unresponsive
+  - Classification: `ui_bug` or `crash_bug` depending on whether app recovered
+  - Confidence: 0.55-0.70
+
+- **Example 3:** "The translation looks weird on the daily challenge screen" + language: de
+  - Signals: "translation" keyword, "daily challenge" game mode, German language
+  - Classification: `translation_error`
+  - Confidence: 0.60-0.75
+
+### Confidence with Context
+
+If contextual signals provide enough evidence for a classification:
+- Classify with moderate confidence (0.50-0.70) rather than defaulting to `needs_human_review` at low confidence (0.30-0.40)
+- The routing system has a 0.70 threshold -- reports under 0.70 still go to human review, but the improved classification helps the reviewer understand the issue type
+- Only fall back to `needs_human_review` when the report has NO usable context AND no clear problem statement
+
 ## Classification Types
 
 ### content_error

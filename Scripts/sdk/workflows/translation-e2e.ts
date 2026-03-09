@@ -40,6 +40,7 @@ import {
 } from "../lib/state.js";
 import { saveSession, removeSession } from "../lib/session.js";
 import { verifyTranslations, type TranslationVerifyInput, type TranslationVerifyResult } from "./translation-verify.js";
+import { logSubagentAttempt, logModelUsage } from "../lib/audit-trail.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -923,6 +924,25 @@ export async function resumeTranslationE2E(
         " cost=$" + fixResult.costUsd.toFixed(4) +
         " tools=[" + fixResult.toolsUsed.join(",") + "]");
 
+      // Story 3.6 AC3: persist attempt and model usage to workflow state file
+      try {
+        await logSubagentAttempt(workflowId, {
+          model: fixResult.model ?? MODELS.FIXER,
+          approach: "translation_fix_" + language + "_attempt_" + fixAttempt,
+          result: fixResult.success ? "success" : "error",
+          error_output: fixResult.success ? null : (fixResult.error ?? null),
+        });
+        await logModelUsage(workflowId, {
+          step: "translation_fix_" + language + "_attempt_" + fixAttempt,
+          model: fixResult.model ?? MODELS.FIXER,
+          input_tokens: fixResult.inputTokens,
+          output_tokens: fixResult.outputTokens,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log("[translation-e2e] WARNING: audit-trail logging failed: " + msg);
+      }
+
       if (!fixResult.success) {
         console.error("[translation-e2e] Fixer failed for " + language + ": " + fixResult.error);
       }
@@ -1066,10 +1086,10 @@ export async function resumeTranslationE2E(
 
     // PR creation failed but fixes were applied
     console.error("[translation-e2e] Fixes applied but PR creation failed");
-    await updateWorkflowState(workflowId, {
-      status: "escalated",
-      fix_attempts: fixAttempt,
+    // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+    await handleWorkflowFailure(workflowId, {
       error: "Fixes applied but PR creation failed",
+      targetStatus: "error",
     });
 
     return {
@@ -1087,10 +1107,10 @@ export async function resumeTranslationE2E(
   // Exhausted retries — escalate
   console.error("[translation-e2e] Exhausted " + LIMITS.MAX_FIX_ATTEMPTS + " fix attempts");
 
-  await updateWorkflowState(workflowId, {
-    status: "escalated",
-    fix_attempts: fixAttempt,
+  // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+  await handleWorkflowFailure(workflowId, {
     error: "Exhausted " + fixAttempt + " fix attempts, " + remainingFindings.length + " finding(s) remain",
+    targetStatus: "fix_failed",
   });
 
   if (state.issue_number) {

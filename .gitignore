@@ -1,0 +1,12 @@
+# Downloaded issue context (local-only, never committed)
+context/
+
+# Build output
+dist/
+node_modules/
+
+# OS files
+.DS_Store
+
+# BMAD output
+_bmad-output/
