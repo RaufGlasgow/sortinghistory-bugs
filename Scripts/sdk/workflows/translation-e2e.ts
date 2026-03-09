@@ -1025,10 +1025,10 @@ export async function resumeTranslationE2E(
 
     // PR creation failed but fixes were applied
     console.error("[translation-e2e] Fixes applied but PR creation failed");
-    await updateWorkflowState(workflowId, {
-      status: "escalated",
-      fix_attempts: fixAttempt,
+    // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+    await handleWorkflowFailure(workflowId, {
       error: "Fixes applied but PR creation failed",
+      targetStatus: "error",
     });
 
     return {
@@ -1046,10 +1046,10 @@ export async function resumeTranslationE2E(
   // Exhausted retries — escalate
   console.error("[translation-e2e] Exhausted " + LIMITS.MAX_FIX_ATTEMPTS + " fix attempts");
 
-  await updateWorkflowState(workflowId, {
-    status: "escalated",
-    fix_attempts: fixAttempt,
+  // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+  await handleWorkflowFailure(workflowId, {
     error: "Exhausted " + fixAttempt + " fix attempts, " + remainingFindings.length + " finding(s) remain",
+    targetStatus: "fix_failed",
   });
 
   if (state.issue_number) {
