@@ -95,24 +95,89 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * Strip images, tables, device info, screenshots from issue body for email display.
- * Shared by Action-Needed, PR Created, and Handoff emails.
+ * Extract screenshots section from issue body — returns array of image URLs found.
+ * Looks for markdown image syntax: ![alt](url)
  */
-function stripIssueBody(raw: string, maxLength: number): string {
+export function extractScreenshots(raw: string): string[] {
+  const urls: string[] = [];
+  const regex = /!\[.*?\]\((https?:\/\/[^)]+)\)/g;
+  let match;
+  while ((match = regex.exec(raw)) !== null) {
+    urls.push(match[1]);
+  }
+  return urls;
+}
+
+/**
+ * Extract the Device Info section from issue body.
+ * Returns the section content or empty string if not found.
+ */
+export function extractDeviceInfo(raw: string): string {
+  const match = raw.match(/## Device Info\s*([\s\S]*?)(?=##|$)/);
+  if (!match || !match[1]) return "";
+  return match[1].trim();
+}
+
+/**
+ * Prepare issue body for email display.
+ * Story 3.4 AC5: Preserve screenshots (as linked images) and device info.
+ * Only truncate prose text if body exceeds maxLength, but NEVER truncate
+ * screenshots or device info.
+ */
+export function prepareIssueBody(raw: string, maxLength: number, issueNumber?: number): {
+  bodyText: string;
+  screenshotUrls: string[];
+  deviceInfo: string;
+  wasTruncated: boolean;
+} {
+  const screenshotUrls = extractScreenshots(raw);
+  const deviceInfo = extractDeviceInfo(raw);
+
+  // Build prose text: strip base64 images (too large), clean up formatting,
+  // but preserve URL images inline and keep device info
   let text = raw
-    .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images
-    .replace(/!\[.*?\]\(https?:\/\/[^)]+\)/g, "[image]") // strip URL images
-    .replace(/\|[^\n]*\|/g, "") // strip markdown tables
-    .replace(/---/g, "")
-    .replace(/## Device Info[\s\S]*?(?=##|$)/, "") // strip device info section
-    .replace(/## Screenshot[\s\S]*?(?=##|$)/, "") // strip screenshot section
+    .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images only
     .replace(/_Submitted via Sorting History app_/, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  let wasTruncated = false;
   if (text.length > maxLength) {
-    text = text.slice(0, maxLength) + "\n\n[Truncated for email — full text on GitHub issue]";
+    text = text.slice(0, maxLength);
+    wasTruncated = true;
   }
-  return text;
+
+  return { bodyText: text, screenshotUrls, deviceInfo, wasTruncated };
+}
+
+/**
+ * Build HTML for screenshots section in email.
+ */
+function buildScreenshotsHtml(screenshotUrls: string[]): string {
+  if (screenshotUrls.length === 0) return "";
+  const imagesHtml = screenshotUrls
+    .map((url) => `<img src="${escapeHtml(url)}" alt="Screenshot" style="max-width:100%;border-radius:8px;margin:8px 0;" />`)
+    .join("\n      ");
+  return `
+    <!-- Screenshots -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f8f9fa;border-left:4px solid #6c757d;border-radius:4px;">
+      <p style="margin:0 0 8px 0;font-size:12px;color:#6c757d;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Screenshots</p>
+      ${imagesHtml}
+    </div>`;
+}
+
+/**
+ * Build HTML for device info section in email.
+ */
+function buildDeviceInfoHtml(deviceInfo: string): string {
+  if (!deviceInfo) return "";
+  const safeDeviceInfo = escapeHtml(deviceInfo);
+  return `
+    <!-- Device Info -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f4f8;border-left:4px solid #4a5568;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#4a5568;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Device Info</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDeviceInfo}</p>
+    </div>`;
 }
 
 /**
@@ -142,7 +207,7 @@ function getActionMessage(action: RoutingAction): string {
   }
 }
 
-function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): string {
+export function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): string {
   const safeTitle = escapeHtml(input.issueTitle);
   const safeClassification = escapeHtml(input.classification);
   const safeSeverity = escapeHtml(input.severity);
@@ -150,17 +215,28 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
   const safeReasoning = escapeHtml(input.reasoning);
   const actionMessage = escapeHtml(getActionMessage(action));
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
+  const authToken = process.env.AUTH_TOKEN;
 
-  // Build bug description section (truncated to 1000 chars for email)
+  // Build bug description section — preserve screenshots and device info (Story 3.4 AC5)
   let descriptionHtml = "";
+  let screenshotsHtml = "";
+  let deviceInfoHtml = "";
   if (input.description) {
-    const descText = stripIssueBody(input.description, 8000);
-    const safeDescription = escapeHtml(descText);
+    const prepared = prepareIssueBody(input.description, 5000, input.issueNumber);
+    const safeDescription = escapeHtml(prepared.bodyText);
+    let truncationNote = "";
+    if (prepared.wasTruncated) {
+      const fixLocallyLink = authToken
+        ? `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`
+        : issueUrl;
+      truncationNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${fixLocallyLink}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+    }
     descriptionHtml = `
     <!-- Reporter description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What The Reporter Said</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDescription}</p>
+      ${truncationNote}
     </div>`;
 
     // Extract repro steps and expected behavior for decision-making
@@ -184,20 +260,27 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeExpected}</p>
     </div>`;
     }
+
+    // Screenshots and device info — NEVER truncated (Story 3.4 AC5)
+    screenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
+    deviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
   }
 
   // Generate action button URLs if AUTH_TOKEN is available
-  const authToken = process.env.AUTH_TOKEN;
   let actionButtonsHtml: string;
   let githubLinkHtml: string;
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
     const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     actionButtonsHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
       <a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>
-      <a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Comment</a>`;
+      <a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>
+      <a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Comment</a>
+      <a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
     githubLinkHtml = `<p style="text-align:center;margin-top:12px;"><a href="${issueUrl}" style="color:#8B6914;font-size:13px;text-decoration:none;">View on GitHub &rarr;</a></p>`;
   } else {
     actionButtonsHtml = `<a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>`;
@@ -223,6 +306,10 @@ function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): s
     </div>
 
     ${descriptionHtml}
+
+    ${screenshotsHtml}
+
+    ${deviceInfoHtml}
 
     <!-- Classification table -->
     <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
@@ -455,7 +542,7 @@ export interface PRCreatedEmailInput {
   qaSummary?: string;
 }
 
-function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
+export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   const safeTitle = escapeHtml(input.issueTitle);
   const safeFiles = escapeHtml(input.filesModified);
   const safeCompilation = escapeHtml(input.compilation);
@@ -464,10 +551,13 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
 
   const authToken = process.env.AUTH_TOKEN;
   let rejectButtonHtml = "";
+  let fixLocallyButtonHtml = "";
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
     const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject Fix</a>`;
+    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
   }
 
   const versionHtml = input.alphaVersion
@@ -478,16 +568,26 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
     ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Fix Attempts</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${input.fixAttempts} (with model escalation)</td></tr>`
     : "";
 
-  // Bug description from issue body
+  // Bug description from issue body — preserve screenshots and device info (Story 3.4 AC5)
   let bugDescHtml = "";
+  let prScreenshotsHtml = "";
+  let prDeviceInfoHtml = "";
   if (input.issueBody) {
-    const descText = stripIssueBody(input.issueBody, 8000);
-    const safeDesc = escapeHtml(descText);
+    const prepared = prepareIssueBody(input.issueBody, 5000, input.issueNumber);
+    const safeDesc = escapeHtml(prepared.bodyText);
+    let truncNote = "";
+    if (prepared.wasTruncated && authToken) {
+      const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`;
+      truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+    }
     bugDescHtml = `<!-- Bug description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What's The Bug</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDesc}</p>
+      ${truncNote}
     </div>`;
+    prScreenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
+    prDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
   }
 
   // QA summary
@@ -524,6 +624,10 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
 
     ${bugDescHtml}
 
+    ${prScreenshotsHtml}
+
+    ${prDeviceInfoHtml}
+
     ${qaSummaryHtml}
 
     <!-- Details table -->
@@ -547,6 +651,7 @@ function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
     <div style="text-align:center;">
       <a href="${input.prUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Review PR #${input.prNumber}</a>
       ${rejectButtonHtml}
+      ${fixLocallyButtonHtml}
     </div>
   </div>
 
@@ -645,32 +750,48 @@ export interface HandoffEmailInput {
   issueBody?: string;
 }
 
-function buildHandoffEmailHtml(input: HandoffEmailInput): string {
+export function buildHandoffEmailHtml(input: HandoffEmailInput): string {
   const safeTitle = escapeHtml(input.issueTitle);
   const safeAttemptSummary = escapeHtml(input.attemptSummary);
   const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
   const modelsText = escapeHtml(input.modelsUsed.join(", ") || "unknown");
 
-  // Bug description from issue body
+  // Bug description from issue body — preserve screenshots and device info (Story 3.4 AC5)
   let handoffBugDescHtml = "";
+  let handoffScreenshotsHtml = "";
+  let handoffDeviceInfoHtml = "";
   if (input.issueBody) {
-    const descText = stripIssueBody(input.issueBody, 8000);
-    const safeDesc = escapeHtml(descText);
+    const prepared = prepareIssueBody(input.issueBody, 5000, input.issueNumber);
+    const safeDesc = escapeHtml(prepared.bodyText);
+    let truncNote = "";
+    if (prepared.wasTruncated) {
+      const authTk = process.env.AUTH_TOKEN;
+      if (authTk) {
+        const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authTk)}`;
+        truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+      }
+    }
     handoffBugDescHtml = `
     <!-- Bug description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What's The Bug</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDesc}</p>
+      ${truncNote}
     </div>`;
+    handoffScreenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
+    handoffDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
   }
 
-  // Comment button URL
+  // Comment + Fix Locally button URLs
   const authToken = process.env.AUTH_TOKEN;
   let commentButtonHtml = "";
+  let fixLocallyButtonHtml = "";
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
     const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     commentButtonHtml = `<a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Provide Guidance</a>`;
+    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
   }
 
   return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
@@ -692,6 +813,10 @@ function buildHandoffEmailHtml(input: HandoffEmailInput): string {
     </div>
 
     ${handoffBugDescHtml}
+
+    ${handoffScreenshotsHtml}
+
+    ${handoffDeviceInfoHtml}
 
     <!-- What happened -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#fffbeb;border-left:4px solid #d97706;border-radius:4px;">
@@ -716,8 +841,9 @@ function buildHandoffEmailHtml(input: HandoffEmailInput): string {
 
     <!-- Action buttons -->
     <div style="text-align:center;">
-      <a href="${issueUrl}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Handoff on GitHub</a>
+      <a href="${issueUrl}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Handoff</a>
       ${commentButtonHtml}
+      ${fixLocallyButtonHtml}
     </div>
   </div>
 
