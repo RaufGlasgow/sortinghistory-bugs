@@ -15,14 +15,17 @@ export type WorkflowType =
   | "bug_triage"
   | "bug_fix";
 
-/** Workflow status transitions: verifying → awaiting_approval → fixing → re_verifying → complete | escalated */
+/** Workflow status transitions: verifying → awaiting_approval → fixing → re_verifying → complete | escalated | fix_failed | error
+ *  Story 3.2: Added `fix_failed` (fix attempt failed, retryable) and `error` (unrecoverable, e.g. API exhaustion) */
 export type WorkflowStatus =
   | "verifying"
   | "awaiting_approval"
   | "fixing"
   | "re_verifying"
   | "complete"
-  | "escalated";
+  | "escalated"
+  | "fix_failed"
+  | "error";
 
 /** File paths — relative to repo root (sortinghistory-bugs/).
  *  Override via environment variables for testing or CI where paths may differ. */
@@ -126,4 +129,47 @@ export const ROUTING = {
   LABEL_PERFORMANCE_ISSUE: "performance-issue",
   LABEL_CRASH_BUG: "crash-bug",
   LABEL_NEEDS_DEV_HANDOFF: "needs-dev-handoff",
+  /** Story 3.2: Label for failed fix attempts (retryable) */
+  LABEL_FIX_FAILED: "fix-failed",
+  /** Story 3.2: Label for in-progress workflows */
+  LABEL_IN_PROGRESS: "in-progress",
 } as const;
+
+// ---------------------------------------------------------------------------
+// Story 3.2: Model pricing and cost estimation (Architecture Section 7.1)
+// ---------------------------------------------------------------------------
+
+/** Per-model pricing in USD per million tokens (input, output) */
+export const MODEL_PRICING: Record<string, { input_per_mtok: number; output_per_mtok: number }> = {
+  // Haiku 4.5: $1/$5 per MTok
+  "claude-haiku-4-5-20251001": { input_per_mtok: 1.0, output_per_mtok: 5.0 },
+  // Sonnet 4.5: $3/$15 per MTok
+  "claude-sonnet-4-5-20250929": { input_per_mtok: 3.0, output_per_mtok: 15.0 },
+  // Opus 4.6: $5/$25 per MTok (complex bugs only)
+  "claude-opus-4-6": { input_per_mtok: 5.0, output_per_mtok: 25.0 },
+};
+
+/**
+ * Estimate cost in USD for a subagent call based on token usage.
+ * Falls back to Sonnet pricing for unknown models (safe default).
+ *
+ * @param model - Model ID string
+ * @param inputTokens - Number of input tokens consumed
+ * @param outputTokens - Number of output tokens consumed
+ * @returns Estimated cost in USD (rounded to 6 decimal places)
+ */
+export function estimateCost(model: string, inputTokens: number, outputTokens: number): number {
+  const pricing = MODEL_PRICING[model] ?? MODEL_PRICING[MODELS.FIXER]; // fallback to Sonnet
+  const inputCost = (inputTokens / 1_000_000) * pricing.input_per_mtok;
+  const outputCost = (outputTokens / 1_000_000) * pricing.output_per_mtok;
+  return Math.round((inputCost + outputCost) * 1_000_000) / 1_000_000;
+}
+
+/**
+ * Truncate an error message to a maximum length.
+ * Story 3.2 AC: error_output should be truncated to 500 characters max.
+ */
+export function truncateError(error: string, maxLength: number = 500): string {
+  if (error.length <= maxLength) return error;
+  return error.slice(0, maxLength - 3) + "...";
+}
