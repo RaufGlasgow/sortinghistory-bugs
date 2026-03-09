@@ -374,6 +374,7 @@ async function runContentRetryLoop(
     screenshots: [], // Content bugs do not have screenshots
     gameRepoPath,
     triageComment: null,
+    workflowId: state.workflow_id, // Story 3.6 AC2: audit-trail persistence
   });
 
   return retryResult;

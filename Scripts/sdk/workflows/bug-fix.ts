@@ -855,6 +855,7 @@ export async function runBugFix(input: BugFixInput): Promise<BugFixResult> {
       screenshots,
       gameRepoPath,
       triageComment: cleanTriageComment,
+      workflowId: state.workflow_id, // Story 3.6 AC2: audit-trail persistence
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
