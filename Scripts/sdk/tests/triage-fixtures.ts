@@ -90,4 +90,32 @@ export const TRIAGE_FIXTURES: TriageFixture[] = [
     expected_classification: ["crash_bug", "gameplay_bug"],
     expected_severity_range: ["P1", "P2"],
   },
+
+  // --- Story 3.5: Vague reports with contextual signals ---
+
+  {
+    id: "test-K",
+    // Vague report but mentions a game mode ("history epic" = Epic mode) and
+    // a category name ("ancient history"). Contextual analysis should classify
+    // as content_category_error (event from wrong category appearing in Epic round).
+    report: "I was playing history epic and ancient history card came up\n\nCurrentScreen: BugReportView",
+    expected_classification: ["content_category_error", "content_error", "needs_human_review"],
+    expected_severity_range: ["P3", "P4"],
+  },
+  {
+    id: "test-L",
+    // Report mentions sharing context + screen freeze. CurrentScreen confirms
+    // the location. Should classify as ui_bug or crash_bug.
+    report: "Game froze when I shared my score\n\nCurrentScreen: ShareCardView",
+    expected_classification: ["ui_bug", "crash_bug", "performance_issue"],
+    expected_severity_range: ["P2", "P3"],
+  },
+  {
+    id: "test-M",
+    // Mentions "translation" keyword + daily challenge game mode + German language.
+    // Should classify as translation_error with moderate confidence.
+    report: "The translation looks weird on the daily challenge screen\n\n## Device Info\n- Language: de\n- Model: iPhone 15\n- OS Version: iOS 17.4",
+    expected_classification: ["translation_error", "ui_bug", "needs_human_review"],
+    expected_severity_range: ["P3", "P4"],
+  },
 ];
