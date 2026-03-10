@@ -41,6 +41,7 @@ import {
 import { saveSession, removeSession } from "../lib/session.js";
 import { verifyTranslations, type TranslationVerifyInput, type TranslationVerifyResult } from "./translation-verify.js";
 import { logSubagentAttempt, logModelUsage } from "../lib/audit-trail.js";
+import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -341,21 +342,6 @@ function postIssueComment(issueNumber: number, comment: string): void {
   }
 }
 
-/**
- * Add the needs-handoff-review label to an issue. Non-fatal.
- */
-function addHandoffLabel(issueNumber: number): void {
-  const repo = ROUTING.PRIVATE_REPO;
-  try {
-    execSync(
-      "gh issue edit " + issueNumber + " --repo " + repo + " --add-label needs-handoff-review",
-      { encoding: "utf-8", timeout: 15_000 },
-    );
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[translation-e2e] WARNING: Could not add label: " + errMsg);
-  }
-}
 
 /**
  * Build the PR description for a translation fix PR.
@@ -992,15 +978,9 @@ export async function resumeTranslationE2E(
       let issueBody = "";
       let issueLabels: string[] = [];
       try {
-        issueBody = execSync(
-          "gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body",
-          { encoding: "utf-8", timeout: 30_000 },
-        ).trim();
-        const labelsJson = execSync(
-          "gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'",
-          { encoding: "utf-8", timeout: 30_000 },
-        ).trim();
-        issueLabels = JSON.parse(labelsJson) as string[];
+        const fetched = fetchIssueData(state.issue_number);
+        issueBody = fetched.body;
+        issueLabels = fetched.labels;
       } catch (fetchErr: unknown) {
         const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
         console.log("[translation-e2e] WARNING: Could not fetch issue data for validation: " + fetchMsg);

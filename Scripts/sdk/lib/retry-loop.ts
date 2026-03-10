@@ -702,6 +702,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
   const maxAttempts = input.maxAttempts ?? LIMITS.MAX_FIX_ATTEMPTS;
   // Story 3.6 AC2: workflow ID for audit-trail persistence (optional)
   const auditWorkflowId = input.workflowId ?? null;
+  if (!auditWorkflowId) console.log("[retry-loop] WARNING: workflowId not provided — audit-trail persistence disabled for this run");
 
   console.log("=== PV2-4.1: Retry Loop ===");
   console.log("  Issue: #" + input.issueNumber);

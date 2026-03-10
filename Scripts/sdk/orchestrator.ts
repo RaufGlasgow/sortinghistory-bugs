@@ -37,6 +37,7 @@ import { runBugFix, type BugFixInput } from "./workflows/bug-fix.js";
 import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
 import { runTranslationE2E, resumeTranslationE2E } from "./workflows/translation-e2e.js";
 import { validateFix, type IssueData } from "./lib/validate-fix.js";
+import { fetchIssueData } from "./lib/github-utils.js";
 
 /**
  * Parse a named flag from process.argv.
@@ -704,15 +705,9 @@ async function main(): Promise<void> {
       let issueBody = "";
       let issueLabels: string[] = [];
       try {
-        issueBody = execSync(
-          "gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body",
-          { encoding: "utf-8", timeout: 30_000 },
-        ).trim();
-        const labelsJson = execSync(
-          "gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'",
-          { encoding: "utf-8", timeout: 30_000 },
-        ).trim();
-        issueLabels = JSON.parse(labelsJson) as string[];
+        const fetched = fetchIssueData(issueNumber);
+        issueBody = fetched.body;
+        issueLabels = fetched.labels;
       } catch (fetchErr: unknown) {
         const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
         const errorResult = { valid: false, reason: "issue-fetch-error", details: "Failed to fetch issue #" + issueNumber + ": " + fetchMsg };

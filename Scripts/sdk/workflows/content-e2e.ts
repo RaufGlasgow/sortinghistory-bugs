@@ -62,6 +62,7 @@ import {
 import { isKnownCategory } from "../lib/categories.js";
 import { safeGitAdd } from "../lib/git-utils.js";
 import { handleWorkflowFailure } from "../lib/audit-trail.js";
+import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
 import {
   runRetryLoop,
   type TriageContext,
@@ -408,23 +409,6 @@ function postFailureComment(issueNumber: number, error: string): void {
   }
 }
 
-/**
- * Add the needs-handoff-review label to an issue (AC7: visible artifact).
- * Non-fatal on failure.
- */
-function addHandoffLabel(issueNumber: number): void {
-  const repo = ROUTING.PRIVATE_REPO;
-  try {
-    execSync(
-      "gh issue edit " + issueNumber + " --repo " + repo + " --add-label needs-handoff-review",
-      { encoding: "utf-8", timeout: 15_000 },
-    );
-    console.log("[content-e2e] Added needs-handoff-review label to issue #" + issueNumber);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[content-e2e] WARNING: Could not add needs-handoff-review label: " + errMsg);
-  }
-}
 
 /**
  * Story 2.0c: Run validate-fix gate between re-verify and PR creation.
@@ -1348,15 +1332,9 @@ export async function resumeContentE2E(
     let issueBody = "";
     let issueLabels: string[] = [];
     try {
-      issueBody = execSync(
-        "gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body",
-        { encoding: "utf-8", timeout: 30_000 },
-      ).trim();
-      const labelsJson = execSync(
-        "gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'",
-        { encoding: "utf-8", timeout: 30_000 },
-      ).trim();
-      issueLabels = JSON.parse(labelsJson) as string[];
+      const fetched = fetchIssueData(state.issue_number);
+      issueBody = fetched.body;
+      issueLabels = fetched.labels;
     } catch (fetchErr: unknown) {
       const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       console.log("[resume] WARNING: Could not fetch issue data for validation: " + fetchMsg);

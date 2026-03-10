@@ -46,6 +46,7 @@ import { selectModels, determineBugProfile, determineQAProfile } from "../lib/mo
 import type { TriageData } from "../lib/types.js";
 import { logPipelineEvent } from "../lib/pipeline-log.js";
 import { handleWorkflowFailure } from "../lib/audit-trail.js";
+import { addHandoffLabel } from "../lib/github-utils.js";
 
 // ------------------------------------------------------------------
 // Types
@@ -358,23 +359,6 @@ function inferFileExtensions(classification: string): string[] {
 // Label Helper (PV2-4.2 AC6, AC7)
 // ------------------------------------------------------------------
 
-/**
- * Add the needs-handoff-review label to an issue.
- * Non-fatal on failure -- label is important but not worth crashing the pipeline.
- */
-function addHandoffLabel(issueNumber: number): void {
-  const repo = ROUTING.PRIVATE_REPO;
-  try {
-    execSync(
-      "gh issue edit " + issueNumber + " --repo " + repo + " --add-label needs-handoff-review",
-      { encoding: "utf-8", timeout: 15_000 },
-    );
-    console.log("[bug-fix] Added needs-handoff-review label to issue #" + issueNumber);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[bug-fix] WARNING: Could not add needs-handoff-review label: " + errMsg);
-  }
-}
 
 // ------------------------------------------------------------------
 // QA-Only Mode (PV2-4.4)
