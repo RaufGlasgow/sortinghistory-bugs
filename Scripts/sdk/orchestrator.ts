@@ -294,7 +294,10 @@ async function main(): Promise<void> {
           process.exit(1);
         }
 
-        // Call resumeContentE2E (AC2, AC4)
+        // NOTE: handleWorkflowResume() is intentionally NOT called here.
+        // resumeContentE2E() already manages fix_attempts and status transitions
+        // internally — calling handleWorkflowResume() first would double-increment
+        // fix_attempts, skewing health metrics. (Story 3.6 AC5)
         const result = await resumeContentE2E(
           foundState.workflow_id,
           { action },
@@ -671,6 +674,9 @@ async function main(): Promise<void> {
         process.exit(1);
       }
 
+      // NOTE: handleWorkflowResume() is intentionally NOT called here.
+      // resumeTranslationE2E() already manages fix_attempts and status transitions
+      // internally — calling it first would double-increment. (Story 3.6 AC5)
       const resumeResult = await resumeTranslationE2E(
         foundState.workflow_id,
         action,
