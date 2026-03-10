@@ -40,7 +40,7 @@ import {
 } from "../lib/state.js";
 import { saveSession, removeSession } from "../lib/session.js";
 import { verifyTranslations, type TranslationVerifyInput, type TranslationVerifyResult } from "./translation-verify.js";
-import { logSubagentAttempt, logModelUsage } from "../lib/audit-trail.js";
+import { logSubagentAttempt, logModelUsage, handleWorkflowFailure } from "../lib/audit-trail.js";
 import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
 
 // ------------------------------------------------------------------
