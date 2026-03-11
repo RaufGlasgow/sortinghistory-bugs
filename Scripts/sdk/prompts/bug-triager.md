@@ -146,6 +146,21 @@ Affects game logic, scoring, event ordering, turn management, or causes data los
 - "The sorting animation looks choppy" -- use `ui_bug` (visual, not logic)
 - "The moon landing date is wrong" -- use `content_error` (data error, not game logic)
 
+### code_bug
+A bug in the application code that doesn't fit the specific categories above. This covers logic errors in non-game systems (analytics, notifications, subscriptions, navigation, settings), infrastructure bugs, or code-level defects that aren't about game mechanics, UI layout, content data, or translations.
+
+**This IS code_bug:**
+- "Push notifications aren't arriving even though I enabled them" (notification system bug)
+- "The subscription status shows wrong after purchase" (StoreKit/entitlement logic)
+- "Analytics events aren't being tracked" (instrumentation bug)
+- "The app sends me to the wrong screen after completing daily challenge" (navigation logic)
+
+**This is NOT code_bug:**
+- "Score doesn't update after placing an event correctly" -- use `gameplay_bug` (game scoring logic)
+- "Button is cut off on my screen" -- use `ui_bug` (visual layout)
+- "The Berlin Wall date is wrong" -- use `content_error` (data issue)
+- "App crashes on launch" -- use `crash_bug` (app termination)
+
 ### performance_issue
 The app is unusually slow, laggy, or unresponsive. Not a crash, not a visual glitch -- the app still works but performance is degraded.
 
@@ -249,7 +264,7 @@ Output ONLY a JSON object. No markdown code blocks, no explanation before or aft
 
 ```
 {
-  "classification": "content_error" | "content_category_error" | "content_duplicate" | "translation_error" | "ui_bug" | "gameplay_bug" | "performance_issue" | "crash_bug" | "feature_request" | "needs_human_review",
+  "classification": "content_error" | "content_category_error" | "content_duplicate" | "translation_error" | "ui_bug" | "gameplay_bug" | "code_bug" | "performance_issue" | "crash_bug" | "feature_request" | "needs_human_review",
   "confidence": 0.0-1.0,
   "severity": "P1" | "P2" | "P3" | "P4",
   "reasoning": "Brief explanation of why this classification was chosen",

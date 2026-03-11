@@ -300,7 +300,19 @@ jobs:
               # Fetch comments (newest first)
               COMMENTS_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/comments?sort=created&direction=desc&per_page=50" 2>/dev/null || echo "[]")
 
-              # Find the most recent comment containing "## AI Bug Analysis"
+              # Story 3.13: Check for owner reclassification comment FIRST (authoritative)
+              OWNER_RECLASS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | contains("## Owner Reclassification"))] | first | .body // ""')
+              OWNER_TYPE=""
+              COMMENT_SOURCE="ai"
+              if [ -n "$OWNER_RECLASS_COMMENT" ]; then
+                OWNER_TYPE=$(echo "$OWNER_RECLASS_COMMENT" | grep -oP 'Reclassified as:\s*`\K[^`]+' || true)
+                if [ -n "$OWNER_TYPE" ]; then
+                  COMMENT_SOURCE="owner"
+                  echo "Issue #${NUM}: Owner reclassification found — type=$OWNER_TYPE (authoritative)"
+                fi
+              fi
+
+              # Find the most recent comment containing "## AI Bug Analysis" or "## Triage Classification"
               ANALYSIS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | (contains("## AI Bug Analysis") or contains("## Triage Classification")))] | first | .body // ""')
 
               ANALYSIS_TEXT=""
@@ -308,7 +320,7 @@ jobs:
               COMMENT_SEVERITY=""
               COMMENT_TYPE=""
 
-              if [ -z "$ANALYSIS_COMMENT" ]; then
+              if [ -z "$ANALYSIS_COMMENT" ] && [ -z "$OWNER_TYPE" ]; then
                 # Check if this issue has triage-failed label — if so, skip it entirely
                 HAS_TRIAGE_FAILED=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | if index("triage-failed") then "yes" else "no" end')
                 if [ "$HAS_TRIAGE_FAILED" = "yes" ]; then
@@ -325,9 +337,14 @@ jobs:
                 if [ -z "$COMMENT_SEVERITY" ]; then
                   COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Severity\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                 fi
-                COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-                if [ -z "$COMMENT_TYPE" ]; then
-                  COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                # Story 3.13: Owner reclassification overrides AI classification
+                if [ -n "$OWNER_TYPE" ]; then
+                  COMMENT_TYPE="$OWNER_TYPE"
+                else
+                  COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Type:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                  if [ -z "$COMMENT_TYPE" ]; then
+                    COMMENT_TYPE=$(echo "$ANALYSIS_COMMENT" | grep -oP '\|\s*Classification\s*\|\s*`\K[^`]+' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                  fi
                 fi
 
                 # Extract ### Analysis section (text between ### Analysis and next ###)

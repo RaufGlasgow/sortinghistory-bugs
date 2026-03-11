@@ -31,6 +31,8 @@ import { spawnSubagent } from "../lib/subagent.js";
 import { buildBugFixHooksConfig } from "../lib/hooks.js";
 import { createWorkflowState, updateWorkflowState, loadWorkflowState, } from "../lib/state.js";
 import { saveSession, removeSession } from "../lib/session.js";
+import { logSubagentAttempt, logModelUsage, handleWorkflowFailure } from "../lib/audit-trail.js";
+import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
 // ------------------------------------------------------------------
 // Constants
 // ------------------------------------------------------------------
@@ -238,19 +240,6 @@ function postIssueComment(issueNumber, comment) {
             fs.unlinkSync(tmpFile);
         }
         catch { /* cleanup */ }
-    }
-}
-/**
- * Add the needs-handoff-review label to an issue. Non-fatal.
- */
-function addHandoffLabel(issueNumber) {
-    const repo = ROUTING.PRIVATE_REPO;
-    try {
-        execSync("gh issue edit " + issueNumber + " --repo " + repo + " --add-label needs-handoff-review", { encoding: "utf-8", timeout: 15_000 });
-    }
-    catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.log("[translation-e2e] WARNING: Could not add label: " + errMsg);
     }
 }
 /**
@@ -686,6 +675,25 @@ export async function resumeTranslationE2E(workflowId, action, options) {
             console.log("[translation-e2e] Fixer " + language + ": success=" + fixResult.success +
                 " cost=$" + fixResult.costUsd.toFixed(4) +
                 " tools=[" + fixResult.toolsUsed.join(",") + "]");
+            // Story 3.6 AC3: persist attempt and model usage to workflow state file
+            try {
+                await logSubagentAttempt(workflowId, {
+                    model: fixResult.model ?? MODELS.FIXER,
+                    approach: "translation_fix_" + language + "_attempt_" + fixAttempt,
+                    result: fixResult.success ? "success" : "error",
+                    error_output: fixResult.success ? null : (fixResult.error ?? null),
+                });
+                await logModelUsage(workflowId, {
+                    step: "translation_fix_" + language + "_attempt_" + fixAttempt,
+                    model: fixResult.model ?? MODELS.FIXER,
+                    input_tokens: fixResult.inputTokens,
+                    output_tokens: fixResult.outputTokens,
+                });
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                console.log("[translation-e2e] WARNING: audit-trail logging failed: " + msg);
+            }
             if (!fixResult.success) {
                 console.error("[translation-e2e] Fixer failed for " + language + ": " + fixResult.error);
             }
@@ -724,9 +732,9 @@ export async function resumeTranslationE2E(workflowId, action, options) {
             let issueBody = "";
             let issueLabels = [];
             try {
-                issueBody = execSync("gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body", { encoding: "utf-8", timeout: 30_000 }).trim();
-                const labelsJson = execSync("gh issue view " + state.issue_number + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'", { encoding: "utf-8", timeout: 30_000 }).trim();
-                issueLabels = JSON.parse(labelsJson);
+                const fetched = fetchIssueData(state.issue_number);
+                issueBody = fetched.body;
+                issueLabels = fetched.labels;
             }
             catch (fetchErr) {
                 const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
@@ -789,10 +797,10 @@ export async function resumeTranslationE2E(workflowId, action, options) {
         }
         // PR creation failed but fixes were applied
         console.error("[translation-e2e] Fixes applied but PR creation failed");
-        await updateWorkflowState(workflowId, {
-            status: "escalated",
-            fix_attempts: fixAttempt,
+        // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+        await handleWorkflowFailure(workflowId, {
             error: "Fixes applied but PR creation failed",
+            targetStatus: "error",
         });
         return {
             status: "escalated",
@@ -807,10 +815,10 @@ export async function resumeTranslationE2E(workflowId, action, options) {
     }
     // Exhausted retries — escalate
     console.error("[translation-e2e] Exhausted " + LIMITS.MAX_FIX_ATTEMPTS + " fix attempts");
-    await updateWorkflowState(workflowId, {
-        status: "escalated",
-        fix_attempts: fixAttempt,
+    // Story 3.6 AC4: use handleWorkflowFailure for consistent error recording
+    await handleWorkflowFailure(workflowId, {
         error: "Exhausted " + fixAttempt + " fix attempts, " + remainingFindings.length + " finding(s) remain",
+        targetStatus: "fix_failed",
     });
     if (state.issue_number) {
         addHandoffLabel(state.issue_number);

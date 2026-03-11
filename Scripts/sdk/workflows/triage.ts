@@ -18,7 +18,7 @@ import { execSync } from "node:child_process";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ROUTING } from "../config.js";
+import { ROUTING, MODELS } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
 import { decideRoute, executeRoute, type RoutingInput, type RoutingAction } from "../lib/routing.js";
 import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
@@ -125,6 +125,8 @@ export function extractTriageSignals(body: string, title: string): {
 export interface RealTriageInput {
   /** GitHub issue number on the private repo */
   issueNumber: number;
+  /** Story 3.11: Owner correction notes from dispatch payload (optional) */
+  correctionNotes?: string;
 }
 
 /** Result from the real triage command */
@@ -143,15 +145,16 @@ export interface RealTriageResult {
 // GitHub helpers
 // ---------------------------------------------------------------------------
 
-/** Fetch issue title and body from the private repo using gh CLI */
-function fetchIssue(issueNumber: number): { title: string; body: string; labels: string[] } {
+/** Fetch issue title, body, labels, and comments from the private repo using gh CLI */
+function fetchIssue(issueNumber: number): { title: string; body: string; labels: string[]; comments: { body: string }[] } {
   const repo = ROUTING.PRIVATE_REPO;
   console.log("[triage] Fetching issue #" + issueNumber + " from " + repo);
 
   let issueJson: string;
   try {
+    // Story 3.11 AC3: Also fetch comments for owner feedback extraction
     issueJson = execSync(
-      "gh issue view " + issueNumber + " --repo " + repo + " --json title,body,labels",
+      "gh issue view " + issueNumber + " --repo " + repo + " --json title,body,labels,comments",
       { encoding: "utf-8", timeout: 30_000 },
     ).trim();
   } catch (err: unknown) {
@@ -159,9 +162,9 @@ function fetchIssue(issueNumber: number): { title: string; body: string; labels:
     throw new Error("Failed to fetch issue #" + issueNumber + " from " + repo + ": " + errMsg);
   }
 
-  let parsed: { title: string; body: string; labels: { name: string }[] };
+  let parsed: { title: string; body: string; labels: { name: string }[]; comments: { body: string }[] };
   try {
-    parsed = JSON.parse(issueJson) as { title: string; body: string; labels: { name: string }[] };
+    parsed = JSON.parse(issueJson) as { title: string; body: string; labels: { name: string }[]; comments: { body: string }[] };
   } catch (err: unknown) {
     throw new Error("Failed to parse issue JSON from gh CLI: " + issueJson);
   }
@@ -171,14 +174,32 @@ function fetchIssue(issueNumber: number): { title: string; body: string; labels:
   }
 
   const labels = (parsed.labels ?? []).map((l) => l.name);
+  const comments = parsed.comments ?? [];
   console.log("[triage] Issue title: " + parsed.title);
   console.log("[triage] Labels: [" + labels.join(", ") + "]");
+  console.log("[triage] Comments: " + comments.length + " total");
 
   return {
     title: parsed.title,
     body: parsed.body ?? "",
     labels,
+    comments,
   };
+}
+
+/**
+ * Story 3.11 AC3: Extract owner feedback comments from issue comments.
+ * Filters for comments containing ## Owner Correction or ## Owner Reclassification headers.
+ * Returns matching comments in newest-first order.
+ */
+export function extractOwnerComments(comments: { body: string }[]): string[] {
+  const ownerComments: string[] = [];
+  for (const comment of [...comments].reverse()) {
+    if (comment.body.includes("## Owner Correction") || comment.body.includes("## Owner Reclassification")) {
+      ownerComments.push(comment.body);
+    }
+  }
+  return ownerComments;
 }
 
 /** Post a comment on the issue in the private repo.
@@ -219,13 +240,17 @@ function postIssueComment(issueNumber: number, comment: string): void {
  */
 export async function runRealTriage(input: RealTriageInput): Promise<RealTriageResult> {
   const issueNumber = input.issueNumber;
+  const correctionNotes = input.correctionNotes ?? "";
   console.log("=== Story 2.4a: Real Triage — Issue #" + issueNumber + " ===");
+  if (correctionNotes) {
+    console.log("[triage] Story 3.11: Re-triage with owner correction notes");
+  }
   console.log("");
 
   // --------------------------------------------------
   // Step 1: Fetch issue from private repo
   // --------------------------------------------------
-  let issueData: { title: string; body: string; labels: string[] };
+  let issueData: { title: string; body: string; labels: string[]; comments: { body: string }[] };
   try {
     issueData = fetchIssue(issueNumber);
   } catch (err: unknown) {
@@ -284,6 +309,23 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
     console.log("[triage] BA-010.10: No reporter hint found in issue body — proceeding normally");
   }
 
+  // --------------------------------------------------
+  // Story 3.11: Prepend owner comments and correction notes to prompt
+  // Order: reporter hint (above) → owner comments → correction notes → original report
+  // --------------------------------------------------
+  const ownerComments = extractOwnerComments(issueData.comments);
+  if (ownerComments.length > 0) {
+    const ownerBlock = "OWNER FEEDBACK FROM ISSUE COMMENTS:\n" + ownerComments.join("\n\n---\n\n") + "\n\n";
+    reportText = ownerBlock + reportText;
+    console.log("[triage] Story 3.11: Prepended " + ownerComments.length + " owner comment(s) to triage prompt");
+  }
+
+  if (correctionNotes) {
+    const correctionBlock = "OWNER CORRECTION (use this to inform your classification):\n" + correctionNotes + "\n\n";
+    reportText = correctionBlock + reportText;
+    console.log("[triage] Story 3.11: Prepended correction notes to triage prompt");
+  }
+
   // Extract screenshots BEFORE stripping them — triage needs to see visual bugs
   const extractedImages = extractBase64Images(reportText);
   if (extractedImages.length > 0) {
@@ -293,12 +335,19 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   // Strip base64 from text prompt (model will receive images as content blocks instead)
   const cleanReportText = stripBase64Images(reportText);
 
+  // Story 3.11 AC4: Escalate to Sonnet when correction notes are present
+  const triageModel = correctionNotes ? MODELS.ORCHESTRATOR : undefined;
+  if (triageModel) {
+    console.log("[triage] Story 3.11: Escalating model to Sonnet for re-triage with corrections");
+  }
+
   let triageResult: TriageResult;
   try {
     triageResult = await runTriage({
       report_text: cleanReportText,
       report_id: "issue-" + issueNumber,
       images: extractedImages.length > 0 ? extractedImages : undefined,
+      model: triageModel,
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);

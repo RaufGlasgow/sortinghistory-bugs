@@ -133,6 +133,15 @@ function routeByClassification(classification, input) {
                 },
             };
         }
+        case "code_bug": {
+            // Story 3.14: code_bug routes same as ui_bug/gameplay_bug — label + wait for /approve
+            return {
+                type: "label",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_CODE_BUG, "severity/" + input.severity, ROUTING.LABEL_ROUTED],
+            };
+        }
         case "ui_bug": {
             // SDK-BF.3 AC1: ALL ui_bug severities → label with classification + severity, wait for /approve
             return {

@@ -79,6 +79,7 @@ export const CLASSIFICATIONS = [
   "translation_error",
   "ui_bug",
   "gameplay_bug",
+  "code_bug",
   "performance_issue",
   "crash_bug",
   "feature_request",
@@ -127,6 +128,7 @@ export const ROUTING = {
   /** BA-011 Story 2.1: New classification labels */
   LABEL_CONTENT_DUPLICATE: "content-duplicate",
   LABEL_PERFORMANCE_ISSUE: "performance-issue",
+  LABEL_CODE_BUG: "code-bug",
   LABEL_CRASH_BUG: "crash-bug",
   LABEL_NEEDS_DEV_HANDOFF: "needs-dev-handoff",
   /** Story 3.2: Label for failed fix attempts (retryable) */

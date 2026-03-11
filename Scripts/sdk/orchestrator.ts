@@ -524,8 +524,10 @@ async function main(): Promise<void> {
     }
     case "triage": {
       // Story 2.4a: Real triage command — fetches issue from private repo, classifies, routes
+      // Story 3.11: Optionally pass --correction-notes for re-triage with owner feedback
       const issueNumber = parseIssueFlag();
-      await runRealTriage({ issueNumber });
+      const correctionNotes = parseFlag("correction-notes") ?? undefined;
+      await runRealTriage({ issueNumber, correctionNotes });
       break;
     }
     case "bug-fix": {

@@ -38,6 +38,8 @@ export interface TriageInput {
   report_id?: string;
   /** Optional screenshots extracted from the bug report (base64 image data) */
   images?: import("../lib/image-extract.js").ExtractedImage[];
+  /** Optional model override — used by Story 3.11 to escalate to Sonnet on re-triage with corrections */
+  model?: string;
 }
 
 /** Valid classification values — imported from config.ts (BA-011 AC1: single source of truth) */
@@ -85,7 +87,8 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   const reportId = input.report_id ?? "unknown";
   const imageCount = input.images?.length ?? 0;
   console.log("=== Story 4.1: Bug Triage — Report " + reportId + " ===");
-  console.log("Model: " + MODELS.VERIFIER);
+  const effectiveModel = input.model ?? MODELS.VERIFIER;
+  console.log("Model: " + effectiveModel + (input.model ? " (escalated for re-triage)" : ""));
   console.log("Tools: [" + TRIAGE_TOOLS.join(", ") + "]");
   console.log("Screenshots: " + imageCount + " image(s) attached");
   console.log("Report text: \"" + input.report_text + "\"");
@@ -127,10 +130,12 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
     "2. Classify the report and return your TRIAGE RESULT as a JSON object with these keys: classification, confidence, severity, reasoning, extracted_context, routing_recommendation",
   ].join("\n");
 
-  // Spawn Haiku subagent with read-only triage tools
+  // Spawn subagent with read-only triage tools
+  // Story 3.11: Use caller-specified model (Sonnet for re-triage) or default to Haiku
+  const triageModel = input.model ?? MODELS.VERIFIER;
   // Pass screenshots as multimodal image blocks so the model can analyze visual bugs
   const result: SubagentResult = await spawnSubagent({
-    model: MODELS.VERIFIER,
+    model: triageModel,
     tools: [...TRIAGE_TOOLS],
     prompt: userPrompt,
     systemPrompt,

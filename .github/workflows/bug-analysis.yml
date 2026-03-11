@@ -10,6 +10,10 @@ on:
         description: 'Issue number to triage (from private repo)'
         required: true
         type: string
+      correction_notes:
+        description: 'Owner correction notes for re-triage context'
+        required: false
+        default: ''
 
 jobs:
   analyze:
@@ -73,6 +77,18 @@ jobs:
         working-directory: Scripts/sdk
         run: npm run build
 
+      - name: Extract correction notes
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          # Story 3.11: Extract correction_notes from dispatch payload or workflow_dispatch input
+          CORRECTION_NOTES="${{ github.event.client_payload.correction_notes || github.event.inputs.correction_notes }}"
+          echo "CORRECTION_NOTES=$CORRECTION_NOTES" >> "$GITHUB_ENV"
+          if [ -n "$CORRECTION_NOTES" ]; then
+            echo "Correction notes present — will pass to triage CLI"
+          else
+            echo "No correction notes — normal triage"
+          fi
+
       - name: Run SDK triage
         if: steps.check.outputs.skip != 'true'
         working-directory: Scripts/sdk
@@ -83,7 +99,13 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
-        run: node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
+        run: |
+          # Story 3.11: Pass correction notes to triage CLI if present
+          if [ -n "$CORRECTION_NOTES" ]; then
+            node dist/orchestrator.js triage --issue "$ISSUE_NUMBER" --correction-notes "$CORRECTION_NOTES"
+          else
+            node dist/orchestrator.js triage --issue "$ISSUE_NUMBER"
+          fi
         timeout-minutes: 5
 
       - name: Remove needs-triage label after successful triage

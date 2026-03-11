@@ -28,6 +28,8 @@ export interface TriageInput {
     report_id?: string;
     /** Optional screenshots extracted from the bug report (base64 image data) */
     images?: import("../lib/image-extract.js").ExtractedImage[];
+    /** Optional model override — used by Story 3.11 to escalate to Sonnet on re-triage with corrections */
+    model?: string;
 }
 /** Run the bug triage workflow */
 export declare function runTriage(input: TriageInput): Promise<TriageResult>;

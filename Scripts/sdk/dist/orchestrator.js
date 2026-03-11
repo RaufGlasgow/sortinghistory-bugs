@@ -23,6 +23,7 @@ import { runBugFix } from "./workflows/bug-fix.js";
 import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
 import { runTranslationE2E, resumeTranslationE2E } from "./workflows/translation-e2e.js";
 import { validateFix } from "./lib/validate-fix.js";
+import { fetchIssueData } from "./lib/github-utils.js";
 /**
  * Parse a named flag from process.argv.
  * Supports: `--flag value` syntax.
@@ -230,7 +231,10 @@ async function main() {
                         "It may have already been completed or was never started.");
                     process.exit(1);
                 }
-                // Call resumeContentE2E (AC2, AC4)
+                // NOTE: handleWorkflowResume() is intentionally NOT called here.
+                // resumeContentE2E() already manages fix_attempts and status transitions
+                // internally — calling handleWorkflowResume() first would double-increment
+                // fix_attempts, skewing health metrics. (Story 3.6 AC5)
                 const result = await resumeContentE2E(foundState.workflow_id, { action }, { dryRun: false });
                 console.log("[orchestrator] Resume result: " + result.status);
                 if (result.error) {
@@ -428,8 +432,10 @@ async function main() {
         }
         case "triage": {
             // Story 2.4a: Real triage command — fetches issue from private repo, classifies, routes
+            // Story 3.11: Optionally pass --correction-notes for re-triage with owner feedback
             const issueNumber = parseIssueFlag();
-            await runRealTriage({ issueNumber });
+            const correctionNotes = parseFlag("correction-notes") ?? undefined;
+            await runRealTriage({ issueNumber, correctionNotes });
             break;
         }
         case "bug-fix": {
@@ -558,6 +564,9 @@ async function main() {
                 postIssueComment(issueNumber, "## Translation Resume Failed\n\nNo paused workflow found for this issue.");
                 process.exit(1);
             }
+            // NOTE: handleWorkflowResume() is intentionally NOT called here.
+            // resumeTranslationE2E() already manages fix_attempts and status transitions
+            // internally — calling it first would double-increment. (Story 3.6 AC5)
             const resumeResult = await resumeTranslationE2E(foundState.workflow_id, action, { gameRepoPath: gameRepo, dryRun: false });
             console.log("[orchestrator] Translation resume result: " + resumeResult.status);
             if (resumeResult.error) {
@@ -579,9 +588,9 @@ async function main() {
             let issueBody = "";
             let issueLabels = [];
             try {
-                issueBody = execSync("gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json body --jq .body", { encoding: "utf-8", timeout: 30_000 }).trim();
-                const labelsJson = execSync("gh issue view " + issueNumber + " --repo " + ROUTING.PRIVATE_REPO + " --json labels --jq '[.labels[].name]'", { encoding: "utf-8", timeout: 30_000 }).trim();
-                issueLabels = JSON.parse(labelsJson);
+                const fetched = fetchIssueData(issueNumber);
+                issueBody = fetched.body;
+                issueLabels = fetched.labels;
             }
             catch (fetchErr) {
                 const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);

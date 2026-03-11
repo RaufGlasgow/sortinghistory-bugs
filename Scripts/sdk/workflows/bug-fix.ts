@@ -153,25 +153,34 @@ function fetchIssueContext(issueNumber: number): {
       comments: Array<{ body: string }>;
     };
 
-    // PV2-6.1: Try machine-readable JSON block first (AC3, AC8)
-    const triageData = extractTriageFromComments(commentsParsed.comments);
-
-    if (triageData) {
-      console.log("[bug-fix] Found machine-readable triage data (JSON block)");
-      triageComment = "JSON triage data";
-      triageClassification = triageData.classification;
-      triageSeverity = triageData.severity;
-      triageConfidence = triageData.confidence;
-      triageReasoning = triageData.reasoning;
+    // Story 3.13: Owner reclassification is authoritative — check FIRST
+    const ownerType = extractOwnerReclassification(commentsParsed.comments);
+    if (ownerType) {
+      console.log("[bug-fix] Story 3.13: Owner reclassification found — using " + ownerType + " (authoritative, skipping AI extraction)");
+      triageComment = "Owner reclassification";
+      triageClassification = ownerType;
+      // No severity/confidence/reasoning from owner reclassification — leave as null
     } else {
-      // PV2-6.1 AC5: Fall back to legacy regex parsing for older issues
-      console.log("[bug-fix] WARNING: No machine-readable triage data found. Falling back to regex comment parsing (legacy issue).");
-      const legacyResult = extractTriageFromCommentsLegacy(commentsParsed.comments);
-      triageComment = legacyResult.triageComment;
-      triageClassification = legacyResult.triageClassification;
-      triageSeverity = legacyResult.triageSeverity;
-      triageConfidence = legacyResult.triageConfidence;
-      triageReasoning = legacyResult.triageReasoning;
+      // PV2-6.1: Try machine-readable JSON block first (AC3, AC8)
+      const triageData = extractTriageFromComments(commentsParsed.comments);
+
+      if (triageData) {
+        console.log("[bug-fix] Found machine-readable triage data (JSON block)");
+        triageComment = "JSON triage data";
+        triageClassification = triageData.classification;
+        triageSeverity = triageData.severity;
+        triageConfidence = triageData.confidence;
+        triageReasoning = triageData.reasoning;
+      } else {
+        // PV2-6.1 AC5: Fall back to legacy regex parsing for older issues
+        console.log("[bug-fix] WARNING: No machine-readable triage data found. Falling back to regex comment parsing (legacy issue).");
+        const legacyResult = extractTriageFromCommentsLegacy(commentsParsed.comments);
+        triageComment = legacyResult.triageComment;
+        triageClassification = legacyResult.triageClassification;
+        triageSeverity = legacyResult.triageSeverity;
+        triageConfidence = legacyResult.triageConfidence;
+        triageReasoning = legacyResult.triageReasoning;
+      }
     }
 
     if (triageClassification) {
@@ -293,6 +302,23 @@ function extractTriageFromCommentsLegacy(comments: Array<{ body: string }>): {
   }
 
   return { triageComment, triageClassification, triageSeverity, triageConfidence, triageReasoning };
+}
+
+/**
+ * Story 3.13 AC3: Extract owner reclassification from issue comments.
+ * Checks newest comments first. Returns the reclassified type or null.
+ * Owner reclassification is authoritative — overrides AI triage.
+ */
+export function extractOwnerReclassification(comments: Array<{ body: string }>): string | null {
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const comment = comments[i];
+    // Worker posts: "## Owner Reclassification\n\nReclassified as: `code_bug`."
+    const ownerMatch = comment.body.match(/## Owner Reclassification[\s\S]*?Reclassified as:\s*`([^`]+)`/);
+    if (ownerMatch) {
+      return ownerMatch[1];
+    }
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------
