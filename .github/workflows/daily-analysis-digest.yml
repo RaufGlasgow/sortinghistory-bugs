@@ -386,14 +386,18 @@ jobs:
               CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
               CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
 
-              if [ -n "$FIX_TEXT" ]; then
+              if [ "$COMMENT_TYPE" = "needs_human_review" ] || [ "$TYPE" = "needs_human_review" ]; then
+                CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#8B6914;line-height:1.4;font-style:italic;\">This issue requires your classification before the pipeline can proceed.</p>"
+              elif [ -n "$FIX_TEXT" ]; then
                 CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">RECOMMENDED FIX:</p>"
                 CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
               fi
 
               # Action buttons — large tap targets (min 44px height, generous padding)
               CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
-              CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
+              if [ "$COMMENT_TYPE" != "needs_human_review" ] && [ "$TYPE" != "needs_human_review" ]; then
+                CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
+              fi
               CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
               CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
               CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
