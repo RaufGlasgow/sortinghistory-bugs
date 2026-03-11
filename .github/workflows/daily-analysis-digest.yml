@@ -309,7 +309,12 @@ jobs:
               COMMENT_TYPE=""
 
               if [ -z "$ANALYSIS_COMMENT" ]; then
-                # No analysis — skip this bug from the digest, track it separately
+                # Check if this issue has triage-failed label — if so, skip it entirely
+                HAS_TRIAGE_FAILED=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | if index("triage-failed") then "yes" else "no" end')
+                if [ "$HAS_TRIAGE_FAILED" = "yes" ]; then
+                  echo "Skipping issue #${NUM} — triage-failed (will not be retried)."
+                  continue
+                fi
                 PENDING_COUNT=$((PENDING_COUNT + 1))
                 PENDING_NUMS="${PENDING_NUMS} #${NUM}"
                 echo "Skipping issue #${NUM} — no AI analysis yet."
