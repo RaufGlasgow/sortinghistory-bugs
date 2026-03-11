@@ -613,6 +613,19 @@ jobs:
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --add-label "fix-generated,pr-created"
 
+      # Story 3.15 AC1: Commit bug-fix state files on success path
+      - name: Commit state files (success)
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
+        continue-on-error: true
+        run: |
+          git config user.name "SDK Bug Fix Bot"
+          git config user.email "bot@sortinghistory.com"
+          git add Scripts/sdk/state/ || true
+          git diff --cached --quiet && echo "No state changes to commit" || \
+            (git commit -m "state: bug-fix complete for issue #$ISSUE_NUM" && \
+             git pull --rebase origin main && \
+             git push)
+
       - name: Clean up stale failure labels (full mode success)
         if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.create-pr.outputs.pr_url != ''
         env:
@@ -739,6 +752,19 @@ jobs:
             --remove-label "approved" 2>/dev/null || true
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --remove-label "pr-created" 2>/dev/null || true
+
+      # Story 3.15 AC2: Commit bug-fix state files on failure path
+      - name: Commit state files (failure)
+        if: always() && (steps.guard.outputs.blocked || 'false') != 'true'
+        continue-on-error: true
+        run: |
+          git config user.name "SDK Bug Fix Bot"
+          git config user.email "bot@sortinghistory.com"
+          git add Scripts/sdk/state/ || true
+          git diff --cached --quiet && echo "No state changes to commit" || \
+            (git commit -m "state: bug-fix failed for issue #$ISSUE_NUM" && \
+             git pull --rebase origin main && \
+             git push)
 
       # PIPE-007.3: Removed duplicate YAML failure email.
       # The retry-loop.ts Handoff email (amber, with per-attempt detail) is now
