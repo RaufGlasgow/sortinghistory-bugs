@@ -6,7 +6,9 @@ name: Pipeline Digest
 
 on:
   # schedule block removed — Cloudflare Worker cron handles timing
-  workflow_dispatch: {}    # Triggered by Cloudflare Worker cron + manual
+  repository_dispatch:
+    types: [digest-cron]   # Triggered by Cloudflare Worker cron (uses BUGS_REPO_PAT contents:write)
+  workflow_dispatch: {}    # Manual trigger via gh CLI
 
 concurrency:
   group: pipeline-digest
