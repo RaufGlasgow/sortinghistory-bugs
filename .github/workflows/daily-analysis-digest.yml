@@ -284,6 +284,9 @@ jobs:
               SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
               TYPE=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(. != "from-app" and . != "needs-human-review" and . != "needs-triage" and . != "needs-review" and (startswith("P") | not))] | first // "Unknown"')
 
+              # Detect fix-failed label
+              IS_FIX_FAILED=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | if index("fix-failed") then "yes" else "no" end')
+
               # BA-011 Story 3.3: Overlay confidence from routing log
               CONF_DISPLAY=$(get_confidence_display "$NUM")
               if [ -n "$CONF_DISPLAY" ]; then
@@ -368,6 +371,30 @@ jobs:
                 if [ -z "$FIX_TEXT" ]; then
                   FIX_TEXT="See analysis on GitHub: ${ISSUE_URL}"
                 fi
+
+                # For fix-failed bugs: extract Pipeline Handoff context
+                HANDOFF_WHAT_TRIED=""
+                HANDOFF_SUGGESTED=""
+                if [ "$IS_FIX_FAILED" = "yes" ]; then
+                  HANDOFF_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | contains("# Pipeline Handoff:"))] | first | .body // ""')
+                  if [ -n "$HANDOFF_COMMENT" ]; then
+                    # Extract "What Was Tried" section
+                    HANDOFF_WHAT_TRIED=$(echo "$HANDOFF_COMMENT" | awk '/^## What Was Tried/{found=1; next} /^## /{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    if [ ${#HANDOFF_WHAT_TRIED} -gt 1500 ]; then
+                      HANDOFF_WHAT_TRIED="${HANDOFF_WHAT_TRIED:0:1500}..."
+                    fi
+                    # Extract "Suggested Approach"
+                    HANDOFF_SUGGESTED=$(echo "$HANDOFF_COMMENT" | awk '/^## Suggested Approach/{found=1; next} /^## /{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    # Extract "Why the Pipeline Stopped"
+                    HANDOFF_WHY=$(echo "$HANDOFF_COMMENT" | awk '/^## Why the Pipeline Stopped/{found=1; next} /^## /{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                    if [ -n "$HANDOFF_WHY" ]; then
+                      FIX_TEXT="$HANDOFF_WHY"
+                    fi
+                    if [ -n "$HANDOFF_SUGGESTED" ]; then
+                      FIX_TEXT="${FIX_TEXT} Suggested: ${HANDOFF_SUGGESTED}"
+                    fi
+                  fi
+                fi
               fi
 
               # Use comment severity/type if available, fall back to label
@@ -386,6 +413,7 @@ jobs:
               SAFE_FIX=$(html_escape "$FIX_TEXT")
               SAFE_DATE=$(html_escape "$FILED_DATE")
               SAFE_ACTUAL=$(html_escape "$ACTUAL_BEHAVIOR")
+              SAFE_WHAT_TRIED=$(html_escape "$HANDOFF_WHAT_TRIED")
 
               # Build action URLs
               APPROVE_URL="https://sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
@@ -393,32 +421,65 @@ jobs:
               REWORK_URL="https://sortinghistory.com/api/pipeline/rework?issue=${NUM}&token=${AUTH_TOKEN}"
               INFO_URL="https://sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
 
-              # Build card HTML
-              CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
-              CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
-              if [ -n "$SAFE_ACTUAL" ]; then
-                CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
-              fi
-              CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
-              CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
-              CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
+              # Build card HTML — different layout for fix-failed vs normal
+              if [ "$IS_FIX_FAILED" = "yes" ]; then
+                # ---- FIX-FAILED CARD: red border, handoff context inline, Fix Locally button ----
+                CARD="<div style=\"border:2px solid #dc2626;border-radius:8px;padding:16px;margin-bottom:16px;background:#fef2f2;\">"
+                CARD="${CARD}<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\"><span style=\"background:#dc2626;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;\">FIX FAILED</span><span style=\"background:#7c3aed;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;\">NEEDS CLAUDE CODE</span></div>"
+                CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+                if [ -n "$SAFE_ACTUAL" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+                fi
+                CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
+                CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
+                CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
 
-              if [ "$COMMENT_TYPE" = "needs_human_review" ] || [ "$TYPE" = "needs_human_review" ]; then
-                CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#8B6914;line-height:1.4;font-style:italic;\">This issue requires your classification before the pipeline can proceed.</p>"
-              elif [ -n "$FIX_TEXT" ]; then
-                CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">RECOMMENDED FIX:</p>"
-                CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
-              fi
+                # Show what the pipeline tried
+                if [ -n "$SAFE_WHAT_TRIED" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#991b1b;\">WHAT THE PIPELINE TRIED:</p>"
+                  CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:13px;color:#1a1a1a;line-height:1.4;background:#fff;padding:8px;border-radius:4px;border:1px solid #fca5a5;\">${SAFE_WHAT_TRIED}</p>"
+                fi
 
-              # Action buttons — large tap targets (min 44px height, generous padding)
-              CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
-              if [ "$COMMENT_TYPE" != "needs_human_review" ] && [ "$TYPE" != "needs_human_review" ]; then
-                CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
+                # Show recommended fix / why it stopped
+                if [ -n "$SAFE_FIX" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">WHY IT STOPPED &amp; SUGGESTED APPROACH:</p>"
+                  CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
+                fi
+
+                # Buttons: Fix Locally (primary), Reject, Rework
+                CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
+                CARD="${CARD}<a href=\"${ISSUE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally in Claude Code</a>"
+                CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+                CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
+                CARD="${CARD}</div></div>"
+              else
+                # ---- NORMAL CARD ----
+                CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
+                CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+                if [ -n "$SAFE_ACTUAL" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+                fi
+                CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
+                CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
+                CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
+
+                if [ "$COMMENT_TYPE" = "needs_human_review" ] || [ "$TYPE" = "needs_human_review" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#8B6914;line-height:1.4;font-style:italic;\">This issue requires your classification before the pipeline can proceed.</p>"
+                elif [ -n "$FIX_TEXT" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">RECOMMENDED FIX:</p>"
+                  CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
+                fi
+
+                # Action buttons — large tap targets (min 44px height, generous padding)
+                CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
+                if [ "$COMMENT_TYPE" != "needs_human_review" ] && [ "$TYPE" != "needs_human_review" ]; then
+                  CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
+                fi
+                CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+                CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
+                CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
+                CARD="${CARD}</div></div>"
               fi
-              CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
-              CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
-              CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
-              CARD="${CARD}</div></div>"
 
               BUG_CARDS="${BUG_CARDS}${CARD}"
               ANALYZED_COUNT=$((ANALYZED_COUNT + 1))
