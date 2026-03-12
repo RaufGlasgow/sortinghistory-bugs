@@ -448,7 +448,8 @@ jobs:
 
                 # Buttons: Fix Locally (primary), Reject, Rework
                 CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
-                CARD="${CARD}<a href=\"${ISSUE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally in Claude Code</a>"
+                HANDOFF_URL="https://sortinghistory.com/api/pipeline/handoff?issue=${NUM}&token=${AUTH_TOKEN}"
+                CARD="${CARD}<a href=\"${HANDOFF_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Download Handoff for Claude Code</a>"
                 CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
                 CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
                 CARD="${CARD}</div></div>"
