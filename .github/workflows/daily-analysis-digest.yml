@@ -1,14 +1,12 @@
-# 3x daily — pipeline has never completed a successful merge cycle.
-# Keep frequent until end-to-end flow is proven.
+# Schedule DISABLED — cron triggers moved to Cloudflare Worker (bug-webhook)
+# for punctual delivery. GitHub Actions cron had 30-60 min delays.
+# Worker dispatches workflow_dispatch at exactly 10am, 2pm, 6pm UTC.
 
 name: Pipeline Digest
 
 on:
-  schedule:
-    - cron: '0 10 * * *'   # 10:00 AM Lisbon (winter UTC+0)
-    - cron: '0 14 * * *'   # 2:00 PM Lisbon
-    - cron: '0 18 * * *'   # 6:00 PM Lisbon
-  workflow_dispatch: {}    # Manual trigger for testing
+  # schedule block removed — Cloudflare Worker cron handles timing
+  workflow_dispatch: {}    # Triggered by Cloudflare Worker cron + manual
 
 concurrency:
   group: pipeline-digest
