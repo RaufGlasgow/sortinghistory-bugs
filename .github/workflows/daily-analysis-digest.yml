@@ -265,6 +265,7 @@ jobs:
 
           if [ -n "$ISSUE_LIST" ] && [ "$ISSUE_COUNT" != "0" ]; then
             for NUM in $ISSUE_LIST; do
+              echo "========================================"
               echo "Processing issue #${NUM}..."
 
               # Fetch issue details
@@ -286,6 +287,10 @@ jobs:
 
               # Detect fix-failed label
               IS_FIX_FAILED=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | if index("fix-failed") then "yes" else "no" end')
+              ALL_LABELS=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | join(", ")')
+              echo "  Labels: ${ALL_LABELS}"
+              echo "  IS_FIX_FAILED=${IS_FIX_FAILED}"
+              echo "  SEVERITY=${SEVERITY} | TYPE=${TYPE}"
 
               # BA-011 Story 3.3: Overlay confidence from routing log
               CONF_DISPLAY=$(get_confidence_display "$NUM")
@@ -322,6 +327,12 @@ jobs:
               FIX_TEXT=""
               COMMENT_SEVERITY=""
               COMMENT_TYPE=""
+
+              COMMENT_COUNT=$(echo "$COMMENTS_JSON" | jq 'length')
+              echo "  Comments found: ${COMMENT_COUNT}"
+              echo "  OWNER_TYPE=${OWNER_TYPE:-<none>} | COMMENT_SOURCE=${COMMENT_SOURCE}"
+              HAS_ANALYSIS=$([ -n "$ANALYSIS_COMMENT" ] && echo "yes" || echo "no")
+              echo "  Has AI analysis comment: ${HAS_ANALYSIS}"
 
               if [ -z "$ANALYSIS_COMMENT" ] && [ -z "$OWNER_TYPE" ]; then
                 # Check if this issue has triage-failed label — if so, skip it entirely
@@ -376,8 +387,10 @@ jobs:
                 HANDOFF_WHAT_TRIED=""
                 HANDOFF_SUGGESTED=""
                 if [ "$IS_FIX_FAILED" = "yes" ]; then
+                  echo "  [FIX-FAILED] Searching for Pipeline Handoff comment..."
                   HANDOFF_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | contains("# Pipeline Handoff:"))] | first | .body // ""')
                   if [ -n "$HANDOFF_COMMENT" ]; then
+                    echo "  [FIX-FAILED] Handoff comment found (${#HANDOFF_COMMENT} chars)"
                     # Extract "What Was Tried" section
                     HANDOFF_WHAT_TRIED=$(echo "$HANDOFF_COMMENT" | awk '/^## What Was Tried/{found=1; next} /^## /{found=0} found{print}' | tr '\n' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
                     if [ ${#HANDOFF_WHAT_TRIED} -gt 1500 ]; then
@@ -393,7 +406,15 @@ jobs:
                     if [ -n "$HANDOFF_SUGGESTED" ]; then
                       FIX_TEXT="${FIX_TEXT} Suggested: ${HANDOFF_SUGGESTED}"
                     fi
+                    echo "  [FIX-FAILED] HANDOFF_WHAT_TRIED=${#HANDOFF_WHAT_TRIED} chars"
+                    echo "  [FIX-FAILED] HANDOFF_SUGGESTED=${#HANDOFF_SUGGESTED} chars"
+                    echo "  [FIX-FAILED] HANDOFF_WHY=${#HANDOFF_WHY} chars"
+                    echo "  [FIX-FAILED] FIX_TEXT=${#FIX_TEXT} chars"
+                  else
+                    echo "  [FIX-FAILED] WARNING: No Pipeline Handoff comment found on issue"
                   fi
+                else
+                  echo "  [FIX-FAILED] Not triggered — IS_FIX_FAILED=${IS_FIX_FAILED}"
                 fi
               fi
 
@@ -422,7 +443,9 @@ jobs:
               INFO_URL="https://sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
 
               # Build card HTML — different layout for fix-failed vs normal
+              echo "  Final: SEVERITY=${SEVERITY} | TYPE=${TYPE} | IS_FIX_FAILED=${IS_FIX_FAILED}"
               if [ "$IS_FIX_FAILED" = "yes" ]; then
+                echo "  >>> Building FIX-FAILED card for #${NUM}"
                 # ---- FIX-FAILED CARD: red border, handoff context inline, Fix Locally button ----
                 CARD="<div style=\"border:2px solid #dc2626;border-radius:8px;padding:16px;margin-bottom:16px;background:#fef2f2;\">"
                 CARD="${CARD}<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\"><span style=\"background:#dc2626;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;\">FIX FAILED</span><span style=\"background:#7c3aed;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;\">NEEDS CLAUDE CODE</span></div>"
@@ -449,11 +472,13 @@ jobs:
                 # Buttons: Fix Locally (primary), Reject, Rework
                 CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
                 HANDOFF_URL="https://sortinghistory.com/api/pipeline/handoff?issue=${NUM}&token=${AUTH_TOKEN}"
+                echo "  [FIX-FAILED] Button URL: https://sortinghistory.com/api/pipeline/handoff?issue=${NUM}&token=***"
                 CARD="${CARD}<a href=\"${HANDOFF_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Download Handoff for Claude Code</a>"
                 CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
                 CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
                 CARD="${CARD}</div></div>"
               else
+                echo "  >>> Building NORMAL card for #${NUM}"
                 # ---- NORMAL CARD ----
                 CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
                 CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
