@@ -21,6 +21,9 @@ import type {
   ModelUsage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ExtractedImage } from "./image-extract.js";
+import { runLocalAgentLoop, type LocalAgentResult } from "./local-agent.js";
+import { getToolDefinitions } from "./tool-definitions.js";
+import { WORKFLOW_BACKENDS, LOCAL_MODELS, type WorkflowType } from "../config.js";
 
 /** Result returned by spawnSubagent */
 export interface SubagentResult {
@@ -74,6 +77,10 @@ export interface SubagentParams {
   images?: ExtractedImage[];
   /** Optional AbortController for cancellation (C9: kill timed-out subagents) */
   abortController?: AbortController;
+  /** Story 1.3: Backend override — "local" for local inference, "claude" for Claude API */
+  backend?: "local" | "claude";
+  /** Story 1.3: Workflow type — used to determine default backend from WORKFLOW_BACKENDS */
+  workflowType?: WorkflowType;
 }
 
 /**
@@ -113,6 +120,163 @@ async function* createMultimodalPrompt(
   } as SDKUserMessage;
 }
 
+// ---------------------------------------------------------------------------
+// Story 1.3: Backend resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Determine which backend to use based on explicit override, workflow type, or default.
+ */
+function resolveBackend(params: SubagentParams): "local" | "claude" {
+  // Explicit override wins
+  if (params.backend) return params.backend;
+
+  // Workflow type -> config lookup
+  if (params.workflowType) {
+    const configured = WORKFLOW_BACKENDS[params.workflowType];
+    if (configured) return configured;
+  }
+
+  // Safe default: Claude API
+  return "claude";
+}
+
+/**
+ * Check whether the local inference endpoint is reachable.
+ * Sends a lightweight request to /v1/models and returns true if it responds.
+ */
+async function isLocalEndpointReachable(endpoint: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(endpoint + "/models", {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return response.ok || response.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.3: Local agent adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * Map SubagentParams to LocalAgentLoopParams, call runLocalAgentLoop(),
+ * and map LocalAgentResult back to SubagentResult.
+ */
+async function spawnLocalAgent(params: SubagentParams): Promise<SubagentResult> {
+  const startTime = Date.now();
+
+  // Determine which local model config to use based on the model ID
+  const localModelConfig =
+    params.model === LOCAL_MODELS.BACKUP.id ? LOCAL_MODELS.BACKUP : LOCAL_MODELS.PRIMARY;
+
+  const endpoint = localModelConfig.endpoint;
+
+  console.log(`[subagent:local] Spawning local agent: model=${params.model} endpoint=${endpoint}`);
+
+  // AC #9: Check if the server is reachable before trying
+  const reachable = await isLocalEndpointReachable(endpoint);
+  if (!reachable) {
+    const durationMs = Date.now() - startTime;
+    console.error(`[subagent:local] Server unreachable at ${endpoint}`);
+    return {
+      success: false,
+      sessionId: null,
+      model: params.model,
+      responseText: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      durationMs,
+      modelUsage: {},
+      usedWriteTools: false,
+      toolsUsed: [],
+      error: `Local inference server unreachable at ${endpoint}. Ensure the MLX server is running.`,
+    };
+  }
+
+  // Map tool names to OpenAI function calling definitions
+  const toolDefs = getToolDefinitions([...params.tools]);
+
+  let localResult: LocalAgentResult;
+  try {
+    localResult = await runLocalAgentLoop({
+      endpoint,
+      model: params.model,
+      systemPrompt: params.systemPrompt ?? "",
+      userPrompt: params.prompt,
+      tools: toolDefs,
+      maxTurns: params.maxTurns ?? 10,
+      cwd: params.cwd ?? process.cwd(),
+      hooks: params.hooks,
+      abortController: params.abortController,
+    });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const durationMs = Date.now() - startTime;
+    console.error(`[subagent:local] Error: ${errMsg}`);
+    return {
+      success: false,
+      sessionId: null,
+      model: params.model,
+      responseText: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      durationMs,
+      modelUsage: {},
+      usedWriteTools: false,
+      toolsUsed: [],
+      error: errMsg,
+    };
+  }
+
+  // Map LocalAgentResult -> SubagentResult
+  // Build a ModelUsage entry compatible with the SDK's ModelUsage type
+  const modelUsage: Record<string, ModelUsage> = {};
+  if (localResult.inputTokens > 0 || localResult.outputTokens > 0) {
+    modelUsage[params.model] = {
+      inputTokens: localResult.inputTokens,
+      outputTokens: localResult.outputTokens,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 0,
+      costUSD: 0, // Local models are free
+      contextWindow: localModelConfig.context_window,
+      maxOutputTokens: 0, // Not tracked by local server
+    };
+  }
+
+  const success = localResult.error === null;
+
+  const result: SubagentResult = {
+    success,
+    sessionId: null, // Local agents don't have SDK sessions
+    model: params.model,
+    responseText: localResult.responseText,
+    inputTokens: localResult.inputTokens,
+    outputTokens: localResult.outputTokens,
+    costUsd: 0, // Local inference is free
+    durationMs: localResult.durationMs,
+    modelUsage,
+    usedWriteTools: localResult.usedWriteTools,
+    toolsUsed: localResult.toolsUsed,
+    error: localResult.error,
+  };
+
+  console.log(`[subagent:local] Complete: success=${result.success} turns=${localResult.turns} tokens=${result.inputTokens}/${result.outputTokens} duration=${result.durationMs}ms`);
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.3: Claude agent adapter (extracted from original spawnSubagent)
+// ---------------------------------------------------------------------------
+
 /**
  * Spawn a Claude subagent via the SDK query() function.
  *
@@ -122,7 +286,7 @@ async function* createMultimodalPrompt(
  * - token usage and cost from the result message
  * - tool invocations for audit logging
  */
-export async function spawnSubagent(params: SubagentParams): Promise<SubagentResult> {
+async function spawnClaudeSubagent(params: SubagentParams): Promise<SubagentResult> {
   const startTime = Date.now();
 
   const result: SubagentResult = {
@@ -144,7 +308,7 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
   const toolsUsedSet = new Set<string>();
 
   try {
-    console.log(`[subagent] Spawning with model=${params.model} tools=[${params.tools.join(",")}]`);
+    console.log(`[subagent:claude] Spawning with model=${params.model} tools=[${params.tools.join(",")}]`);
 
     const options: Options = {
       model: params.model,
@@ -178,7 +342,7 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
         const initMsg = message as SDKSystemMessage;
         result.sessionId = initMsg.session_id;
         result.model = initMsg.model;
-        console.log(`[subagent] Session initialized: id=${initMsg.session_id} model=${initMsg.model}`);
+        console.log(`[subagent:claude] Session initialized: id=${initMsg.session_id} model=${initMsg.model}`);
       }
 
       // Track tool usage from assistant messages (they contain tool_use content blocks)
@@ -191,7 +355,7 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
               toolsUsedSet.add(toolName);
               if (writeToolNames.has(toolName)) {
                 result.usedWriteTools = true;
-                console.log(`[subagent] WARNING: Write tool used: ${toolName}`);
+                console.log(`[subagent:claude] WARNING: Write tool used: ${toolName}`);
               }
             }
           }
@@ -225,12 +389,10 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
   } catch (err: unknown) {
     result.error = err instanceof Error ? err.message : String(err);
     result.success = false;
-    console.error(`[subagent] Error: ${result.error}`);
+    console.error(`[subagent:claude] Error: ${result.error}`);
   }
 
   // Detect API billing/quota errors that the SDK reports as "success" with zero tokens.
-  // Known pattern: SDK sends result subtype=success with the error string as the result text,
-  // then exits with code 1. The catch block above may or may not fire depending on timing.
   const KNOWN_API_ERRORS = ["Credit balance is too low", "insufficient_quota", "billing"];
   if (result.responseText && result.inputTokens === 0 && result.outputTokens === 0) {
     const matchedError = KNOWN_API_ERRORS.find(err =>
@@ -239,7 +401,7 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
     if (matchedError) {
       result.success = false;
       result.error = "API billing error: " + result.responseText;
-      console.error("[subagent] BILLING ERROR DETECTED: " + result.responseText);
+      console.error("[subagent:claude] BILLING ERROR DETECTED: " + result.responseText);
     }
   }
 
@@ -248,9 +410,56 @@ export async function spawnSubagent(params: SubagentParams): Promise<SubagentRes
     result.durationMs = Date.now() - startTime;
   }
 
-  console.log(`[subagent] Complete: success=${result.success} tokens=${result.inputTokens}/${result.outputTokens} duration=${result.durationMs}ms cost=$${result.costUsd.toFixed(4)}`);
+  console.log(`[subagent:claude] Complete: success=${result.success} tokens=${result.inputTokens}/${result.outputTokens} duration=${result.durationMs}ms cost=$${result.costUsd.toFixed(4)}`);
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point — routes to local or Claude backend
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn a subagent via local inference or Claude API.
+ *
+ * Routing logic (Story 1.3):
+ * 1. If `backend` is specified, use it directly
+ * 2. Else if `workflowType` is specified, look up WORKFLOW_BACKENDS
+ * 3. Else default to "claude" (safe fallback — backward compatible)
+ *
+ * CI detection (AC #10): If backend resolves to "local" but the local endpoint
+ * is unreachable and no LOCAL_MODEL_ENDPOINT env var is set, falls back to Claude.
+ */
+export async function spawnSubagent(params: SubagentParams): Promise<SubagentResult> {
+  let backend = resolveBackend(params);
+
+  // AC #10: CI detection — if local is selected but we're in an environment
+  // without a local server (e.g. GitHub Actions), fall back to Claude
+  if (backend === "local") {
+    const localConfig =
+      params.model === LOCAL_MODELS.BACKUP.id ? LOCAL_MODELS.BACKUP : LOCAL_MODELS.PRIMARY;
+    const endpoint = localConfig.endpoint;
+
+    const reachable = await isLocalEndpointReachable(endpoint);
+    if (!reachable) {
+      const hasExplicitEndpoint = !!process.env.LOCAL_MODEL_ENDPOINT;
+      if (!hasExplicitEndpoint) {
+        // No explicit endpoint configured and default is unreachable — likely CI
+        console.warn(`[subagent] Local backend selected but endpoint unreachable (${endpoint}) and LOCAL_MODEL_ENDPOINT not set — falling back to Claude`);
+        backend = "claude";
+      }
+      // If LOCAL_MODEL_ENDPOINT IS set but unreachable, spawnLocalAgent will
+      // return a proper error (AC #9) rather than silently falling back
+    }
+  }
+
+  console.log(`[subagent] Backend: ${backend} (explicit=${params.backend ?? "none"}, workflow=${params.workflowType ?? "none"})`);
+
+  if (backend === "local") {
+    return spawnLocalAgent(params);
+  }
+
+  return spawnClaudeSubagent(params);
 }
 
 /** Log SDK messages at appropriate detail level */
