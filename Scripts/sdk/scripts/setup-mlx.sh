@@ -72,7 +72,7 @@ log "Step 2/3: Downloading candidate models..."
 mkdir -p "$MODELS_DIR"
 
 FAILED=0
-for idx in "${!MODEL_NAMES[@]}"; do
+for idx in $(seq 0 $((${#MODEL_NAMES[@]} - 1))); do
   name="${MODEL_NAMES[$idx]}"
   repo="${MODEL_REPOS[$idx]}"
   dest="$MODELS_DIR/$name"
@@ -91,7 +91,6 @@ from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id='${repo}',
     local_dir='${dest}',
-    local_dir_use_symlinks=False,
 )
 print('Download complete')
 " 2>&1; then

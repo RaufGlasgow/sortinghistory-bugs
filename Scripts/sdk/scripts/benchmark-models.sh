@@ -547,7 +547,7 @@ fi
 ALL_RESULTS='{"models":[]}'
 BENCHMARK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-for idx in "${!MODEL_NAMES[@]}"; do
+for idx in $(seq 0 $((${#MODEL_NAMES[@]} - 1))); do
   name="${MODEL_NAMES[$idx]}"
   label="${MODEL_LABELS[$idx]}"
 
