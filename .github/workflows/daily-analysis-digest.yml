@@ -199,10 +199,12 @@ jobs:
 
       - name: Generate health metrics HTML (Story 3.6 AC1)
         id: health
+        working-directory: Scripts/sdk
         run: |
           # Run health-metrics CLI to build System Health HTML from workflow state files.
           # Falls back to empty string if no state files or CLI fails.
-          HEALTH_HTML=$(npx tsx Scripts/sdk/lib/health-metrics-cli.ts 2>/dev/null || echo "")
+          # NOTE: Must run from Scripts/sdk/ so PATHS.STATE_DIR ("state/workflows") resolves correctly.
+          HEALTH_HTML=$(npx tsx lib/health-metrics-cli.ts 2>/dev/null || echo "")
           if [ -n "$HEALTH_HTML" ]; then
             echo "$HEALTH_HTML" > /tmp/health_section.html
             echo "has_health=true" >> "$GITHUB_OUTPUT"
