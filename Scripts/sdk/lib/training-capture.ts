@@ -65,7 +65,8 @@ export interface TrainingSummaryEntry {
 export interface TrainingVerdictEntry {
   id: string;
   workflow_id: string;
-  verdict: "approved" | "rejected" | "reworked";
+  type: "verdict_update";
+  human_verdict: "approved" | "rejected" | "reworked";
   timestamp: string;
 }
 
@@ -259,7 +260,8 @@ export function updateHumanVerdict(
   const entry: TrainingVerdictEntry = {
     id: `td-${dateStr}-${String(seq).padStart(3, "0")}-verdict`,
     workflow_id: workflowId,
-    verdict,
+    type: "verdict_update",
+    human_verdict: verdict,
     timestamp: new Date().toISOString(),
   };
 
