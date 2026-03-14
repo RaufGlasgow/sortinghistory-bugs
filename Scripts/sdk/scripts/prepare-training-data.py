@@ -98,6 +98,23 @@ def group_by_workflow(entries):
             workflows[wf_id]["turns"].append(entry)
 
     log(f"Found {len(workflows)} workflow(s)")
+
+    # Story 1.6: Deduplicate verdicts — when multiple verdicts exist for the
+    # same workflow_id (e.g. due to retries), keep only the latest by timestamp.
+    dedup_count = 0
+    for wf_id, wf_data in workflows.items():
+        verdicts = wf_data["verdicts"]
+        if len(verdicts) > 1:
+            dedup_count += len(verdicts) - 1
+            # Sort by timestamp descending, keep only the latest
+            verdicts.sort(
+                key=lambda v: v.get("timestamp", ""),
+                reverse=True,
+            )
+            wf_data["verdicts"] = [verdicts[0]]
+    if dedup_count > 0:
+        log(f"Deduplicated {dedup_count} duplicate verdict(s)")
+
     return workflows
 
 
