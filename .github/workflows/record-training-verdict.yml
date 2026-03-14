@@ -1,0 +1,82 @@
+name: Record Training Verdict
+
+on:
+  repository_dispatch:
+    types: [record-verdict]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: training-verdict
+  cancel-in-progress: false
+
+env:
+  WORKFLOW_ID: ${{ github.event.client_payload.workflow_id }}
+  VERDICT: ${{ github.event.client_payload.verdict }}
+
+jobs:
+  record-verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate inputs
+        run: |
+          if [ -z "$WORKFLOW_ID" ]; then
+            echo "ERROR: workflow_id is required"
+            exit 1
+          fi
+          if [ -z "$VERDICT" ]; then
+            echo "ERROR: verdict is required"
+            exit 1
+          fi
+          # Validate verdict is one of the allowed values
+          case "$VERDICT" in
+            approved|rejected|reworked) echo "Valid verdict: $VERDICT" ;;
+            *) echo "ERROR: Invalid verdict '$VERDICT' — must be approved, rejected, or reworked"; exit 1 ;;
+          esac
+          echo "Recording verdict '$VERDICT' for workflow '$WORKFLOW_ID'"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: Scripts/sdk
+        run: npm ci
+
+      - name: Record verdict
+        working-directory: Scripts/sdk
+        run: npx tsx scripts/record-verdict.ts "$WORKFLOW_ID" "$VERDICT"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add state/training/raw/
+
+          # Check if there are changes to commit
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore: record training verdict (${VERDICT}) for ${WORKFLOW_ID}"
+
+          # Push with retry on race condition
+          if ! git push origin main; then
+            echo "Push failed — retrying with pull --rebase..."
+            git pull --rebase origin main
+            git push origin main
+          fi
+
+          echo "Verdict committed and pushed successfully"
