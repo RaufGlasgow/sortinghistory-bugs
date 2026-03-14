@@ -463,3 +463,28 @@ jobs:
             -d "$PAYLOAD" || echo "Rejection email send failed (non-fatal)"
 
           echo "Rejection email sent for issue #${ISSUE_NUM} (retry=$SHOULD_RETRY)"
+
+      # Story 1.6: Record training verdict for rejected fix
+      - name: Dispatch training verdict
+        if: always() && steps.extract.outputs.issue_found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUM: ${{ steps.extract.outputs.issue_num }}
+        run: |
+          echo "Dispatching training verdict (rejected) for bf-issue-${ISSUE_NUM}..."
+
+          jq -n \
+            --arg wf_id "bf-issue-${ISSUE_NUM}" \
+            --arg verdict "rejected" \
+            '{
+              event_type: "record-verdict",
+              client_payload: {
+                workflow_id: $wf_id,
+                verdict: $verdict
+              }
+            }' > /tmp/verdict-payload.json
+
+          gh api "repos/${{ github.repository }}/dispatches" \
+            --input /tmp/verdict-payload.json || echo "Verdict dispatch failed (non-fatal)"
+
+          echo "Training verdict dispatch sent"
