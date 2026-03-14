@@ -47,6 +47,7 @@ import type { ExtractedImage } from "./image-extract.js";
 import { logPipelineEvent } from "./pipeline-log.js";
 import { sendBillingAlertEmail, sendHandoffEmail } from "./notification.js";
 import { logSubagentAttempt, logModelUsage } from "./audit-trail.js";
+import { writeTrainingSummary, type TrainingOutcome } from "./training-capture.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -97,6 +98,61 @@ const ATTEMPT_TIMEOUT_MS: Record<number, number> = {
   4: 45 * 60 * 1000,  // 45 minutes for attempt 4 (fallback: backup local model)
   5: 45 * 60 * 1000,  // 45 minutes for attempt 5 (fallback: cloud Sonnet, if allowed)
 };
+
+// ------------------------------------------------------------------
+// Story 1.4: Training summary helper
+// ------------------------------------------------------------------
+
+/**
+ * Map a retry-loop result string to a TrainingOutcome enum value.
+ */
+function mapRetryResultToOutcome(result: string): TrainingOutcome {
+  switch (result) {
+    case "success": return "compile_passed";
+    case "compilation_error": return "compile_failed";
+    case "qa_rejected": return "qa_rejected";
+    case "qa_needs_revision": return "qa_rejected";
+    case "timeout": return "timeout";
+    default: return "error";
+  }
+}
+
+/**
+ * Write a training summary entry. Called at every exit point of runRetryLoop().
+ * Non-fatal: catches and logs errors to avoid breaking the pipeline.
+ */
+function emitTrainingSummary(
+  workflowId: string | null,
+  outcome: TrainingOutcome,
+  attemptLogs: AttemptLogEntry[],
+  modelsUsed: ModelUsageEntry[],
+  changedFiles: string[],
+  diff: string | null,
+  qaVerdict: string | null,
+  compileResult: string | null,
+  totalDurationMs: number,
+): void {
+  if (!workflowId) return;
+
+  try {
+    writeTrainingSummary({
+      workflowId,
+      outcome,
+      totalTurns: attemptLogs.length,
+      totalTokensIn: modelsUsed.reduce((sum, m) => sum + m.input_tokens, 0),
+      totalTokensOut: modelsUsed.reduce((sum, m) => sum + m.output_tokens, 0),
+      totalDurationMs,
+      filesModified: changedFiles,
+      diffSizeBytes: diff ? Buffer.byteLength(diff, "utf-8") : 0,
+      compileResult,
+      qaVerdict,
+      humanVerdict: null,
+    });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn("[retry-loop] Training summary write failed (non-fatal): " + errMsg);
+  }
+}
 
 // ------------------------------------------------------------------
 // Types
@@ -701,6 +757,7 @@ async function runQAWithInfraRetry(
  * AC10: QA infrastructure failure handling with separate retry counter.
  */
 export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResult> {
+  const retryLoopStartTime = Date.now(); // Story 1.4: track total duration
   const maxAttempts = input.maxAttempts ?? LIMITS.MAX_FIX_ATTEMPTS;
   // Story 3.6 AC2: workflow ID for audit-trail persistence (optional)
   const auditWorkflowId = input.workflowId ?? null;
@@ -886,6 +943,10 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         maxTurns: modelSelection.fixMaxTurns,
         images: input.screenshots,
         abortController,
+        // Story 1.4: Training data capture context
+        workflowId: auditWorkflowId ?? undefined,
+        workflowType: "bug_fix",
+        attemptNumber: attempt,
       });
 
       // Subagent finished before timeout — clear the timer
@@ -960,6 +1021,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         "Continue this fix in Claude Code CLI using the context below.";
       const handoff = buildHandoff(input, attemptLogs, qaResults, costCapReason, attempt);
 
+      // Story 1.4: Training summary
+      emitTrainingSummary(auditWorkflowId, "error", attemptLogs, modelsUsed, [], null, null, null, Date.now() - retryLoopStartTime);
+
       return {
         success: false,
         attemptLogs,
@@ -1002,6 +1066,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         const billingReason = "API billing error on attempt " + attempt + ": " + errorMsg + ". " +
           "Top up credits at console.anthropic.com, then continue this fix in Claude Code CLI using the context below.";
         const billingHandoff = buildHandoff(input, attemptLogs, qaResults, billingReason, attempt);
+
+        // Story 1.4: Training summary
+        emitTrainingSummary(auditWorkflowId, "error", attemptLogs, modelsUsed, [], null, null, null, Date.now() - retryLoopStartTime);
 
         return {
           success: false,
@@ -1276,6 +1343,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         "The QA review subagent could not complete its analysis. The fix may be correct but\n" +
         "cannot be verified. Issue labeled for manual review.";
 
+      // Story 1.4: Training summary
+      emitTrainingSummary(auditWorkflowId, "error", attemptLogs, modelsUsed, changedFiles, diff, null, null, Date.now() - retryLoopStartTime);
+
       return {
         success: false, // H3: Unreviewed fixes do NOT get auto-PRs
         attemptLogs,
@@ -1346,6 +1416,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       console.log("[retry-loop] QA REJECTED on final attempt -- stopping (AC5)");
 
       const handoff = buildHandoff(input, attemptLogs, qaResults, "QA review rejected the fix. The automated fix did not meet quality standards.", attempt);
+
+      // Story 1.4: Training summary
+      emitTrainingSummary(auditWorkflowId, "qa_rejected", attemptLogs, modelsUsed, [], null, "rejected", null, Date.now() - retryLoopStartTime);
 
       return {
         success: false,
@@ -1466,6 +1539,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       timestamp: new Date().toISOString(),
     };
     await pushAttemptLog(logEntry);
+
+    // Story 1.4: Training summary
+    emitTrainingSummary(auditWorkflowId, "qa_passed", attemptLogs, modelsUsed, changedFiles, diff, "approved", fixSummary?.compilation_result ?? null, Date.now() - retryLoopStartTime);
 
     return {
       success: true,
@@ -1613,6 +1689,10 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     console.log("[retry-loop] WARNING: Could not send handoff email: " + errMsg);
   }
 
+  // Story 1.4: Training summary — determine outcome from last attempt
+  const lastAttemptResult = attemptLogs.length > 0 ? attemptLogs[attemptLogs.length - 1].result : "error";
+  emitTrainingSummary(auditWorkflowId, mapRetryResultToOutcome(lastAttemptResult), attemptLogs, modelsUsed, [], null, null, null, Date.now() - retryLoopStartTime);
+
   return {
     success: false,
     attemptLogs,
@@ -1742,6 +1822,10 @@ async function runFallbackAttempt(
       maxTurns,
       backend,
       abortController,
+      // Story 1.4: Training data capture context
+      workflowId: input.workflowId ?? undefined,
+      workflowType: "bug_fix",
+      attemptNumber: attemptNumber,
     });
 
     if (timeoutTimer) clearTimeout(timeoutTimer);

@@ -101,6 +101,8 @@ export const PATHS = {
   ROUTING_LOG_DIR: process.env.SDK_ROUTING_LOG_DIR ?? "state/routing-log",
   /** Pipeline error log directory (JSONL format, cross-run tracking) */
   LOG_DIR: process.env.SDK_LOG_DIR ?? "state/logs",
+  /** Training data directory (Story 1.4: raw JSONL, prepared splits, adapters, merged) */
+  TRAINING_DATA_DIR: process.env.SDK_TRAINING_DIR ?? "state/training",
 };
 
 /** Workflow limits from Architecture Section 4.1 */

@@ -24,6 +24,7 @@ import type { ExtractedImage } from "./image-extract.js";
 import { runLocalAgentLoop, type LocalAgentResult } from "./local-agent.js";
 import { getToolDefinitions } from "./tool-definitions.js";
 import { WORKFLOW_BACKENDS, LOCAL_MODELS, type WorkflowType } from "../config.js";
+import { captureTrainingTurn, type TrainingTurnInput } from "./training-capture.js";
 
 /** Result returned by spawnSubagent */
 export interface SubagentResult {
@@ -81,6 +82,10 @@ export interface SubagentParams {
   backend?: "local" | "claude";
   /** Story 1.3: Workflow type — used to determine default backend from WORKFLOW_BACKENDS */
   workflowType?: WorkflowType;
+  /** Story 1.4: Workflow ID for training data capture */
+  workflowId?: string;
+  /** Story 1.4: Attempt number for training data capture */
+  attemptNumber?: number;
 }
 
 /**
@@ -214,6 +219,45 @@ async function spawnLocalAgent(params: SubagentParams): Promise<SubagentResult> 
       cwd: params.cwd ?? process.cwd(),
       hooks: params.hooks,
       abortController: params.abortController,
+      // Story 1.4: Wire onTurn callback for training data capture
+      onTurn: params.workflowId
+        ? (turnData) => {
+            try {
+              const input: TrainingTurnInput = {
+                workflowId: params.workflowId!,
+                workflowType: params.workflowType ?? "bug_fix",
+                backend: "local",
+                model: params.model,
+                attemptNumber: params.attemptNumber ?? 0,
+                turnNumber: turnData.turnNumber,
+                messagesIn: turnData.messagesIn.map((m) => ({
+                  role: String(m.role),
+                  content: typeof m.content === "string" ? m.content : null,
+                  tool_calls: "tool_calls" in m ? (m as unknown as Record<string, unknown>).tool_calls as unknown[] : undefined,
+                })),
+                toolsAvailable: toolDefs.map((t) => t.function.name),
+                response: {
+                  content: typeof (turnData.response as Record<string, unknown>)?.choices === "object"
+                    ? (((turnData.response as Record<string, unknown>).choices as Array<Record<string, unknown>>)?.[0]?.message as Record<string, unknown>)?.content as string | null ?? null
+                    : null,
+                  tool_calls: (((turnData.response as Record<string, unknown>)?.choices as Array<Record<string, unknown>>)?.[0]?.message as Record<string, unknown>)?.tool_calls as unknown[] | undefined,
+                },
+                toolResults: turnData.toolResults.map((tr) => ({
+                  name: "tool",
+                  result: tr.output,
+                })),
+                tokensIn: turnData.tokensIn,
+                tokensOut: turnData.tokensOut,
+                durationMs: turnData.durationMs,
+                outcome: null,
+              };
+              captureTrainingTurn(input);
+            } catch (err: unknown) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              console.warn(`[subagent:local] Training capture failed (non-fatal): ${errMsg}`);
+            }
+          }
+        : undefined,
     });
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -385,6 +429,38 @@ async function spawnClaudeSubagent(params: SubagentParams): Promise<SubagentResu
     }
 
     result.toolsUsed = Array.from(toolsUsedSet);
+
+    // Story 1.4: Capture a single training turn entry for the entire Claude session
+    if (params.workflowId) {
+      try {
+        const input: TrainingTurnInput = {
+          workflowId: params.workflowId,
+          workflowType: params.workflowType ?? "bug_fix",
+          backend: "claude",
+          model: result.model ?? params.model,
+          attemptNumber: params.attemptNumber ?? 0,
+          turnNumber: 0,
+          messagesIn: [{ role: "user", content: params.prompt }],
+          toolsAvailable: [...params.tools],
+          response: {
+            content: result.responseText,
+            tool_calls: undefined,
+          },
+          toolResults: result.toolsUsed.map((name) => ({
+            name,
+            result: "(claude sdk - details not captured)",
+          })),
+          tokensIn: result.inputTokens,
+          tokensOut: result.outputTokens,
+          durationMs: result.durationMs,
+          outcome: result.success ? "success" : (result.error ?? "error"),
+        };
+        captureTrainingTurn(input);
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[subagent:claude] Training capture failed (non-fatal): ${errMsg}`);
+      }
+    }
 
   } catch (err: unknown) {
     result.error = err instanceof Error ? err.message : String(err);
