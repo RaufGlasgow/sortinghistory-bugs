@@ -22,7 +22,7 @@ import { execSync, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { MODELS, BUG_FIX_TOOLS, LIMITS } from "../config.js";
+import { MODELS, BUG_FIX_TOOLS, LIMITS, LOCAL_FALLBACK_CHAIN, FALLBACK_ATTEMPTS, LOCAL_MODELS, WORKFLOW_BACKENDS } from "../config.js";
 import { spawnSubagent, type SubagentResult } from "./subagent.js";
 import { buildBugFixHooksConfig } from "./hooks.js";
 import { extractJson } from "./json-extract.js";
@@ -47,6 +47,7 @@ import type { ExtractedImage } from "./image-extract.js";
 import { logPipelineEvent } from "./pipeline-log.js";
 import { sendBillingAlertEmail, sendHandoffEmail } from "./notification.js";
 import { logSubagentAttempt, logModelUsage } from "./audit-trail.js";
+import { writeTrainingSummary, type TrainingOutcome } from "./training-capture.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -91,10 +92,67 @@ const RETRYABLE_HTTP_CODES: readonly number[] = [429, 500, 502, 503];
  * Increased after analysis showed subagents need 20+ minutes for code bugs.
  */
 const ATTEMPT_TIMEOUT_MS: Record<number, number> = {
-  1: 25 * 60 * 1000,  // 25 minutes for attempt 1 (Haiku/Sonnet)
-  2: 35 * 60 * 1000,  // 35 minutes for attempt 2 (Sonnet escalated)
-  3: 45 * 60 * 1000,  // 45 minutes for attempt 3 (Sonnet max context)
+  1: 25 * 60 * 1000,  // 25 minutes for attempt 1 (Haiku/Sonnet or local primary)
+  2: 35 * 60 * 1000,  // 35 minutes for attempt 2 (Sonnet escalated or local primary)
+  3: 45 * 60 * 1000,  // 45 minutes for attempt 3 (Sonnet max context or local primary)
+  4: 45 * 60 * 1000,  // 45 minutes for attempt 4 (fallback: backup local model)
+  5: 45 * 60 * 1000,  // 45 minutes for attempt 5 (fallback: cloud Sonnet, if allowed)
 };
+
+// ------------------------------------------------------------------
+// Story 1.4: Training summary helper
+// ------------------------------------------------------------------
+
+/**
+ * Map a retry-loop result string to a TrainingOutcome enum value.
+ */
+function mapRetryResultToOutcome(result: string): TrainingOutcome {
+  switch (result) {
+    case "success": return "compile_passed";
+    case "compilation_error": return "compile_failed";
+    case "qa_rejected": return "qa_rejected";
+    case "qa_needs_revision": return "qa_rejected";
+    case "timeout": return "timeout";
+    default: return "error";
+  }
+}
+
+/**
+ * Write a training summary entry. Called at every exit point of runRetryLoop().
+ * Non-fatal: catches and logs errors to avoid breaking the pipeline.
+ */
+function emitTrainingSummary(
+  workflowId: string | null,
+  outcome: TrainingOutcome,
+  attemptLogs: AttemptLogEntry[],
+  modelsUsed: ModelUsageEntry[],
+  changedFiles: string[],
+  diff: string | null,
+  qaVerdict: string | null,
+  compileResult: string | null,
+  totalDurationMs: number,
+): void {
+  if (!workflowId) return;
+
+  try {
+    writeTrainingSummary({
+      workflowId,
+      outcome,
+      totalTurns: attemptLogs.length,
+      totalTokensIn: modelsUsed.reduce((sum, m) => sum + m.input_tokens, 0),
+      totalTokensOut: modelsUsed.reduce((sum, m) => sum + m.output_tokens, 0),
+      totalDurationMs,
+      filesModified: changedFiles,
+      diffSizeBytes: diff ? Buffer.byteLength(diff, "utf-8") : 0,
+      compileResult,
+      qaVerdict,
+      humanVerdict: null,
+    });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.warn("[retry-loop] Training summary write failed (non-fatal): " + errMsg);
+  }
+}
 
 // ------------------------------------------------------------------
 // Types
@@ -699,6 +757,7 @@ async function runQAWithInfraRetry(
  * AC10: QA infrastructure failure handling with separate retry counter.
  */
 export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResult> {
+  const retryLoopStartTime = Date.now(); // Story 1.4: track total duration
   const maxAttempts = input.maxAttempts ?? LIMITS.MAX_FIX_ATTEMPTS;
   // Story 3.6 AC2: workflow ID for audit-trail persistence (optional)
   const auditWorkflowId = input.workflowId ?? null;
@@ -884,6 +943,10 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         maxTurns: modelSelection.fixMaxTurns,
         images: input.screenshots,
         abortController,
+        // Story 1.4: Training data capture context
+        workflowId: auditWorkflowId ?? undefined,
+        workflowType: "bug_fix",
+        attemptNumber: attempt,
       });
 
       // Subagent finished before timeout — clear the timer
@@ -958,6 +1021,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         "Continue this fix in Claude Code CLI using the context below.";
       const handoff = buildHandoff(input, attemptLogs, qaResults, costCapReason, attempt);
 
+      // Story 1.4: Training summary
+      emitTrainingSummary(auditWorkflowId, "error", attemptLogs, modelsUsed, [], null, null, null, Date.now() - retryLoopStartTime);
+
       return {
         success: false,
         attemptLogs,
@@ -1000,6 +1066,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         const billingReason = "API billing error on attempt " + attempt + ": " + errorMsg + ". " +
           "Top up credits at console.anthropic.com, then continue this fix in Claude Code CLI using the context below.";
         const billingHandoff = buildHandoff(input, attemptLogs, qaResults, billingReason, attempt);
+
+        // Story 1.4: Training summary
+        emitTrainingSummary(auditWorkflowId, "error", attemptLogs, modelsUsed, [], null, null, null, Date.now() - retryLoopStartTime);
 
         return {
           success: false,
@@ -1274,6 +1343,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
         "The QA review subagent could not complete its analysis. The fix may be correct but\n" +
         "cannot be verified. Issue labeled for manual review.";
 
+      // Story 1.4: Training summary
+      emitTrainingSummary(auditWorkflowId, "error", attemptLogs, modelsUsed, changedFiles, diff, null, null, Date.now() - retryLoopStartTime);
+
       return {
         success: false, // H3: Unreviewed fixes do NOT get auto-PRs
         attemptLogs,
@@ -1344,6 +1416,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
       console.log("[retry-loop] QA REJECTED on final attempt -- stopping (AC5)");
 
       const handoff = buildHandoff(input, attemptLogs, qaResults, "QA review rejected the fix. The automated fix did not meet quality standards.", attempt);
+
+      // Story 1.4: Training summary
+      emitTrainingSummary(auditWorkflowId, "qa_rejected", attemptLogs, modelsUsed, [], null, "rejected", null, Date.now() - retryLoopStartTime);
 
       return {
         success: false,
@@ -1465,6 +1540,9 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     };
     await pushAttemptLog(logEntry);
 
+    // Story 1.4: Training summary
+    emitTrainingSummary(auditWorkflowId, "qa_passed", attemptLogs, modelsUsed, changedFiles, diff, "approved", fixSummary?.compilation_result ?? null, Date.now() - retryLoopStartTime);
+
     return {
       success: true,
       attemptLogs,
@@ -1482,26 +1560,114 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
   }
 
   // ------------------------------------------------------------------
+  // Story 1.3: Fallback chain for local-backend workflows (AC #6, #7)
+  //
+  // After MAX_FIX_ATTEMPTS (3) primary failures on local backend:
+  //   Attempt 4: backup local model from LOCAL_FALLBACK_CHAIN
+  //   Attempt 5: cloud Sonnet via Claude SDK (only if allow_cloud_fallback)
+  //
+  // selectModels() is NOT called for fallback attempts — we use the
+  // fallback chain config directly. buildFixPrompt() carries full
+  // failure history across backend switches.
+  // ------------------------------------------------------------------
+  const workflowBackend = WORKFLOW_BACKENDS["bug_fix"];
+  if (workflowBackend === "local") {
+    // -- Attempt 4: Backup local model --
+    const backupAttemptNumber = maxAttempts + 1;
+    console.log("");
+    console.log("=== Fallback Attempt " + backupAttemptNumber + ": Backup local model (" + LOCAL_FALLBACK_CHAIN.backup + ") ===");
+
+    const fallbackResult = await runFallbackAttempt(
+      input,
+      backupAttemptNumber,
+      LOCAL_FALLBACK_CHAIN.backup,
+      "local",
+      previousFailures,
+      bannedApproaches,
+      systemPrompt,
+      bugProfile,
+      attemptLogs,
+      qaResults,
+      modelsUsed,
+      cumulativeCostUsd,
+      pushAttemptLog,
+      pushModelUsage,
+    );
+
+    fixAttemptsUsed = backupAttemptNumber;
+    cumulativeCostUsd = fallbackResult.cumulativeCostUsd;
+
+    if (fallbackResult.success) {
+      return fallbackResult.result!;
+    }
+
+    // Update previousFailures from fallback
+    if (fallbackResult.failure) {
+      previousFailures.push(fallbackResult.failure);
+      if (fallbackResult.bannedApproach) {
+        bannedApproaches.push(fallbackResult.bannedApproach);
+      }
+    }
+
+    // -- Attempt 5: Cloud Sonnet (if allowed) --
+    if (LOCAL_FALLBACK_CHAIN.allow_cloud_fallback) {
+      const cloudAttemptNumber = maxAttempts + 2;
+      console.log("");
+      console.log("=== Fallback Attempt " + cloudAttemptNumber + ": Cloud fallback (" + LOCAL_FALLBACK_CHAIN.cloud_fallback + ") ===");
+
+      const cloudResult = await runFallbackAttempt(
+        input,
+        cloudAttemptNumber,
+        LOCAL_FALLBACK_CHAIN.cloud_fallback,
+        "claude",
+        previousFailures,
+        bannedApproaches,
+        systemPrompt,
+        bugProfile,
+        attemptLogs,
+        qaResults,
+        modelsUsed,
+        cumulativeCostUsd,
+        pushAttemptLog,
+        pushModelUsage,
+      );
+
+      fixAttemptsUsed = cloudAttemptNumber;
+      cumulativeCostUsd = cloudResult.cumulativeCostUsd;
+
+      if (cloudResult.success) {
+        return cloudResult.result!;
+      }
+
+      if (cloudResult.failure) {
+        previousFailures.push(cloudResult.failure);
+      }
+    } else {
+      console.log("[retry-loop] Cloud fallback disabled (LOCAL_FALLBACK_CHAIN.allow_cloud_fallback = false)");
+    }
+  }
+
+  // ------------------------------------------------------------------
   // All attempts exhausted (AC6)
   // ------------------------------------------------------------------
   console.log("");
-  console.log("=== Retry Loop FAILED -- all " + maxAttempts + " attempts exhausted ===");
+  console.log("=== Retry Loop FAILED -- all " + fixAttemptsUsed + " attempts exhausted ===");
 
   logPipelineEvent({
     workflow_id: "bf-" + input.issueNumber,
     issue: input.issueNumber,
     event: "all_attempts_exhausted",
     severity: "error",
-    attempt: maxAttempts,
-    details: "All " + maxAttempts + " fix attempts used. Profile: " + bugProfile,
+    attempt: fixAttemptsUsed,
+    details: "All " + fixAttemptsUsed + " fix attempts used (including fallbacks). Profile: " + bugProfile,
   });
 
   const handoff = buildHandoff(
     input,
     attemptLogs,
     qaResults,
-    "All " + maxAttempts + " fix attempts exhausted. Each attempt used an escalated model but could not produce a fix that passed all gates.",
-    maxAttempts,
+    "All " + fixAttemptsUsed + " fix attempts exhausted (including fallback chain). Each attempt used an escalated model but could not produce a fix that passed all gates.",
+    fixAttemptsUsed,
   );
 
   // Send handoff notification email so the owner knows immediately
@@ -1512,7 +1678,7 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     await sendHandoffEmail({
       issueNumber: input.issueNumber,
       issueTitle: input.issueTitle,
-      totalAttempts: maxAttempts,
+      totalAttempts: fixAttemptsUsed,
       attemptSummary: attemptSummaryLines.join("\n"),
       modelsUsed: [...new Set(modelsUsed.map(m => m.model))],
       issueBody: input.issueBody,
@@ -1522,6 +1688,10 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     const errMsg = err instanceof Error ? err.message : String(err);
     console.log("[retry-loop] WARNING: Could not send handoff email: " + errMsg);
   }
+
+  // Story 1.4: Training summary — determine outcome from last attempt
+  const lastAttemptResult = attemptLogs.length > 0 ? attemptLogs[attemptLogs.length - 1].result : "error";
+  emitTrainingSummary(auditWorkflowId, mapRetryResultToOutcome(lastAttemptResult), attemptLogs, modelsUsed, [], null, null, null, Date.now() - retryLoopStartTime);
 
   return {
     success: false,
@@ -1534,8 +1704,410 @@ export async function runRetryLoop(input: RetryLoopInput): Promise<RetryLoopResu
     handoffFilePath: handoff.filePath,
     qaSummary: null,
     fixSummary: null,
-    error: "All " + maxAttempts + " fix attempts exhausted",
-    fixAttemptsUsed: maxAttempts,
+    error: "All " + fixAttemptsUsed + " fix attempts exhausted (including fallback chain)",
+    fixAttemptsUsed,
+  };
+}
+
+// ------------------------------------------------------------------
+// Story 1.3: Fallback attempt runner
+// ------------------------------------------------------------------
+
+/** Result from a fallback attempt */
+interface FallbackAttemptResult {
+  success: boolean;
+  result: RetryLoopResult | null;
+  cumulativeCostUsd: number;
+  failure: {
+    attempt: number;
+    approach: string;
+    result: string;
+    errorOutput: string;
+    qaFeedback: string | null;
+  } | null;
+  bannedApproach: string | null;
+}
+
+/**
+ * Run a single fallback fix attempt with a specific model and backend.
+ *
+ * This is used for attempts 4 (backup local) and 5 (cloud Sonnet) after
+ * the primary retry loop exhausts MAX_FIX_ATTEMPTS.
+ *
+ * The full previous failure history is carried forward (AC #7) so the
+ * fallback model can learn from all earlier attempts regardless of backend.
+ */
+async function runFallbackAttempt(
+  input: RetryLoopInput,
+  attemptNumber: number,
+  modelId: string,
+  backend: "local" | "claude",
+  previousFailures: Array<{
+    attempt: number;
+    approach: string;
+    result: string;
+    errorOutput: string;
+    qaFeedback: string | null;
+  }>,
+  bannedApproaches: string[],
+  systemPrompt: string,
+  bugProfile: BugProfile,
+  attemptLogs: AttemptLogEntry[],
+  qaResults: QAVerdictEntry[],
+  modelsUsed: ModelUsageEntry[],
+  cumulativeCostUsd: number,
+  pushAttemptLog: (entry: AttemptLogEntry) => Promise<void>,
+  pushModelUsage: (entry: ModelUsageEntry) => Promise<void>,
+): Promise<FallbackAttemptResult> {
+  // Reset game repo before fallback attempt
+  try {
+    resetGameRepo(input.gameRepoPath);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error("[retry-loop:fallback] Reset failed -- skipping attempt " + attemptNumber);
+
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: modelId,
+      approach: "skipped -- game repo reset failed",
+      result: "error",
+      error_output: errMsg,
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: "skipped -- game repo reset failed",
+        result: "error",
+        errorOutput: errMsg,
+        qaFeedback: null,
+      },
+      bannedApproach: null,
+    };
+  }
+
+  // Build prompt with full failure history (AC #7)
+  const userPrompt = buildFixPrompt(input, attemptNumber, previousFailures, bannedApproaches);
+
+  // Spawn fix subagent with explicit backend
+  const hooks = buildBugFixHooksConfig(input.gameRepoPath);
+  const attemptTimeoutMs = ATTEMPT_TIMEOUT_MS[attemptNumber] ?? 45 * 60 * 1000;
+  const timeoutMinutes = attemptTimeoutMs / 60_000;
+
+  const abortController = new AbortController();
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  let fixResult: SubagentResult;
+
+  try {
+    timeoutTimer = setTimeout(() => {
+      console.error("[retry-loop:fallback] Timeout reached (" + timeoutMinutes + " min) -- aborting");
+      abortController.abort();
+    }, attemptTimeoutMs);
+
+    // Determine turn limits from escalation path (use highest available)
+    const maxTurns = 30; // Use generous turn limit for fallback attempts
+
+    fixResult = await spawnSubagent({
+      model: modelId,
+      tools: [...BUG_FIX_TOOLS],
+      prompt: userPrompt,
+      systemPrompt,
+      hooks,
+      cwd: input.gameRepoPath,
+      maxTurns,
+      backend,
+      abortController,
+      // Story 1.4: Training data capture context
+      workflowId: input.workflowId ?? undefined,
+      workflowType: "bug_fix",
+      attemptNumber: attemptNumber,
+    });
+
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  } catch (err: unknown) {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const isTimeout = abortController.signal.aborted || errMsg.includes("timed out after") || errMsg.includes("abort");
+
+    console.error("[retry-loop:fallback] " + (isTimeout ? "Timed out" : "Spawn failed") + ": " + errMsg);
+
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: modelId,
+      approach: isTimeout ? "timed out after " + timeoutMinutes + " minutes" : "subagent spawn failed",
+      result: isTimeout ? "timeout" : "error",
+      error_output: errMsg,
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: isTimeout ? "timed out" : "spawn failed",
+        result: isTimeout ? "timeout" : "error",
+        errorOutput: errMsg,
+        qaFeedback: null,
+      },
+      bannedApproach: null,
+    };
+  }
+
+  // Log usage
+  await pushModelUsage({
+    step: "fix_fallback_" + attemptNumber,
+    model: fixResult.model ?? modelId,
+    input_tokens: fixResult.inputTokens,
+    output_tokens: fixResult.outputTokens,
+    cost_estimate: fixResult.costUsd,
+    timestamp: new Date().toISOString(),
+  });
+
+  cumulativeCostUsd += fixResult.costUsd;
+
+  console.log("[retry-loop:fallback] Complete: model=" + modelId + " backend=" + backend +
+    " cost=$" + fixResult.costUsd.toFixed(4) + " cumulative=$" + cumulativeCostUsd.toFixed(4));
+
+  if (!fixResult.success) {
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: fixResult.model ?? modelId,
+      approach: "subagent error: " + (fixResult.error ?? "unknown"),
+      result: "error",
+      error_output: fixResult.error,
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: "subagent error: " + (fixResult.error ?? "unknown"),
+        result: "error",
+        errorOutput: fixResult.error ?? "unknown",
+        qaFeedback: null,
+      },
+      bannedApproach: null,
+    };
+  }
+
+  // Parse fix summary, clean artifacts, capture diff
+  const fixSummary = parseFixSummary(fixResult.responseText);
+  cleanBuildArtifacts(input.gameRepoPath);
+  const { diff, changedFiles } = captureDiff(input.gameRepoPath);
+
+  if (changedFiles.length === 0) {
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: fixResult.model ?? modelId,
+      approach: fixSummary?.fix_summary ?? "no changes produced",
+      result: "error",
+      error_output: "Fix subagent produced no file changes",
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: fixSummary?.fix_summary ?? "no changes produced",
+        result: "error",
+        errorOutput: "Fix subagent produced no file changes",
+        qaFeedback: null,
+      },
+      bannedApproach: fixSummary?.fix_summary ?? null,
+    };
+  }
+
+  // Check compilation
+  const compilationFailed = fixSummary?.compilation_result?.toLowerCase() !== "success";
+  if (compilationFailed) {
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: fixResult.model ?? modelId,
+      approach: fixSummary?.fix_summary ?? "unknown",
+      result: "compilation_error",
+      error_output: "Compilation: " + (fixSummary?.compilation_result ?? "unknown"),
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: fixSummary?.fix_summary ?? "unknown",
+        result: "compilation_error",
+        errorOutput: "Compilation: " + (fixSummary?.compilation_result ?? "unknown"),
+        qaFeedback: null,
+      },
+      bannedApproach: fixSummary?.fix_summary ?? null,
+    };
+  }
+
+  // Run QA (always via Claude for fallback attempts)
+  const fileExtensions = extractFileExtensions(changedFiles);
+  const qaProfile = determineQAProfile(fileExtensions);
+  const modelSelection = selectModels(bugProfile, 3, input.triage.fileExtensions); // Use attempt 3 config for QA model
+
+  const qaInput: QAInput = {
+    bugTitle: input.issueTitle,
+    bugBody: input.issueBody,
+    triageClassification: input.triage.classification,
+    triageComment: input.triageComment ?? null,
+    diff,
+    changedFiles,
+    gameRepoPath: input.gameRepoPath,
+    qaModel: modelSelection.qaModel,
+    qaMaxTurns: modelSelection.qaMaxTurns,
+    qaProfile,
+    attemptNumber,
+    images: input.screenshots,
+  };
+
+  const { qaResult } = await runQAWithInfraRetry(qaInput, attemptNumber);
+
+  if (qaResult.metrics) {
+    cumulativeCostUsd += qaResult.metrics.costUsd;
+    await pushModelUsage({
+      step: "qa_fallback_" + attemptNumber,
+      model: qaResult.metrics.model ?? modelSelection.qaModel,
+      input_tokens: qaResult.metrics.inputTokens,
+      output_tokens: qaResult.metrics.outputTokens,
+      cost_estimate: qaResult.metrics.costUsd,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  if (!qaResult.success || !qaResult.verdict || qaResult.verdict.verdict !== "approved") {
+    const verdict = qaResult.verdict;
+    const errorOutput = !qaResult.success
+      ? "QA infra failure: " + (qaResult.error ?? "unknown")
+      : "QA verdict: " + (verdict?.verdict ?? "unknown") + " - " + (verdict?.summary ?? "");
+
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: fixResult.model ?? modelId,
+      approach: fixSummary?.fix_summary ?? "unknown",
+      result: !qaResult.success ? "error" : "qa_" + (verdict?.verdict ?? "rejected"),
+      error_output: errorOutput,
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    if (verdict) {
+      qaResults.push(toVerdictEntry(verdict, attemptNumber));
+    }
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: fixSummary?.fix_summary ?? "unknown",
+        result: !qaResult.success ? "qa_infra_failure" : "qa_" + (verdict?.verdict ?? "rejected"),
+        errorOutput,
+        qaFeedback: verdict?.findings
+          ?.map((f: { criterion: string; severity: string; file: string; description: string }) =>
+            "[" + f.criterion + "/" + f.severity + "] " + f.file + ": " + f.description)
+          .join("; ") ?? null,
+      },
+      bannedApproach: fixSummary?.fix_summary ?? null,
+    };
+  }
+
+  // QA approved -- run quality gate
+  qaResults.push(toVerdictEntry(qaResult.verdict, attemptNumber));
+
+  const qualityGateResult = runQualityGate(diff, changedFiles);
+  if (!qualityGateResult.passed) {
+    const logEntry: AttemptLogEntry = {
+      attempt_number: attemptNumber,
+      model: fixResult.model ?? modelId,
+      approach: fixSummary?.fix_summary ?? "unknown",
+      result: "quality_gate_fail",
+      error_output: qualityGateResult.failures.map(f => "[" + f.check + "] " + f.description).join("; "),
+      timestamp: new Date().toISOString(),
+    };
+    await pushAttemptLog(logEntry);
+
+    return {
+      success: false,
+      result: null,
+      cumulativeCostUsd,
+      failure: {
+        attempt: attemptNumber,
+        approach: fixSummary?.fix_summary ?? "unknown",
+        result: "quality_gate_fail",
+        errorOutput: qualityGateResult.failures.map(f => f.check + ": " + f.description).join("; "),
+        qaFeedback: null,
+      },
+      bannedApproach: fixSummary?.fix_summary ?? null,
+    };
+  }
+
+  // SUCCESS
+  console.log("=== Fallback Attempt " + attemptNumber + " SUCCESS ===");
+
+  logPipelineEvent({
+    workflow_id: "bf-" + input.issueNumber,
+    issue: input.issueNumber,
+    event: "fix_success",
+    severity: "info",
+    model: fixResult.model ?? modelId,
+    attempt: attemptNumber,
+    tokens_in: fixResult.inputTokens,
+    tokens_out: fixResult.outputTokens,
+    cost_usd: fixResult.costUsd,
+    details: (fixSummary?.fix_summary ?? "fix applied") + " (fallback: " + backend + ")",
+  });
+
+  const successLog: AttemptLogEntry = {
+    attempt_number: attemptNumber,
+    model: fixResult.model ?? modelId,
+    approach: fixSummary?.fix_summary ?? "unknown",
+    result: "success",
+    error_output: null,
+    timestamp: new Date().toISOString(),
+  };
+  await pushAttemptLog(successLog);
+
+  return {
+    success: true,
+    result: {
+      success: true,
+      attemptLogs,
+      qaResults,
+      modelsUsed,
+      diff,
+      changedFiles,
+      handoffMarkdown: null,
+      handoffFilePath: null,
+      qaSummary: formatQASummary(qaResult, qaProfile),
+      fixSummary,
+      error: null,
+      fixAttemptsUsed: attemptNumber,
+    },
+    cumulativeCostUsd,
+    failure: null,
+    bannedApproach: null,
   };
 }
 

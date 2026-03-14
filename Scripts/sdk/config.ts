@@ -13,7 +13,68 @@ export type WorkflowType =
   | "content_verification"
   | "translation_verification"
   | "bug_triage"
-  | "bug_fix";
+  | "bug_fix"
+  | "triage"
+  | "qa_review";
+
+// ---------------------------------------------------------------------------
+// Story 1.3: Workflow backend routing
+// ---------------------------------------------------------------------------
+
+/** Workflow type -> default backend (local inference vs Claude API) */
+export const WORKFLOW_BACKENDS: Record<WorkflowType, "local" | "claude"> = {
+  bug_fix: "local",
+  bug_triage: "claude",
+  triage: "claude",
+  qa_review: "claude",
+  content_verification: "claude",
+  translation_verification: "claude",
+};
+
+// ---------------------------------------------------------------------------
+// Story 1.3: Local model configuration
+// ---------------------------------------------------------------------------
+
+/** Local model definitions — model IDs are placeholders until Story 1.1 benchmark runs */
+export const LOCAL_MODELS = {
+  PRIMARY: {
+    id: "qwen3-coder-30b-a3b-q4",
+    backend: "local" as const,
+    endpoint: process.env.LOCAL_MODEL_ENDPOINT || "http://localhost:8080/v1",
+    context_window: 131072,
+    cost_per_mtok_input: 0,
+    cost_per_mtok_output: 0,
+  },
+  BACKUP: {
+    id: "devstral-small-2-24b-q4",
+    backend: "local" as const,
+    endpoint: process.env.LOCAL_MODEL_ENDPOINT || "http://localhost:8080/v1",
+    context_window: 131072,
+    cost_per_mtok_input: 0,
+    cost_per_mtok_output: 0,
+  },
+} as const;
+
+/** Inference server connection settings */
+export const INFERENCE_SERVER = {
+  host: "localhost",
+  port: 8080,
+  startup_timeout_ms: 120000,
+} as const;
+
+/** Fallback chain for local inference: primary -> backup -> cloud (if allowed) */
+export const LOCAL_FALLBACK_CHAIN = {
+  primary: LOCAL_MODELS.PRIMARY.id,
+  backup: LOCAL_MODELS.BACKUP.id,
+  cloud_fallback: "claude-sonnet-4-5-20250929",
+  allow_cloud_fallback: false, // Disabled by default
+} as const;
+
+/** Number of attempts for each fallback stage */
+export const FALLBACK_ATTEMPTS = {
+  backup: 1,
+  cloud: 1,
+} as const;
 
 /** Workflow status transitions: verifying → awaiting_approval → fixing → re_verifying → complete | escalated | fix_failed | error
  *  Story 3.2: Added `fix_failed` (fix attempt failed, retryable) and `error` (unrecoverable, e.g. API exhaustion) */
@@ -40,6 +101,8 @@ export const PATHS = {
   ROUTING_LOG_DIR: process.env.SDK_ROUTING_LOG_DIR ?? "state/routing-log",
   /** Pipeline error log directory (JSONL format, cross-run tracking) */
   LOG_DIR: process.env.SDK_LOG_DIR ?? "state/logs",
+  /** Training data directory (Story 1.4: raw JSONL, prepared splits, adapters, merged) */
+  TRAINING_DATA_DIR: process.env.SDK_TRAINING_DIR ?? "state/training",
 };
 
 /** Workflow limits from Architecture Section 4.1 */
@@ -149,6 +212,9 @@ export const MODEL_PRICING: Record<string, { input_per_mtok: number; output_per_
   "claude-sonnet-4-5-20250929": { input_per_mtok: 3.0, output_per_mtok: 15.0 },
   // Opus 4.6: $5/$25 per MTok (complex bugs only)
   "claude-opus-4-6": { input_per_mtok: 5.0, output_per_mtok: 25.0 },
+  // Local models: $0 (runs on-device)
+  [LOCAL_MODELS.PRIMARY.id]: { input_per_mtok: 0, output_per_mtok: 0 },
+  [LOCAL_MODELS.BACKUP.id]: { input_per_mtok: 0, output_per_mtok: 0 },
 };
 
 /**

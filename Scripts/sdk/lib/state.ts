@@ -91,6 +91,8 @@ function generateWorkflowId(type: WorkflowType): string {
     translation_verification: "tv",
     bug_triage: "bt",
     bug_fix: "bf",
+    triage: "tr",
+    qa_review: "qr",
   };
   const prefix = prefixMap[type];
   const date = new Date().toISOString().slice(0, 10);

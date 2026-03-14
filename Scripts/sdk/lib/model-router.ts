@@ -13,7 +13,7 @@
  * QA model rule: QA model is always <= fix model tier.
  */
 
-import { MODELS, LIMITS } from "../config.js";
+import { MODELS, LIMITS, LOCAL_MODELS, WORKFLOW_BACKENDS, type WorkflowType } from "../config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -183,20 +183,41 @@ export function determineQAProfile(fileExtensions: string[]): QAProfile {
  * @param profile - Bug profile from determineBugProfile()
  * @param attemptNumber - Current attempt (1-based, clamped to MAX_FIX_ATTEMPTS)
  * @param fileExtensions - File extensions to determine QA profile
+ * @param options - Optional: backend override for local inference routing (Story 1.3)
  * @returns ModelSelection with fix/QA models, turn limits, and QA profile
  */
 export function selectModels(
   profile: BugProfile,
   attemptNumber: number,
   fileExtensions: string[],
+  options?: { backend?: "local" | "claude"; workflowType?: WorkflowType },
 ): ModelSelection {
-  const path = ESCALATION_PATHS[profile];
+  // Story 1.3: If backend is "local", return local model IDs
+  const backend = options?.backend
+    ?? (options?.workflowType ? WORKFLOW_BACKENDS[options.workflowType] : undefined);
+
+  if (backend === "local") {
+    const escalationPath = ESCALATION_PATHS[profile];
+    const maxAttempts = Math.min(escalationPath.length, LIMITS.MAX_FIX_ATTEMPTS);
+    const index = Math.max(0, Math.min(attemptNumber - 1, maxAttempts - 1));
+    const config = escalationPath[index];
+
+    return {
+      fixModel: LOCAL_MODELS.PRIMARY.id,
+      qaModel: config.qa, // QA still uses Claude (separate workflow)
+      fixMaxTurns: config.fixTurns,
+      qaMaxTurns: config.qaTurns,
+      qaProfile: determineQAProfile(fileExtensions),
+    };
+  }
+
+  const escalationPath = ESCALATION_PATHS[profile];
 
   // Clamp attempt to valid range (1-based input, 0-based index)
-  const maxAttempts = Math.min(path.length, LIMITS.MAX_FIX_ATTEMPTS);
+  const maxAttempts = Math.min(escalationPath.length, LIMITS.MAX_FIX_ATTEMPTS);
   const index = Math.max(0, Math.min(attemptNumber - 1, maxAttempts - 1));
 
-  const config = path[index];
+  const config = escalationPath[index];
 
   return {
     fixModel: config.fix,
