@@ -11,7 +11,7 @@
 import OpenAI from "openai";
 import type {
   ChatCompletionMessageParam,
-  ChatCompletionMessageToolCall,
+  ChatCompletionMessageFunctionToolCall,
 } from "openai/resources/chat/completions.js";
 import type { HookEvent, HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import { executeTool, WRITE_TOOL_NAMES } from "./tool-executor.js";
@@ -175,9 +175,12 @@ export async function runLocalAgentLoop(params: LocalAgentLoopParams): Promise<L
         break;
       }
 
-      // Execute each tool call
+      // Execute each tool call (filter to function tool calls only)
       const turnToolResults: ToolResult[] = [];
-      for (const toolCall of toolCalls) {
+      const functionCalls = toolCalls.filter(
+        (tc): tc is ChatCompletionMessageFunctionToolCall => tc.type === "function"
+      );
+      for (const toolCall of functionCalls) {
         const toolName = toolCall.function.name;
         toolsUsedSet.add(toolName);
 
