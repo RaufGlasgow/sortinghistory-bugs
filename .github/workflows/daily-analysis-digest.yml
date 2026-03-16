@@ -506,6 +506,8 @@ jobs:
                 CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
                 CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
                 CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
+                FIX_LOCALLY_URL="https://sortinghistory.com/api/pipeline/fix-locally?issue=${NUM}&token=${AUTH_TOKEN}"
+                CARD="${CARD}<a href=\"${FIX_LOCALLY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#6b7280;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally</a>"
                 CARD="${CARD}</div></div>"
               fi
 
