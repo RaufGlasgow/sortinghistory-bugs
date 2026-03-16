@@ -1,0 +1,100 @@
+{
+  "workflow_id": "bf-2026-03-16-001",
+  "workflow_type": "bug_fix",
+  "status": "escalated",
+  "session_id": null,
+  "created_at": "2026-03-16T18:20:27.405Z",
+  "updated_at": "2026-03-16T18:38:53.222Z",
+  "trigger": "dispatch",
+  "category": null,
+  "findings": [],
+  "approved_findings": [],
+  "rejected_findings": [],
+  "fix_attempts": 3,
+  "max_fix_attempts": 3,
+  "fix_results": [
+    {
+      "files_modified": [
+        "Core/Services/BugReportServiceProtocol.swift",
+        "Core/Services/BugReportService.swift",
+        "Views/BugReport/BugReportView.swift",
+        "SortingHistoryTests/Services/BugReportServiceTests.swift"
+      ],
+      "fix_summary": "Fixed bug where users playing in a different game language (e.g., German) with a different device locale (e.g., en_US) did not receive emails in the correct language. Added 'gameLanguage' as a top-level field in BugReportRequest that captures the user's selected game language from GameManager.currentLanguage and sends it to the backend webhook. The backend can now use this field to send emails in the user's game language instead of relying solely on device locale. The JSON encoder converts gameLanguage to game_language in snake_case automatically.",
+      "compilation_result": "success",
+      "confidence": "high"
+    }
+  ],
+  "pr_number": null,
+  "error": "All fix attempts exhausted",
+  "issue_number": 160,
+  "attempt_log": [
+    {
+      "attempt_number": 1,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "subagent error: Subagent error: error_max_turns",
+      "result": "error",
+      "error_output": "Subagent error: error_max_turns",
+      "timestamp": "2026-03-16T18:22:35.392Z"
+    },
+    {
+      "attempt_number": 2,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "Fixed bug where users playing in a different game language (e.g., German) with a different device locale (e.g., en_US) did not receive emails in the correct language. The root cause was that the bug report service only sent the device locale to the backend webhook, not the user's selected game language. The fix adds a 'gameLanguage' field to the DeviceInfoPayload that is populated from GameManager.currentLanguage and sent to the webhook, allowing the backend to send emails in the correct language regardless of device locale.",
+      "result": "error",
+      "error_output": "qa_infra_failure: QA subagent failed (code): Subagent error: error_max_turns",
+      "timestamp": "2026-03-16T18:28:01.481Z"
+    },
+    {
+      "attempt_number": 3,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "Fixed bug where users playing in a different game language (e.g., German) with a different device locale (e.g., en_US) did not receive emails in the correct language. Added 'gameLanguage' as a top-level field in BugReportRequest that captures the user's selected game language from GameManager.currentLanguage and sends it to the backend webhook. The backend can now use this field to send emails in the user's game language instead of relying solely on device locale. The JSON encoder converts gameLanguage to game_language in snake_case automatically.",
+      "result": "error",
+      "error_output": "qa_infra_failure: QA subagent failed (code): Subagent error: error_max_turns",
+      "timestamp": "2026-03-16T18:38:50.436Z"
+    }
+  ],
+  "qa_results": [],
+  "models_used": [
+    {
+      "step": "fix_attempt_1",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 666,
+      "output_tokens": 7597,
+      "cost_estimate": 0.6931935,
+      "timestamp": "2026-03-16T18:22:35.388Z"
+    },
+    {
+      "step": "fix_attempt_2",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 54,
+      "output_tokens": 9579,
+      "cost_estimate": 0.8246847500000003,
+      "timestamp": "2026-03-16T18:27:09.868Z"
+    },
+    {
+      "step": "qa_review_2",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 160,
+      "output_tokens": 3242,
+      "cost_estimate": 0.10677885000000001,
+      "timestamp": "2026-03-16T18:28:01.470Z"
+    },
+    {
+      "step": "fix_attempt_3",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 95,
+      "output_tokens": 8928,
+      "cost_estimate": 0.8673252499999999,
+      "timestamp": "2026-03-16T18:37:59.080Z"
+    },
+    {
+      "step": "qa_review_3",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 73,
+      "output_tokens": 3107,
+      "cost_estimate": 0.0826838,
+      "timestamp": "2026-03-16T18:38:50.429Z"
+    }
+  ]
+}
