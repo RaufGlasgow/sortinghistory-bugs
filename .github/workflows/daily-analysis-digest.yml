@@ -337,16 +337,52 @@ jobs:
               echo "  Has AI analysis comment: ${HAS_ANALYSIS}"
 
               if [ -z "$ANALYSIS_COMMENT" ] && [ -z "$OWNER_TYPE" ]; then
-                # Check if this issue has triage-failed label — if so, skip it entirely
+                # No analysis yet — render as an actionable card (NEVER skip silently)
                 HAS_TRIAGE_FAILED=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | if index("triage-failed") then "yes" else "no" end')
+
+                SAFE_TITLE=$(html_escape "$TITLE")
+                SAFE_ACTUAL=$(html_escape "$ACTUAL_BEHAVIOR")
+                SAFE_DATE=$(html_escape "$FILED_DATE")
+
+                RETRY_URL="https://sortinghistory.com/api/pipeline/retry-triage?issue=${NUM}&token=${AUTH_TOKEN}"
+                FIX_LOCALLY_URL="https://sortinghistory.com/api/pipeline/fix-locally?issue=${NUM}&token=${AUTH_TOKEN}"
+
                 if [ "$HAS_TRIAGE_FAILED" = "yes" ]; then
-                  echo "Skipping issue #${NUM} — triage-failed (will not be retried)."
-                  continue
+                  echo "Building TRIAGE-FAILED card for issue #${NUM}"
+                  # Red card — triage crashed, needs retry or manual fix
+                  CARD="<div style=\"border:2px solid #dc2626;border-radius:8px;padding:16px;margin-bottom:16px;background:#fef2f2;\">"
+                  CARD="${CARD}<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\"><span style=\"background:#dc2626;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;\">TRIAGE FAILED</span></div>"
+                else
+                  echo "Building PENDING-TRIAGE card for issue #${NUM}"
+                  # Amber card — triage hasn't run yet
+                  CARD="<div style=\"border:2px solid #d97706;border-radius:8px;padding:16px;margin-bottom:16px;background:#fffbeb;\">"
+                  CARD="${CARD}<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\"><span style=\"background:#d97706;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;text-transform:uppercase;letter-spacing:1px;\">AWAITING TRIAGE</span></div>"
                 fi
-                PENDING_COUNT=$((PENDING_COUNT + 1))
-                PENDING_NUMS="${PENDING_NUMS} #${NUM}"
-                echo "Skipping issue #${NUM} — no AI analysis yet."
-                continue
+
+                CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+                if [ -n "$SAFE_ACTUAL" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+                fi
+                CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:13px;color:#666;\">Filed: ${SAFE_DATE} | Labels: $(html_escape "$ALL_LABELS")</p>"
+
+                if [ "$HAS_TRIAGE_FAILED" = "yes" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#991b1b;line-height:1.4;\">The AI triage pipeline crashed while classifying this bug. You can retry triage or fix it locally in Claude Code.</p>"
+                else
+                  CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#92400e;line-height:1.4;\">This bug has not been triaged yet. If it stays here for more than one digest cycle, something may be stuck.</p>"
+                fi
+
+                # Action buttons — always show View + Fix Locally, show Retry if triage-failed
+                CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
+                if [ "$HAS_TRIAGE_FAILED" = "yes" ]; then
+                  CARD="${CARD}<a href=\"${RETRY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Retry Triage</a>"
+                fi
+                CARD="${CARD}<a href=\"${FIX_LOCALLY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally</a>"
+                CARD="${CARD}<a href=\"${ISSUE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">View on GitHub</a>"
+                CARD="${CARD}</div></div>"
+
+                BUG_CARDS="${BUG_CARDS}${CARD}"
+                ANALYZED_COUNT=$((ANALYZED_COUNT + 1))
+                echo "  Card built for untriaged issue #${NUM}"
               else
                 # Extract severity from comment (line starting with **Severity:**)
                 COMMENT_SEVERITY=$(echo "$ANALYSIS_COMMENT" | grep -oP '^\*\*Severity:\*\*\s*\K.*' | head -1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -670,11 +706,8 @@ jobs:
           # AC3: ALWAYS send — even if zero bugs and zero PRs (heartbeat)
           # =============================================
 
-          # Build pending notice if any
+          # Pending notice no longer needed — untriaged/triage-failed issues now render as full cards with action buttons
           PENDING_NOTICE=""
-          if [ "$PENDING_COUNT" -gt 0 ]; then
-            PENDING_NOTICE="<div style=\"margin-bottom:20px;padding:12px 16px;background:#fff8e1;border:1px solid #ffe082;border-radius:8px;font-size:13px;color:#6d4c00;\">${PENDING_COUNT} bug(s) still awaiting AI analysis (${PENDING_NUMS} ) &mdash; they will appear here once analyzed.</div>"
-          fi
 
           # BA-011 Story 3.3: Read the Needs Attention section (built in confidence step)
           ATTENTION_SECTION=""

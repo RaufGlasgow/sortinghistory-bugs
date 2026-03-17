@@ -207,7 +207,10 @@ jobs:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           if [ -n "$ISSUE_NUMBER" ]; then
+            # Create the label if it doesn't exist (idempotent), then apply it
+            gh label create "triage-failed" --repo "RaufGlasgow/Sorting-History" \
+              --color "dc2626" --description "Triage pipeline failed" 2>/dev/null || true
             gh issue edit "$ISSUE_NUMBER" --repo "RaufGlasgow/Sorting-History" \
-              --add-label "triage-failed" 2>/dev/null || true
+              --add-label "triage-failed"
             echo "Added triage-failed label to issue #$ISSUE_NUMBER"
           fi

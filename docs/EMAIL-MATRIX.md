@@ -57,6 +57,20 @@ Bug submitted → Triage → shouldSendEmail() = true → [1] Action Needed emai
   → Issue visible in [5] Digest with needs-human-review label
 ```
 
+### Triage Failure (any type)
+
+```
+Bug submitted → Triage crashes (billing, infra, timeout)
+  → triage-failed label applied (bug-analysis.yml failure handler)
+  → [4] Billing Alert email (if billing error detected)
+  → [5] Digest shows TRIAGE FAILED card (red border) with:
+    - Bug title and description
+    - Retry Triage button
+    - Fix Locally button
+    - View on GitHub button
+  → If triage not yet attempted: AWAITING TRIAGE card (amber border)
+```
+
 ## Issue #145 Investigation
 
 **Why no triage email?** Issue #145 was classified as `translation_error`. The routing type for translation errors is `"dispatch"` (not `"label_and_state"`). The `shouldSendEmail()` function returns `false` for `"dispatch"` actions. This is by design — the translation pipeline is supposed to handle the issue automatically.
@@ -70,6 +84,12 @@ Bug submitted → Triage → shouldSendEmail() = true → [1] Action Needed emai
 1. **Translation success has no email.** When `sdk-translation-pipeline.yml` successfully applies a fix, there is no PR Created email equivalent. The fix is committed directly to the public repo and the state file is updated, but no notification is sent. The digest will show the issue until it's manually closed or labels are updated.
 
 2. **Orchestrator crash before retry-loop completes.** If the orchestrator crashes with an unhandled error before the retry loop's `sendHandoffEmail()` fires (e.g., config parse error, missing dependency), no failure email is sent. The `fix-failed` label is still applied by the YAML failure handler, so the issue appears in the digest and the pipeline health section.
+
+## Fixed Gaps (2026-03-17)
+
+1. **Triage-failed issues were invisible in digest.** The digest silently skipped any issue without an AI analysis comment. Issues where triage crashed were completely invisible — no card, no buttons, just a one-line "pending" footnote. **Fix:** Untriaged and triage-failed issues now render as full cards with Retry Triage / Fix Locally / View on GitHub buttons. Red border for triage-failed, amber for awaiting triage.
+
+2. **`triage-failed` label didn't exist in the repo.** The `bug-analysis.yml` failure handler tried to add `triage-failed` but the label had never been created. The error was silently swallowed by `2>/dev/null || true`. **Fix:** Label created. Failure handler now creates the label if missing before applying it.
 
 ## PIPE-007 Changes Summary
 
