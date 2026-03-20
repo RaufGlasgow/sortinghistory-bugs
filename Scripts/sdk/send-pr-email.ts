@@ -48,6 +48,8 @@ async function main(): Promise<void> {
     pipelineMode: process.env.PIPELINE_MODE || "full",
     issueBody: readFileSafe(process.env.ISSUE_BODY_FILE),
     qaSummary: readFileSafe(process.env.QA_SUMMARY_FILE),
+    fixSummary: readFileSafe(process.env.FIX_SUMMARY_FILE),
+    diffText: readFileSafe(process.env.DIFF_FILE),
   });
 }
 

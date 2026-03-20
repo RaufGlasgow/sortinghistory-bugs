@@ -84,6 +84,10 @@ export interface PRCreatedEmailInput {
     issueBody?: string;
     /** QA review summary — displayed as "QA Review" in the email */
     qaSummary?: string;
+    /** Plain-language summary of what the fix does (PIPE-011 AC-1) */
+    fixSummary?: string;
+    /** Raw unified diff text from GitHub API (PIPE-011 AC-2) */
+    diffText?: string;
 }
 export declare function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string;
 /**

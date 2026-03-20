@@ -540,6 +540,143 @@ export interface PRCreatedEmailInput {
   issueBody?: string;
   /** QA review summary — displayed as "QA Review" in the email */
   qaSummary?: string;
+  /** Plain-language summary of what the fix does (PIPE-011 AC-1) */
+  fixSummary?: string;
+  /** Raw unified diff text from GitHub API (PIPE-011 AC-2) */
+  diffText?: string;
+}
+
+// ---------------------------------------------------------------------------
+// PIPE-011: Diff rendering for PR email
+// ---------------------------------------------------------------------------
+
+const DIFF_MAX_LINES = 200;
+const DIFF_MAX_BYTES = 50_000; // 50KB cap to avoid email clipping
+
+/**
+ * Parse a unified diff string and render it as email-safe HTML.
+ *
+ * - Green background for added lines, red for removed, gray for context
+ * - File headers in bold monospace
+ * - Truncates at DIFF_MAX_LINES or DIFF_MAX_BYTES
+ * - Highlights SettingsView.swift version changes with yellow background
+ * - Shows "Binary file changed" for binary diffs
+ */
+function buildDiffHtml(diffText: string, prUrl: string): string {
+  if (!diffText || !diffText.trim()) return "";
+
+  const lines = diffText.split("\n");
+  let renderedLines = 0;
+  let renderedBytes = 0;
+  let truncated = false;
+  const htmlParts: string[] = [];
+
+  // Styles (inline for email compatibility)
+  const monoFont = "font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;";
+  const addStyle = `background:#e6ffec;color:#24292f;${monoFont}`;
+  const removeStyle = `background:#ffebe9;color:#24292f;${monoFont}`;
+  const contextStyle = `background:#f6f8fa;color:#24292f;${monoFont}`;
+  const headerStyle = `background:#ddf4ff;color:#0969da;font-weight:700;${monoFont}`;
+  const hunkStyle = `background:#f0f0f0;color:#656d76;${monoFont}`;
+  const versionHighlightAdd = `background:#fef08a;color:#24292f;${monoFont}`;
+  const versionHighlightRemove = `background:#fde68a;color:#24292f;${monoFont}`;
+
+  let currentFile = "";
+
+  for (const line of lines) {
+    if (truncated) break;
+
+    // Check byte budget
+    const lineHtml = escapeHtml(line);
+    renderedBytes += lineHtml.length + 80; // estimate tag overhead
+    if (renderedBytes > DIFF_MAX_BYTES) {
+      truncated = true;
+      break;
+    }
+
+    // File header: diff --git a/path b/path
+    if (line.startsWith("diff --git")) {
+      const match = line.match(/b\/(.+)$/);
+      currentFile = match ? match[1] : "";
+      continue; // rendered when we hit the --- / +++ lines
+    }
+
+    // Binary file detection
+    if (line.startsWith("Binary files") || line.startsWith("GIT binary patch")) {
+      htmlParts.push(
+        `<div style="padding:4px 10px;${hunkStyle}font-style:italic;">Binary file changed: ${escapeHtml(currentFile)}</div>`
+      );
+      renderedLines++;
+      continue;
+    }
+
+    // File path headers (--- and +++)
+    if (line.startsWith("---") || line.startsWith("+++")) {
+      // Show the +++ line as the file header
+      if (line.startsWith("+++")) {
+        const filePath = line.replace(/^\+\+\+ [ab]\//, "").replace(/^\+\+\+ /, "");
+        htmlParts.push(
+          `<div style="padding:6px 10px;margin-top:12px;${headerStyle}font-size:13px;">${escapeHtml(filePath)}</div>`
+        );
+        renderedLines++;
+      }
+      continue;
+    }
+
+    // Hunk header: @@ -x,y +x,y @@
+    if (line.startsWith("@@")) {
+      htmlParts.push(
+        `<div style="padding:2px 10px;${hunkStyle}font-size:12px;">${lineHtml}</div>`
+      );
+      renderedLines++;
+      if (renderedLines >= DIFF_MAX_LINES) { truncated = true; break; }
+      continue;
+    }
+
+    // Skip index and mode lines
+    if (line.startsWith("index ") || line.startsWith("old mode") || line.startsWith("new mode") ||
+        line.startsWith("new file") || line.startsWith("deleted file") || line.startsWith("similarity") ||
+        line.startsWith("rename from") || line.startsWith("rename to")) {
+      continue;
+    }
+
+    // Detect version string changes in SettingsView.swift for yellow highlight
+    const isVersionLine = currentFile.includes("SettingsView") &&
+      (line.includes("1.1.0-alpha.") || line.includes("1.1.0-beta."));
+
+    // Diff content lines
+    let style: string;
+    if (line.startsWith("+")) {
+      style = isVersionLine ? versionHighlightAdd : addStyle;
+    } else if (line.startsWith("-")) {
+      style = isVersionLine ? versionHighlightRemove : removeStyle;
+    } else {
+      style = contextStyle;
+    }
+
+    htmlParts.push(
+      `<div style="padding:1px 10px;${style}font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:break-word;">${lineHtml}</div>`
+    );
+    renderedLines++;
+    if (renderedLines >= DIFF_MAX_LINES) { truncated = true; break; }
+  }
+
+  if (htmlParts.length === 0) return "";
+
+  let truncNote = "";
+  if (truncated) {
+    const filesUrl = `${prUrl}/files`;
+    truncNote = `<div style="padding:8px 10px;background:#fff3cd;border-top:1px solid #e2e8f0;font-size:12px;color:#856404;">Diff truncated at ${renderedLines} lines &mdash; <a href="${filesUrl}" style="color:#0969da;text-decoration:underline;">View full diff on GitHub</a></div>`;
+  }
+
+  return `<!-- Code diff (PIPE-011 AC-2) -->
+    <div style="margin:0 0 20px 0;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Code Changes</p>
+      <div style="border:1px solid #d0d7de;border-radius:6px;overflow:hidden;">
+        ${htmlParts.join("\n        ")}
+        ${truncNote}
+      </div>
+    </div>`;
 }
 
 export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
@@ -593,6 +730,20 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
     prDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
   }
 
+  // Fix summary (PIPE-011 AC-1)
+  let fixSummaryHtml = "";
+  if (input.fixSummary) {
+    const safeSummary = escapeHtml(input.fixSummary);
+    fixSummaryHtml = `<!-- Fix summary (PIPE-011 AC-1) -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #166534;border-radius:4px;">
+      <p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What This Fix Does</p>
+      <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeSummary}</p>
+    </div>`;
+  }
+
+  // Code diff (PIPE-011 AC-2)
+  const codeDiffHtml = buildDiffHtml(input.diffText || "", input.prUrl);
+
   // QA summary
   let qaSummaryHtml = "";
   if (input.qaSummary) {
@@ -630,6 +781,10 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
     ${prScreenshotsHtml}
 
     ${prDeviceInfoHtml}
+
+    ${fixSummaryHtml}
+
+    ${codeDiffHtml}
 
     ${qaSummaryHtml}
 

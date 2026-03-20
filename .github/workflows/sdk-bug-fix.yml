@@ -209,6 +209,23 @@ jobs:
           CONFIDENCE=$(echo "$OUTPUT" | grep '\[orchestrator\] Confidence:' | sed 's/.*Confidence: //')
           FIX_ATTEMPTS=$(echo "$OUTPUT" | grep '\[orchestrator\] Fix attempts used:' | sed 's/.*Fix attempts used: //')
 
+          # PIPE-011: Capture fix summary for email
+          FIX_SUMMARY_TEXT=$(echo "$OUTPUT" | grep '\[orchestrator\] Fix summary:' | sed 's/.*\[orchestrator\] Fix summary: //' | head -1)
+          if [ -z "$FIX_SUMMARY_TEXT" ]; then
+            # Fallback: try the "Bug fix result:" line
+            FIX_SUMMARY_TEXT=$(echo "$OUTPUT" | grep '\[orchestrator\] Bug fix result:' | sed 's/.*\[orchestrator\] Bug fix result: //' | head -1)
+          fi
+          FIX_SUMMARY_FILE="${{ github.workspace }}/fix-summary.txt"
+          if [ -n "$FIX_SUMMARY_TEXT" ]; then
+            printf '%s' "$FIX_SUMMARY_TEXT" > "$FIX_SUMMARY_FILE"
+            echo "fix_summary_file=$FIX_SUMMARY_FILE" >> $GITHUB_OUTPUT
+            echo "Fix summary captured: $FIX_SUMMARY_TEXT"
+          else
+            echo "" > "$FIX_SUMMARY_FILE"
+            echo "fix_summary_file=$FIX_SUMMARY_FILE" >> $GITHUB_OUTPUT
+            echo "No fix summary found in orchestrator output"
+          fi
+
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
           echo "files_modified=${FILES_MODIFIED:-unknown}" >> $GITHUB_OUTPUT
           echo "compilation=${COMPILATION:-unknown}" >> $GITHUB_OUTPUT
@@ -713,6 +730,24 @@ jobs:
             echo "has_qa=false" >> $GITHUB_OUTPUT
           fi
 
+      # PIPE-011 AC-4: Fetch PR diff for email
+      - name: Fetch PR diff for email
+        id: fetch-diff
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          PR_NUMBER="${{ steps.create-pr.outputs.pr_number }}"
+          echo "Fetching diff for PR #${PR_NUMBER}..."
+          gh api "repos/RaufGlasgow/Sorting-History/pulls/${PR_NUMBER}" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            > /tmp/pr-diff.txt 2>/dev/null || echo "" > /tmp/pr-diff.txt
+
+          DIFF_SIZE=$(wc -c < /tmp/pr-diff.txt | tr -d ' ')
+          DIFF_LINES=$(wc -l < /tmp/pr-diff.txt | tr -d ' ')
+          echo "Diff fetched: ${DIFF_SIZE} bytes, ${DIFF_LINES} lines"
+          echo "diff_file=/tmp/pr-diff.txt" >> $GITHUB_OUTPUT
+
       - name: Send PR created email
         if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.create-pr.outputs.pr_url != ''
         working-directory: Scripts/sdk
@@ -732,6 +767,8 @@ jobs:
           PIPELINE_MODE: ${{ env.PIPELINE_MODE }}
           ISSUE_BODY_FILE: /tmp/issue-body.txt
           QA_SUMMARY_FILE: /tmp/qa-summary-email.txt
+          DIFF_FILE: ${{ steps.fetch-diff.outputs.diff_file }}
+          FIX_SUMMARY_FILE: ${{ steps.fix.outputs.fix_summary_file }}
         run: node dist/send-pr-email.js
         continue-on-error: true
 
