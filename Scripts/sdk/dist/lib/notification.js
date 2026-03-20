@@ -7,37 +7,17 @@
  * Uses the Resend API via fetch() — no external dependencies.
  * All errors are caught and logged — failure never breaks the triage pipeline.
  */
-
-import type { RoutingAction } from "./routing.js";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface ActionNeededEmailInput {
-  issueNumber: number;
-  issueTitle: string;
-  classification: string;
-  confidence: number;
-  severity: string;
-  reasoning: string;
-  /** Reporter's original bug description (from issue body) */
-  description?: string;
-}
-
 // ---------------------------------------------------------------------------
 // Email trigger logic
 // ---------------------------------------------------------------------------
-
 /** Labels/action types that trigger an email notification */
 const EMAIL_TRIGGER_LABELS = new Set([
-  "needs-human-review",
-  "ui-bug",
-  "gameplay-bug",
-  "low-confidence",
-  "unknown-classification",
+    "needs-human-review",
+    "ui-bug",
+    "gameplay-bug",
+    "low-confidence",
+    "unknown-classification",
 ]);
-
 /**
  * Determine whether a routing action should trigger an email.
  *
@@ -51,243 +31,217 @@ const EMAIL_TRIGGER_LABELS = new Set([
  *   - "skip" (already routed — idempotency guard)
  *   - "label" with only feature_request (backlog, not urgent)
  */
-export function shouldSendEmail(action: RoutingAction): boolean {
-  switch (action.type) {
-    case "handoff_to_dev":
-      return true;
-
-    case "label_and_state":
-      return true;
-
-    case "label": {
-      // Check if any label is a trigger label (excluding feature-request-only)
-      const hasFeatureRequest = action.labels.includes("feature-request");
-      const hasTriggerLabel = action.labels.some((l) => EMAIL_TRIGGER_LABELS.has(l));
-
-      // feature_request label-only actions: no email
-      if (hasFeatureRequest && !hasTriggerLabel) {
-        return false;
-      }
-      return hasTriggerLabel;
+export function shouldSendEmail(action) {
+    switch (action.type) {
+        case "handoff_to_dev":
+            return true;
+        case "label_and_state":
+            return true;
+        case "label": {
+            // Check if any label is a trigger label (excluding feature-request-only)
+            const hasFeatureRequest = action.labels.includes("feature-request");
+            const hasTriggerLabel = action.labels.some((l) => EMAIL_TRIGGER_LABELS.has(l));
+            // feature_request label-only actions: no email
+            if (hasFeatureRequest && !hasTriggerLabel) {
+                return false;
+            }
+            return hasTriggerLabel;
+        }
+        case "dispatch":
+            return false;
+        case "skip":
+            return false;
+        default:
+            return false;
     }
-
-    case "dispatch":
-      return false;
-
-    case "skip":
-      return false;
-
-    default:
-      return false;
-  }
 }
-
 // ---------------------------------------------------------------------------
 // Email builder
 // ---------------------------------------------------------------------------
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function escapeHtml(text) {
+    return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
 }
-
 /**
  * Extract screenshots section from issue body — returns array of image URLs found.
  * Looks for markdown image syntax: ![alt](url)
  */
-export function extractScreenshots(raw: string): string[] {
-  const urls: string[] = [];
-  const regex = /!\[.*?\]\((https?:\/\/[^)]+)\)/g;
-  let match;
-  while ((match = regex.exec(raw)) !== null) {
-    urls.push(match[1]);
-  }
-  return urls;
+export function extractScreenshots(raw) {
+    const urls = [];
+    const regex = /!\[.*?\]\((https?:\/\/[^)]+)\)/g;
+    let match;
+    while ((match = regex.exec(raw)) !== null) {
+        urls.push(match[1]);
+    }
+    return urls;
 }
-
 /**
  * Extract the Device Info section from issue body.
  * Returns the section content or empty string if not found.
  */
-export function extractDeviceInfo(raw: string): string {
-  const match = raw.match(/## Device Info\s*([\s\S]*?)(?=##|$)/);
-  if (!match || !match[1]) return "";
-  return match[1].trim();
+export function extractDeviceInfo(raw) {
+    const match = raw.match(/## Device Info\s*([\s\S]*?)(?=##|$)/);
+    if (!match || !match[1])
+        return "";
+    return match[1].trim();
 }
-
 /**
  * Prepare issue body for email display.
  * Story 3.4 AC5: Preserve screenshots (as linked images) and device info.
  * Only truncate prose text if body exceeds maxLength, but NEVER truncate
  * screenshots or device info.
  */
-export function prepareIssueBody(raw: string, maxLength: number, issueNumber?: number): {
-  bodyText: string;
-  screenshotUrls: string[];
-  deviceInfo: string;
-  wasTruncated: boolean;
-} {
-  const screenshotUrls = extractScreenshots(raw);
-  const deviceInfo = extractDeviceInfo(raw);
-
-  // Build prose text: strip base64 images (too large), clean up formatting,
-  // but preserve URL images inline and keep device info
-  let text = raw
-    .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images only
-    .replace(/_Submitted via Sorting History app_/, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  let wasTruncated = false;
-  if (text.length > maxLength) {
-    text = text.slice(0, maxLength);
-    wasTruncated = true;
-  }
-
-  return { bodyText: text, screenshotUrls, deviceInfo, wasTruncated };
+export function prepareIssueBody(raw, maxLength, issueNumber) {
+    const screenshotUrls = extractScreenshots(raw);
+    const deviceInfo = extractDeviceInfo(raw);
+    // Build prose text: strip base64 images (too large), clean up formatting,
+    // but preserve URL images inline and keep device info
+    let text = raw
+        .replace(/!\[.*?\]\(data:image\/[^)]+\)/g, "[screenshot attached]") // strip base64 images only
+        .replace(/_Submitted via Sorting History app_/, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    let wasTruncated = false;
+    if (text.length > maxLength) {
+        text = text.slice(0, maxLength);
+        wasTruncated = true;
+    }
+    return { bodyText: text, screenshotUrls, deviceInfo, wasTruncated };
 }
-
 /**
  * Build HTML for screenshots section in email.
  */
-function buildScreenshotsHtml(screenshotUrls: string[]): string {
-  if (screenshotUrls.length === 0) return "";
-  const imagesHtml = screenshotUrls
-    .map((url) => `<img src="${escapeHtml(url)}" alt="Screenshot" style="max-width:100%;border-radius:8px;margin:8px 0;" />`)
-    .join("\n      ");
-  return `
+function buildScreenshotsHtml(screenshotUrls) {
+    if (screenshotUrls.length === 0)
+        return "";
+    const imagesHtml = screenshotUrls
+        .map((url) => `<img src="${escapeHtml(url)}" alt="Screenshot" style="max-width:100%;border-radius:8px;margin:8px 0;" />`)
+        .join("\n      ");
+    return `
     <!-- Screenshots -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f8f9fa;border-left:4px solid #6c757d;border-radius:4px;">
       <p style="margin:0 0 8px 0;font-size:12px;color:#6c757d;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Screenshots</p>
       ${imagesHtml}
     </div>`;
 }
-
 /**
  * Build HTML for device info section in email.
  */
-function buildDeviceInfoHtml(deviceInfo: string): string {
-  if (!deviceInfo) return "";
-  const safeDeviceInfo = escapeHtml(deviceInfo);
-  return `
+function buildDeviceInfoHtml(deviceInfo) {
+    if (!deviceInfo)
+        return "";
+    const safeDeviceInfo = escapeHtml(deviceInfo);
+    return `
     <!-- Device Info -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f4f8;border-left:4px solid #4a5568;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#4a5568;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Device Info</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDeviceInfo}</p>
     </div>`;
 }
-
 /**
  * Extract a labeled section from issue body (e.g. "**Steps to reproduce:**" ... next section).
  * Returns the section content or empty string if not found.
  */
-function extractSection(body: string, label: string): string {
-  const regex = new RegExp(`\\*\\*${label}:\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*[A-Z][^*]*:\\*\\*|##|$)`, "i");
-  const match = body.match(regex);
-  if (!match || !match[1]) return "";
-  return match[1].trim();
+function extractSection(body, label) {
+    const regex = new RegExp(`\\*\\*${label}:\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*[A-Z][^*]*:\\*\\*|##|$)`, "i");
+    const match = body.match(regex);
+    if (!match || !match[1])
+        return "";
+    return match[1].trim();
 }
-
-function getActionMessage(action: RoutingAction): string {
-  switch (action.type) {
-    case "handoff_to_dev":
-      return "Developer handoff created — investigate and fix.";
-    case "label_and_state":
-      return "Translation issue flagged — verify translation.";
-    case "label":
-      if (action.labels.includes("low-confidence") || action.labels.includes("unknown-classification")) {
-        return "Manual triage needed — low confidence classification.";
-      }
-      return "Review and /approve for fix attempt.";
-    default:
-      return "Review needed.";
-  }
-}
-
-export function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAction): string {
-  const safeTitle = escapeHtml(input.issueTitle);
-  const safeClassification = escapeHtml(input.classification);
-  const safeSeverity = escapeHtml(input.severity);
-  const confidencePercent = Math.round(input.confidence * 100);
-  const safeReasoning = escapeHtml(input.reasoning);
-  const actionMessage = escapeHtml(getActionMessage(action));
-  const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
-  const authToken = process.env.AUTH_TOKEN;
-
-  // Build bug description section — preserve screenshots and device info (Story 3.4 AC5)
-  let descriptionHtml = "";
-  let screenshotsHtml = "";
-  let deviceInfoHtml = "";
-  if (input.description) {
-    const prepared = prepareIssueBody(input.description, 5000, input.issueNumber);
-    const safeDescription = escapeHtml(prepared.bodyText);
-    let truncationNote = "";
-    if (prepared.wasTruncated) {
-      const fixLocallyLink = authToken
-        ? `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`
-        : issueUrl;
-      truncationNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${fixLocallyLink}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+function getActionMessage(action) {
+    switch (action.type) {
+        case "handoff_to_dev":
+            return "Developer handoff created — investigate and fix.";
+        case "label_and_state":
+            return "Translation issue flagged — verify translation.";
+        case "label":
+            if (action.labels.includes("low-confidence") || action.labels.includes("unknown-classification")) {
+                return "Manual triage needed — low confidence classification.";
+            }
+            return "Review and /approve for fix attempt.";
+        default:
+            return "Review needed.";
     }
-    descriptionHtml = `
+}
+export function buildEmailHtml(input, action) {
+    const safeTitle = escapeHtml(input.issueTitle);
+    const safeClassification = escapeHtml(input.classification);
+    const safeSeverity = escapeHtml(input.severity);
+    const confidencePercent = Math.round(input.confidence * 100);
+    const safeReasoning = escapeHtml(input.reasoning);
+    const actionMessage = escapeHtml(getActionMessage(action));
+    const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
+    const authToken = process.env.AUTH_TOKEN;
+    // Build bug description section — preserve screenshots and device info (Story 3.4 AC5)
+    let descriptionHtml = "";
+    let screenshotsHtml = "";
+    let deviceInfoHtml = "";
+    if (input.description) {
+        const prepared = prepareIssueBody(input.description, 5000, input.issueNumber);
+        const safeDescription = escapeHtml(prepared.bodyText);
+        let truncationNote = "";
+        if (prepared.wasTruncated) {
+            const fixLocallyLink = authToken
+                ? `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`
+                : issueUrl;
+            truncationNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${fixLocallyLink}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+        }
+        descriptionHtml = `
     <!-- Reporter description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What The Reporter Said</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDescription}</p>
       ${truncationNote}
     </div>`;
-
-    // Extract repro steps and expected behavior for decision-making
-    const reproSteps = extractSection(input.description, "Steps to reproduce");
-    const expectedBehavior = extractSection(input.description, "Expected behavior");
-
-    if (reproSteps) {
-      const safeRepro = escapeHtml(reproSteps.slice(0, 500));
-      descriptionHtml += `
+        // Extract repro steps and expected behavior for decision-making
+        const reproSteps = extractSection(input.description, "Steps to reproduce");
+        const expectedBehavior = extractSection(input.description, "Expected behavior");
+        if (reproSteps) {
+            const safeRepro = escapeHtml(reproSteps.slice(0, 500));
+            descriptionHtml += `
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Steps to Reproduce</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeRepro}</p>
     </div>`;
-    }
-
-    if (expectedBehavior) {
-      const safeExpected = escapeHtml(expectedBehavior.slice(0, 500));
-      descriptionHtml += `
+        }
+        if (expectedBehavior) {
+            const safeExpected = escapeHtml(expectedBehavior.slice(0, 500));
+            descriptionHtml += `
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#16a34a;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Expected Behavior</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeExpected}</p>
     </div>`;
+        }
+        // Screenshots and device info — NEVER truncated (Story 3.4 AC5)
+        screenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
+        deviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
     }
-
-    // Screenshots and device info — NEVER truncated (Story 3.4 AC5)
-    screenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
-    deviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
-  }
-
-  // Generate action button URLs if AUTH_TOKEN is available
-  let actionButtonsHtml: string;
-  let githubLinkHtml: string;
-  if (authToken) {
-    const encodedToken = encodeURIComponent(authToken);
-    const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    actionButtonsHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
+    // Generate action button URLs if AUTH_TOKEN is available
+    let actionButtonsHtml;
+    let githubLinkHtml;
+    if (authToken) {
+        const encodedToken = encodeURIComponent(authToken);
+        const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        actionButtonsHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
       <a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>
       <a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>
       <a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Comment</a>
       <a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
-    githubLinkHtml = `<p style="text-align:center;margin-top:12px;"><a href="${issueUrl}" style="color:#8B6914;font-size:13px;text-decoration:none;">View on GitHub &rarr;</a></p>`;
-  } else {
-    actionButtonsHtml = `<a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>`;
-    githubLinkHtml = '';
-  }
-
-  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+        githubLinkHtml = `<p style="text-align:center;margin-top:12px;"><a href="${issueUrl}" style="color:#8B6914;font-size:13px;text-decoration:none;">View on GitHub &rarr;</a></p>`;
+    }
+    else {
+        actionButtonsHtml = `<a href="${issueUrl}" style="display:inline-block;padding:14px 32px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View Issue on GitHub</a>`;
+        githubLinkHtml = '';
+    }
+    return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
   <!-- Header with app icon -->
   <div style="background:#8B6914;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
     <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
@@ -364,17 +318,14 @@ export function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAct
   </div>
 </div>`;
 }
-
 // ---------------------------------------------------------------------------
 // Billing alert email
 // ---------------------------------------------------------------------------
-
-function buildBillingAlertHtml(errorMessage: string, issueNumber?: number): string {
-  const issueContext = issueNumber
-    ? `<p style="margin:0 0 16px 0;font-size:14px;color:#444444;line-height:1.6;">This happened while triaging <strong>issue #${issueNumber}</strong>. The issue is still open and will need to be re-triaged after credits are restored.</p>`
-    : "";
-
-  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+function buildBillingAlertHtml(errorMessage, issueNumber) {
+    const issueContext = issueNumber
+        ? `<p style="margin:0 0 16px 0;font-size:14px;color:#444444;line-height:1.6;">This happened while triaging <strong>issue #${issueNumber}</strong>. The issue is still open and will need to be re-triaged after credits are restored.</p>`
+        : "";
+    return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
   <!-- Header -->
   <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
     <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
@@ -416,58 +367,50 @@ function buildBillingAlertHtml(errorMessage: string, issueNumber?: number): stri
   </div>
 </div>`;
 }
-
 /**
  * Send a billing alert email when API credits are depleted.
  *
  * Fire-and-forget: catches all errors so the pipeline can exit cleanly.
  */
-export async function sendBillingAlertEmail(
-  errorMessage: string,
-  issueNumber?: number,
-): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const ownerEmail = process.env.OWNER_EMAIL;
-
-  if (!apiKey || !ownerEmail) {
-    console.log("[notification] WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send billing alert");
-    return;
-  }
-
-  const subject = "Pipeline Stopped: API Credits Depleted";
-  const html = buildBillingAlertHtml(errorMessage, issueNumber);
-
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
-        to: [ownerEmail],
-        subject,
-        html,
-      }),
-    });
-
-    if (response.ok) {
-      console.log("[notification] Billing alert email sent");
-    } else {
-      const errorText = await response.text();
-      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+export async function sendBillingAlertEmail(errorMessage, issueNumber) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const ownerEmail = process.env.OWNER_EMAIL;
+    if (!apiKey || !ownerEmail) {
+        console.log("[notification] WARNING: RESEND_API_KEY or OWNER_EMAIL not configured — cannot send billing alert");
+        return;
     }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[notification] Failed to send billing alert: " + errMsg);
-  }
+    const subject = "Pipeline Stopped: API Credits Depleted";
+    const html = buildBillingAlertHtml(errorMessage, issueNumber);
+    try {
+        const response = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+                to: [ownerEmail],
+                subject,
+                html,
+            }),
+        });
+        if (response.ok) {
+            console.log("[notification] Billing alert email sent");
+        }
+        else {
+            const errorText = await response.text();
+            console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+        }
+    }
+    catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[notification] Failed to send billing alert: " + errMsg);
+    }
 }
-
 // ---------------------------------------------------------------------------
 // Email sender
 // ---------------------------------------------------------------------------
-
 /**
  * Send an "Action Needed" email to the pipeline owner.
  *
@@ -475,139 +418,106 @@ export async function sendBillingAlertEmail(
  * - If either is missing, logs a warning and returns silently
  * - All errors caught — never throws, never breaks the pipeline
  */
-export async function sendActionNeededEmail(
-  input: ActionNeededEmailInput,
-  action: RoutingAction,
-): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const ownerEmail = process.env.OWNER_EMAIL;
-
-  if (!apiKey) {
-    console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping action email");
-    return;
-  }
-  if (!ownerEmail) {
-    console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping action email");
-    return;
-  }
-
-  const subject = `Urgent: #${input.issueNumber} — ${input.classification}`;
-  const html = buildEmailHtml(input, action);
-
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
-        to: [ownerEmail],
-        subject,
-        html,
-      }),
-    });
-
-    if (response.ok) {
-      console.log("[notification] Action email sent for issue #" + input.issueNumber + " (" + input.classification + ")");
-    } else {
-      const errorText = await response.text();
-      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+export async function sendActionNeededEmail(input, action) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const ownerEmail = process.env.OWNER_EMAIL;
+    if (!apiKey) {
+        console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping action email");
+        return;
     }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[notification] Failed to send action email: " + errMsg);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PR Created notification email
-// ---------------------------------------------------------------------------
-
-export interface PRCreatedEmailInput {
-  issueNumber: number;
-  issueTitle: string;
-  prNumber: number;
-  prUrl: string;
-  filesModified: string;
-  compilation: string;
-  confidence: string;
-  fixAttempts: number;
-  alphaVersion?: string;
-  pipelineMode: string;
-  /** Original issue body — displayed as "What's the bug" in the email */
-  issueBody?: string;
-  /** QA review summary — displayed as "QA Review" in the email */
-  qaSummary?: string;
-}
-
-export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
-  const safeTitle = escapeHtml(input.issueTitle);
-  const safeFiles = escapeHtml(input.filesModified);
-  const safeCompilation = escapeHtml(input.compilation);
-  const safeConfidence = escapeHtml(input.confidence);
-  const modeLabel = input.pipelineMode === "qa-only" ? " (QA-Only Re-Run)" : "";
-
-  const authToken = process.env.AUTH_TOKEN;
-  let rejectButtonHtml = "";
-  let reworkButtonHtml = "";
-  let fixLocallyButtonHtml = "";
-  if (authToken) {
-    const encodedToken = encodeURIComponent(authToken);
-    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject Fix</a>`;
-    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    reworkButtonHtml = `<a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>`;
-    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
-  }
-
-  const versionHtml = input.alphaVersion
-    ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Test Version</td><td style="padding:8px 12px;font-size:14px;color:#333333;">1.1.0-beta.${escapeHtml(input.alphaVersion)}</td></tr>`
-    : "";
-
-  const retryHtml = input.fixAttempts > 1
-    ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Fix Attempts</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${input.fixAttempts} (with model escalation)</td></tr>`
-    : "";
-
-  // Bug description from issue body — preserve screenshots and device info (Story 3.4 AC5)
-  let bugDescHtml = "";
-  let prScreenshotsHtml = "";
-  let prDeviceInfoHtml = "";
-  if (input.issueBody) {
-    const prepared = prepareIssueBody(input.issueBody, 5000, input.issueNumber);
-    const safeDesc = escapeHtml(prepared.bodyText);
-    let truncNote = "";
-    if (prepared.wasTruncated && authToken) {
-      const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`;
-      truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+    if (!ownerEmail) {
+        console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping action email");
+        return;
     }
-    bugDescHtml = `<!-- Bug description -->
+    const subject = `Urgent: #${input.issueNumber} — ${input.classification}`;
+    const html = buildEmailHtml(input, action);
+    try {
+        const response = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+                to: [ownerEmail],
+                subject,
+                html,
+            }),
+        });
+        if (response.ok) {
+            console.log("[notification] Action email sent for issue #" + input.issueNumber + " (" + input.classification + ")");
+        }
+        else {
+            const errorText = await response.text();
+            console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+        }
+    }
+    catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[notification] Failed to send action email: " + errMsg);
+    }
+}
+export function buildPRCreatedEmailHtml(input) {
+    const safeTitle = escapeHtml(input.issueTitle);
+    const safeFiles = escapeHtml(input.filesModified);
+    const safeCompilation = escapeHtml(input.compilation);
+    const safeConfidence = escapeHtml(input.confidence);
+    const modeLabel = input.pipelineMode === "qa-only" ? " (QA-Only Re-Run)" : "";
+    const authToken = process.env.AUTH_TOKEN;
+    let rejectButtonHtml = "";
+    let reworkButtonHtml = "";
+    let fixLocallyButtonHtml = "";
+    if (authToken) {
+        const encodedToken = encodeURIComponent(authToken);
+        const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject Fix</a>`;
+        const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        reworkButtonHtml = `<a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>`;
+        const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
+    }
+    const versionHtml = input.alphaVersion
+        ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Test Version</td><td style="padding:8px 12px;font-size:14px;color:#333333;">1.1.0-beta.${escapeHtml(input.alphaVersion)}</td></tr>`
+        : "";
+    const retryHtml = input.fixAttempts > 1
+        ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Fix Attempts</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${input.fixAttempts} (with model escalation)</td></tr>`
+        : "";
+    // Bug description from issue body — preserve screenshots and device info (Story 3.4 AC5)
+    let bugDescHtml = "";
+    let prScreenshotsHtml = "";
+    let prDeviceInfoHtml = "";
+    if (input.issueBody) {
+        const prepared = prepareIssueBody(input.issueBody, 5000, input.issueNumber);
+        const safeDesc = escapeHtml(prepared.bodyText);
+        let truncNote = "";
+        if (prepared.wasTruncated && authToken) {
+            const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`;
+            truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+        }
+        bugDescHtml = `<!-- Bug description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What's The Bug</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDesc}</p>
       ${truncNote}
     </div>`;
-    prScreenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
-    prDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
-  }
-
-  // QA summary
-  let qaSummaryHtml = "";
-  if (input.qaSummary) {
-    const qaTruncated = input.qaSummary.length > 8000
-      ? input.qaSummary.slice(0, 8000) + "\n\n[Truncated for email — full QA summary on GitHub PR]"
-      : input.qaSummary;
-    const safeQa = escapeHtml(qaTruncated);
-    qaSummaryHtml = `<!-- QA review -->
+        prScreenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
+        prDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
+    }
+    // QA summary
+    let qaSummaryHtml = "";
+    if (input.qaSummary) {
+        const qaTruncated = input.qaSummary.length > 8000
+            ? input.qaSummary.slice(0, 8000) + "\n\n[Truncated for email — full QA summary on GitHub PR]"
+            : input.qaSummary;
+        const safeQa = escapeHtml(qaTruncated);
+        qaSummaryHtml = `<!-- QA review -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">QA Review</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeQa}</p>
     </div>`;
-  }
-
-  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+    }
+    return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
   <!-- Header -->
   <div style="background:#166534;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
     <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
@@ -684,121 +594,94 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   </div>
 </div>`;
 }
-
 /**
  * Send a "PR Created" email when the pipeline successfully creates a PR.
  *
  * Fire-and-forget: catches all errors so the pipeline can continue cleanly.
  */
-export async function sendPRCreatedEmail(
-  input: PRCreatedEmailInput,
-): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const ownerEmail = process.env.OWNER_EMAIL;
-
-  if (!apiKey) {
-    console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping PR created email");
-    return;
-  }
-  if (!ownerEmail) {
-    console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping PR created email");
-    return;
-  }
-
-  const modeLabel = input.pipelineMode === "qa-only" ? " [QA re-run]" : "";
-  const subject = `PR #${input.prNumber} Ready: Fix for #${input.issueNumber}${modeLabel}`;
-  const html = buildPRCreatedEmailHtml(input);
-
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
-        to: [ownerEmail],
-        subject,
-        html,
-      }),
-    });
-
-    if (response.ok) {
-      console.log("[notification] PR created email sent for PR #" + input.prNumber + " (issue #" + input.issueNumber + ")");
-    } else {
-      const errorText = await response.text();
-      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+export async function sendPRCreatedEmail(input) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const ownerEmail = process.env.OWNER_EMAIL;
+    if (!apiKey) {
+        console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping PR created email");
+        return;
     }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[notification] Failed to send PR created email: " + errMsg);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Handoff notification email
-// ---------------------------------------------------------------------------
-
-export interface HandoffEmailInput {
-  issueNumber: number;
-  issueTitle: string;
-  totalAttempts: number;
-  /** Short summary of what was tried */
-  attemptSummary: string;
-  /** The models used across attempts */
-  modelsUsed: string[];
-  /** Link to the handoff comment on GitHub */
-  handoffCommentUrl?: string;
-  /** Original issue body — displayed as "What's the bug" in the email */
-  issueBody?: string;
-}
-
-export function buildHandoffEmailHtml(input: HandoffEmailInput): string {
-  const safeTitle = escapeHtml(input.issueTitle);
-  const safeAttemptSummary = escapeHtml(input.attemptSummary);
-  const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
-  const modelsText = escapeHtml(input.modelsUsed.join(", ") || "unknown");
-
-  // Bug description from issue body — preserve screenshots and device info (Story 3.4 AC5)
-  let handoffBugDescHtml = "";
-  let handoffScreenshotsHtml = "";
-  let handoffDeviceInfoHtml = "";
-  if (input.issueBody) {
-    const prepared = prepareIssueBody(input.issueBody, 5000, input.issueNumber);
-    const safeDesc = escapeHtml(prepared.bodyText);
-    let truncNote = "";
-    if (prepared.wasTruncated) {
-      const authTk = process.env.AUTH_TOKEN;
-      if (authTk) {
-        const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authTk)}`;
-        truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
-      }
+    if (!ownerEmail) {
+        console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping PR created email");
+        return;
     }
-    handoffBugDescHtml = `
+    const modeLabel = input.pipelineMode === "qa-only" ? " [QA re-run]" : "";
+    const subject = `PR #${input.prNumber} Ready: Fix for #${input.issueNumber}${modeLabel}`;
+    const html = buildPRCreatedEmailHtml(input);
+    try {
+        const response = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+                to: [ownerEmail],
+                subject,
+                html,
+            }),
+        });
+        if (response.ok) {
+            console.log("[notification] PR created email sent for PR #" + input.prNumber + " (issue #" + input.issueNumber + ")");
+        }
+        else {
+            const errorText = await response.text();
+            console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+        }
+    }
+    catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[notification] Failed to send PR created email: " + errMsg);
+    }
+}
+export function buildHandoffEmailHtml(input) {
+    const safeTitle = escapeHtml(input.issueTitle);
+    const safeAttemptSummary = escapeHtml(input.attemptSummary);
+    const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${input.issueNumber}`;
+    const modelsText = escapeHtml(input.modelsUsed.join(", ") || "unknown");
+    // Bug description from issue body — preserve screenshots and device info (Story 3.4 AC5)
+    let handoffBugDescHtml = "";
+    let handoffScreenshotsHtml = "";
+    let handoffDeviceInfoHtml = "";
+    if (input.issueBody) {
+        const prepared = prepareIssueBody(input.issueBody, 5000, input.issueNumber);
+        const safeDesc = escapeHtml(prepared.bodyText);
+        let truncNote = "";
+        if (prepared.wasTruncated) {
+            const authTk = process.env.AUTH_TOKEN;
+            if (authTk) {
+                const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authTk)}`;
+                truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
+            }
+        }
+        handoffBugDescHtml = `
     <!-- Bug description -->
     <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #2563eb;border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What's The Bug</p>
       <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;overflow-wrap:break-word;white-space:pre-line;">${safeDesc}</p>
       ${truncNote}
     </div>`;
-    handoffScreenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
-    handoffDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
-  }
-
-  // Comment + Fix Locally button URLs
-  const authToken = process.env.AUTH_TOKEN;
-  let commentButtonHtml = "";
-  let fixLocallyButtonHtml = "";
-  if (authToken) {
-    const encodedToken = encodeURIComponent(authToken);
-    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    commentButtonHtml = `<a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Provide Guidance</a>`;
-    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
-  }
-
-  return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+        handoffScreenshotsHtml = buildScreenshotsHtml(prepared.screenshotUrls);
+        handoffDeviceInfoHtml = buildDeviceInfoHtml(prepared.deviceInfo);
+    }
+    // Comment + Fix Locally button URLs
+    const authToken = process.env.AUTH_TOKEN;
+    let commentButtonHtml = "";
+    let fixLocallyButtonHtml = "";
+    if (authToken) {
+        const encodedToken = encodeURIComponent(authToken);
+        const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        commentButtonHtml = `<a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Provide Guidance</a>`;
+        const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+        fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
+    }
+    return `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
   <!-- Header -->
   <div style="background:#d97706;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
     <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
@@ -871,53 +754,48 @@ export function buildHandoffEmailHtml(input: HandoffEmailInput): string {
   </div>
 </div>`;
 }
-
 /**
  * Send a handoff notification email when the pipeline exhausts all fix attempts.
  *
  * Fire-and-forget: catches all errors so the pipeline can continue cleanly.
  */
-export async function sendHandoffEmail(
-  input: HandoffEmailInput,
-): Promise<void> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const ownerEmail = process.env.OWNER_EMAIL;
-
-  if (!apiKey) {
-    console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping handoff email");
-    return;
-  }
-  if (!ownerEmail) {
-    console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping handoff email");
-    return;
-  }
-
-  const subject = `Handoff: #${input.issueNumber} — Pipeline needs your help`;
-  const html = buildHandoffEmailHtml(input);
-
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
-        to: [ownerEmail],
-        subject,
-        html,
-      }),
-    });
-
-    if (response.ok) {
-      console.log("[notification] Handoff email sent for issue #" + input.issueNumber);
-    } else {
-      const errorText = await response.text();
-      console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+export async function sendHandoffEmail(input) {
+    const apiKey = process.env.RESEND_API_KEY;
+    const ownerEmail = process.env.OWNER_EMAIL;
+    if (!apiKey) {
+        console.log("[notification] WARNING: RESEND_API_KEY not configured — skipping handoff email");
+        return;
     }
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error("[notification] Failed to send handoff email: " + errMsg);
-  }
+    if (!ownerEmail) {
+        console.log("[notification] WARNING: OWNER_EMAIL not configured — skipping handoff email");
+        return;
+    }
+    const subject = `Handoff: #${input.issueNumber} — Pipeline needs your help`;
+    const html = buildHandoffEmailHtml(input);
+    try {
+        const response = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                from: "SortingHistory Pipeline <bugs@sortinghistory.com>",
+                to: [ownerEmail],
+                subject,
+                html,
+            }),
+        });
+        if (response.ok) {
+            console.log("[notification] Handoff email sent for issue #" + input.issueNumber);
+        }
+        else {
+            const errorText = await response.text();
+            console.error("[notification] Resend API error (" + response.status + "): " + errorText);
+        }
+    }
+    catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error("[notification] Failed to send handoff email: " + errMsg);
+    }
 }
