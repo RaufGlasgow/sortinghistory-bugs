@@ -32,7 +32,7 @@ Three specific failures from real usage (PR #165 fixing issue #163):
 
 **US-3:** As the pipeline owner, I want to see the original bug description in the email alongside the fix, so I can judge whether the fix actually addresses the reported problem.
 
-**US-4:** As the pipeline owner, I want an "Approve & Deploy" button in the email that merges the PR, builds the app, uploads to TestFlight, and emails me the build version, so I can test the fix on my phone without touching GitHub or a terminal.
+**US-4:** As the pipeline owner, I want a "Review" button that builds and uploads to TestFlight (Empty Cup only) so I can test the fix on my phone, and then an "Approve" button to merge to main once I've confirmed the fix is correct — all from the same email without touching GitHub or a terminal.
 
 **US-5:** As the pipeline owner, I want the version bump to use the correct version prefix (`beta.XX` not `alpha.XX`), so that version clobbering is impossible.
 
@@ -59,41 +59,58 @@ Three specific failures from real usage (PR #165 fixing issue #163):
 
 **AC-6:** The version string row in the details table now shows the full version (e.g., `1.1.0-beta.21`) instead of just the alpha number. If the diff contains a SettingsView.swift change that modifies the version string, this is highlighted with a yellow background in the diff to draw attention.
 
-### Part B: Approve & Deploy Flow
+### Part B: Review → Test → Approve/Rework/Reject Flow (Single Email)
 
-**AC-7:** The "Review PR" button is replaced with an "Approve & Deploy" button. Clicking it opens a confirmation page on `sortinghistory.com/api/pipeline/approve-deploy` (served by the Cloudflare Worker) showing: issue number, PR number, fix summary (first 200 chars), and a "Confirm: Merge & Deploy to TestFlight" button.
+The PR email contains FOUR buttons. All actions happen from this one email — no stages, no second email.
 
-**AC-8:** On confirmation (POST), the worker dispatches a `repository_dispatch` event of type `approve-deploy` to `sortinghistory-bugs`, with payload: `{ pr_number, issue_number, head_branch }`.
+**Buttons (in order):**
+1. **Review** → builds the app and uploads to TestFlight (Empty Cup internal group only) so the owner can test the fix on device
+2. **Approve** → merges the PR to main (fix confirmed good after device testing)
+3. **Rework** → closes the PR and re-triggers the fix pipeline (fix needs changes)
+4. **Reject** → closes the PR and kills the issue (fix not wanted)
 
-**AC-9:** A new GitHub Actions workflow `approve-and-deploy.yml` in `sortinghistory-bugs` handles the `approve-deploy` dispatch. It runs on `macos-14` and performs these steps in order:
-1. Checkout private repo with full history
-2. Rebase fix branch against main (reuse logic from `rebase-and-merge.yml`)
-3. If conflict: abort, email owner with conflict details, stop
-4. Force-push rebased branch, squash-merge PR
-5. Checkout the merged main
-6. Read `NEXT_ALPHA_VERSION`, bump version in SettingsView.swift, commit, push
-7. Archive the app (`xcodebuild archive`)
-8. Export IPA (`xcodebuild -exportArchive`)
-9. Upload to App Store Connect (`xcrun altool --upload-app` or `xcodebuild -exportArchive` with App Store Connect API key)
-10. Send confirmation email with build version
+**Typical flow:** Owner reads diff in email → clicks Review → gets TestFlight build → tests on phone → comes back to same email → clicks Approve (good), Rework (not quite right), or Reject (don't want it).
 
-**AC-10:** The workflow uses the App Store Connect API key already stored in the private repo (referenced in `memory/reference_appstore_api_key.md`). The key is passed to the runner via secrets: `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY` (base64-encoded `.p8` file).
+**AC-7:** The PR email has four action buttons: Review (green), Approve (blue), Rework (amber), Reject (red). The existing "Fix Locally" button remains as a fifth option (gray).
 
-**AC-11:** The TestFlight upload targets the "Empty Cup" internal testing group. The `ExportOptions.plist` used for `xcodebuild -exportArchive` specifies `method: app-store` and `uploadBitcode: false`.
+**AC-8:** The **Review** button opens a confirmation page on `sortinghistory.com/api/pipeline/review-build` showing: issue number, PR number, fix summary preview, and a "Confirm: Build & Send to TestFlight" button. This does NOT merge the PR.
 
-**AC-12:** After successful TestFlight upload, the workflow sends a confirmation email via Resend with:
-- Green header: "Build Deployed to TestFlight"
+**AC-9:** On confirmation (POST), the worker dispatches a `repository_dispatch` event of type `review-build` to `sortinghistory-bugs`, with payload: `{ pr_number, issue_number, head_branch }`.
+
+**AC-10:** A new GitHub Actions workflow `review-build.yml` in `sortinghistory-bugs` handles the `review-build` dispatch. It runs on `macos-14` and performs these steps in order:
+1. Checkout private repo at the fix branch (NOT main — the PR is not merged yet)
+2. Read `NEXT_BUILD_NUMBER`, bump version in SettingsView.swift (temporary, for this build only)
+3. Archive the app (`xcodebuild archive`)
+4. Export IPA (`xcodebuild -exportArchive`)
+5. Upload to App Store Connect — targeting **Empty Cup internal testing group ONLY** (not Friends & Family, not public)
+6. Send confirmation email with build version
+7. Do NOT merge the PR. Do NOT push the version bump. The PR branch is unchanged.
+
+**AC-11:** The workflow uses the App Store Connect API key already stored in the private repo (referenced in `memory/reference_appstore_api_key.md`). The key is passed to the runner via secrets: `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY` (base64-encoded `.p8` file).
+
+**AC-12:** The TestFlight upload targets the **"Empty Cup" internal testing group ONLY**. The `ExportOptions.plist` used for `xcodebuild -exportArchive` specifies `method: app-store` and `uploadBitcode: false`. The build MUST NOT be visible to Friends & Family or any external testers.
+
+**AC-13:** After successful TestFlight upload, the workflow sends a confirmation email via Resend with:
+- Green header: "TestFlight Build Ready for Review"
 - Build version: `1.1.0-beta.XX`
 - Issue number and title
 - PR number
 - Estimated availability: "~15-30 minutes for TestFlight processing"
-- A direct link: `https://testflight.apple.com/join/{GROUP_LINK}` (if known) or instruction to open TestFlight app
+- Reminder: "Come back to the original PR email to Approve, Rework, or Reject after testing."
 
-**AC-13:** After successful TestFlight upload, the workflow adds the label `deployed-to-testflight` to the issue and posts a comment: "Build `1.1.0-beta.XX` uploaded to TestFlight. Available for testing in ~15-30 minutes."
+**AC-14:** After successful TestFlight upload, the workflow adds the label `review-build-sent` to the issue and posts a comment: "Review build `1.1.0-beta.XX` uploaded to TestFlight (Empty Cup only). Test on device, then Approve/Rework/Reject from the PR email."
 
-**AC-14:** If the build or upload fails, the workflow sends a failure email with the error details and a "View Workflow Run" button. The PR remains merged (the code is on main), but the owner knows the build failed and can investigate.
+**AC-15:** The **Approve** button opens a confirmation page on `sortinghistory.com/api/pipeline/approve-merge`. On confirmation, it:
+1. Rebases the fix branch against main
+2. If conflict: abort, email owner with conflict details, stop
+3. Squash-merges the PR to main
+4. Bumps version with `NEXT_BUILD_NUMBER` (permanent this time), commits, pushes
+5. Closes the issue with label `fixed`
+6. Sends confirmation email: "Fix merged to main. Build `1.1.0-beta.XX` is the production version."
 
-**AC-15:** The "Reject Fix" and "Fix Locally" buttons remain in the email unchanged.
+**AC-16:** If the build or upload fails during Review, the workflow sends a failure email with the error details and a "View Workflow Run" button. The PR remains open and unmerged.
+
+**AC-17:** The **Rework** and **Reject** buttons work exactly as they do today (close PR, re-trigger or kill).
 
 ### Part C: Version Bump Fix
 
@@ -182,54 +199,80 @@ Email section order (updated):
 5. **NEW: "Code Changes"** (rendered diff)
 6. QA Review (existing)
 7. Details table (compilation, confidence, version — now full string)
-8. Action buttons: **"Approve & Deploy"**, "Reject Fix", "Fix Locally"
+8. Action buttons: **"Review"** (TestFlight build), **"Approve"** (merge to main), **"Rework"**, **"Reject"**, "Fix Locally"
 
-### 4. Approve & Deploy Endpoint (Cloudflare Worker)
+### 4. Review-Build Endpoint (Cloudflare Worker)
 
-Add `/api/pipeline/approve-deploy` to the worker's router in `index.ts`:
+Add `/api/pipeline/review-build` to the worker's router in `index.ts`:
 
-- **GET:** Confirmation page showing issue number, PR number, fix summary preview, and "Confirm: Merge & Deploy to TestFlight" button
-- **POST:** Validate auth token, KV idempotency check (`approve-deploy:{issueNum}`), find PR via `getPRForIssue()`, dispatch `approve-deploy` repository event to bugs repo
+- **GET:** Confirmation page showing issue number, PR number, fix summary preview, and "Confirm: Build & Send to TestFlight" button
+- **POST:** Validate auth token, KV idempotency check (`review-build:{issueNum}`), dispatch `review-build` repository event to bugs repo with `{ pr_number, issue_number, head_branch }`
 
-Reuse existing patterns from `handleMerge()` — the logic is nearly identical but dispatches a different event type.
+Add `/api/pipeline/approve-merge` to the worker's router:
 
-### 5. Approve-and-Deploy Workflow (`approve-and-deploy.yml`)
+- **GET:** Confirmation page showing issue number, PR number, and "Confirm: Merge to Main" button
+- **POST:** Validate auth token, dispatch `approve-merge` repository event to bugs repo with `{ pr_number, issue_number }`
+
+Reuse existing patterns from `handleMerge()` and `handlePipelineRedo()`.
+
+### 5. Review-Build Workflow (`review-build.yml`)
 
 ```
 on:
   repository_dispatch:
-    types: [approve-deploy]
+    types: [review-build]
 
 jobs:
-  merge-build-deploy:
+  build-for-review:
     runs-on: macos-14
     timeout-minutes: 30
     steps:
-      # Phase 1: Rebase & Merge (reuse from rebase-and-merge.yml)
-      - Checkout private repo
-      - Rebase fix branch against main
-      - Handle conflicts (email + abort)
-      - Force-push + squash merge
+      # Phase 1: Checkout fix branch (NOT main — PR not merged)
+      - Checkout private repo at fix branch
+      - Temporary version bump (not committed/pushed)
 
       # Phase 2: Build
-      - Checkout merged main
       - Select Xcode 16.2
-      - Bump version (centralized, with beta prefix fix)
-      - Commit version bump
       - xcodebuild archive (signed, provisioning profile from secrets)
       - xcodebuild -exportArchive (ExportOptions.plist for app-store)
 
-      # Phase 3: Upload
-      - Upload to App Store Connect via xcrun altool or API key auth
-      - Wait for processing acknowledgment
+      # Phase 3: Upload to Empty Cup ONLY
+      - Upload to App Store Connect via API key auth
+      - Target: Empty Cup internal testing group ONLY
 
       # Phase 4: Notify
-      - Send success email (build version, TestFlight availability)
-      - Label issue deployed-to-testflight
+      - Send success email (build version, TestFlight availability, "come back to PR email to Approve/Rework/Reject")
+      - Label issue review-build-sent
       - Post issue comment with build version
 
       # Failure handling
       - Send failure email with error details
+```
+
+### 5b. Approve-Merge Workflow (`approve-merge.yml`)
+
+```
+on:
+  repository_dispatch:
+    types: [approve-merge]
+
+jobs:
+  merge-to-main:
+    runs-on: ubuntu-latest
+    steps:
+      # Phase 1: Rebase & Merge
+      - Rebase fix branch against main
+      - Handle conflicts (email + abort)
+      - Squash merge PR
+
+      # Phase 2: Version bump (permanent)
+      - Read NEXT_BUILD_NUMBER
+      - Bump version in SettingsView.swift
+      - Commit + push
+
+      # Phase 3: Notify
+      - Close issue with label "fixed"
+      - Send confirmation email
 ```
 
 ### 6. Version Bump Fix (`bump-version.sh`)
