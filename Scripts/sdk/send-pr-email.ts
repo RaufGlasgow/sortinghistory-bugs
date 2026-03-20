@@ -7,7 +7,7 @@
  * Required env vars: RESEND_API_KEY, OWNER_EMAIL
  * Required env vars (data): PR_URL, PR_NUMBER, ISSUE_NUMBER, ISSUE_TITLE,
  *   FILES_MODIFIED, COMPILATION, CONFIDENCE, FIX_ATTEMPTS, PIPELINE_MODE
- * Optional env vars: AUTH_TOKEN (for reject button), ALPHA_VERSION,
+ * Optional env vars: AUTH_TOKEN (for reject button), BUILD_NUMBER,
  *   ISSUE_BODY_FILE (path to file with issue body), QA_SUMMARY_FILE (path to QA summary)
  */
 
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     compilation: process.env.COMPILATION || "unknown",
     confidence: process.env.CONFIDENCE || "unknown",
     fixAttempts: parseInt(process.env.FIX_ATTEMPTS || "1", 10),
-    alphaVersion: process.env.ALPHA_VERSION || undefined,
+    buildNumber: process.env.BUILD_NUMBER || undefined,
     pipelineMode: process.env.PIPELINE_MODE || "full",
     issueBody: readFileSafe(process.env.ISSUE_BODY_FILE),
     qaSummary: readFileSafe(process.env.QA_SUMMARY_FILE),

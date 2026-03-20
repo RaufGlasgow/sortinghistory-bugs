@@ -2384,7 +2384,7 @@ async function applyModification(mod, modIndex = 1, totalMods = 1) {
 }
 
 /**
- * Read the NEXT_ALPHA_VERSION GitHub Actions variable from the private repo.
+ * Read the NEXT_BUILD_NUMBER GitHub Actions variable from the private repo.
  * Uses the GitHub REST API: GET /repos/{owner}/{repo}/actions/variables/{name}
  *
  * Returns { success: true, value: "N" } on success,
@@ -2392,7 +2392,7 @@ async function applyModification(mod, modIndex = 1, totalMods = 1) {
  */
 async function getNextVersionFromVariable() {
   try {
-    const url = `https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/NEXT_ALPHA_VERSION`;
+    const url = `https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/NEXT_BUILD_NUMBER`;
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -2412,11 +2412,11 @@ async function getNextVersionFromVariable() {
     const value = data.value;
 
     if (!value || isNaN(parseInt(value))) {
-      console.warn(`GitHub variable NEXT_ALPHA_VERSION has invalid value: "${value}"`);
+      console.warn(`GitHub variable NEXT_BUILD_NUMBER has invalid value: "${value}"`);
       return { success: false };
     }
 
-    console.log(`Read NEXT_ALPHA_VERSION from GitHub: ${value}`);
+    console.log(`Read NEXT_BUILD_NUMBER from GitHub: ${value}`);
     return { success: true, value: value };
   } catch (e) {
     console.warn(`GitHub variable read error: ${e.message}`);
@@ -2425,7 +2425,7 @@ async function getNextVersionFromVariable() {
 }
 
 /**
- * Update the NEXT_ALPHA_VERSION GitHub Actions variable on the private repo.
+ * Update the NEXT_BUILD_NUMBER GitHub Actions variable on the private repo.
  * Uses the GitHub REST API: PATCH /repos/{owner}/{repo}/actions/variables/{name}
  *
  * @param {string} newValue - The new value to set (e.g., "135")
@@ -2433,7 +2433,7 @@ async function getNextVersionFromVariable() {
  */
 async function setVersionVariable(newValue) {
   try {
-    const url = `https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/NEXT_ALPHA_VERSION`;
+    const url = `https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/variables/NEXT_BUILD_NUMBER`;
     const response = await fetch(url, {
       method: 'PATCH',
       headers: {
@@ -2444,7 +2444,7 @@ async function setVersionVariable(newValue) {
         'X-GitHub-Api-Version': '2022-11-28',
       },
       body: JSON.stringify({
-        name: 'NEXT_ALPHA_VERSION',
+        name: 'NEXT_BUILD_NUMBER',
         value: String(newValue),
       }),
     });
@@ -2454,7 +2454,7 @@ async function setVersionVariable(newValue) {
       return false;
     }
 
-    console.log(`Updated NEXT_ALPHA_VERSION to ${newValue}`);
+    console.log(`Updated NEXT_BUILD_NUMBER to ${newValue}`);
     return true;
   } catch (e) {
     console.error(`GitHub variable update error: ${e.message}`);
@@ -2465,7 +2465,7 @@ async function setVersionVariable(newValue) {
 /**
  * Update version string in SettingsView.swift.
  *
- * Primary approach: Reads the centralized NEXT_ALPHA_VERSION GitHub Actions
+ * Primary approach: Reads the centralized NEXT_BUILD_NUMBER GitHub Actions
  * variable from the private repo, uses it as the alpha suffix, writes it to
  * SettingsView.swift, then increments the variable for the next pipeline run.
  * This prevents version collisions across branches.
@@ -2506,7 +2506,7 @@ async function updateVersionString() {
     const nextValue = newAlpha + 1;
     const writeSuccess = await setVersionVariable(String(nextValue));
     if (!writeSuccess) {
-      console.warn(`Warning: Version ${newAlpha} was used but NEXT_ALPHA_VERSION was not incremented to ${nextValue}. Next run may reuse this version.`);
+      console.warn(`Warning: Version ${newAlpha} was used but NEXT_BUILD_NUMBER was not incremented to ${nextValue}. Next run may reuse this version.`);
     }
     return;
   }

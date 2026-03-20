@@ -3,7 +3,7 @@ set -euo pipefail
 
 # bump-version.sh — Centralized version bump for SortingHistory pipelines
 #
-# Reads NEXT_ALPHA_VERSION from the private repo GitHub variable,
+# Reads NEXT_BUILD_NUMBER from the private repo GitHub variable,
 # updates SettingsView.swift with the new version number, and
 # increments the variable for the next pipeline run.
 #
@@ -18,7 +18,7 @@ set -euo pipefail
 #   bash Scripts/bump-version.sh
 #
 # Outputs (for GitHub Actions):
-#   ALPHA_VERSION — the version number used (written to GITHUB_OUTPUT)
+#   BUILD_NUMBER — the version number used (written to GITHUB_OUTPUT)
 
 REPO="RaufGlasgow/Sorting-History"
 
@@ -30,9 +30,9 @@ if [ -z "${GH_TOKEN:-}" ]; then
   exit 1
 fi
 
-# ── Step 1: Read NEXT_ALPHA_VERSION ───────────────────────────────────
-CURRENT=$(gh variable get NEXT_ALPHA_VERSION --repo "$REPO" 2>&1) || {
-  echo "ERROR: Failed to read NEXT_ALPHA_VERSION from $REPO"
+# ── Step 1: Read NEXT_BUILD_NUMBER ───────────────────────────────────
+CURRENT=$(gh variable get NEXT_BUILD_NUMBER --repo "$REPO" 2>&1) || {
+  echo "ERROR: Failed to read NEXT_BUILD_NUMBER from $REPO"
   echo "Ensure GH_TOKEN is set with repo scope (not GITHUB_TOKEN)"
   echo "Raw output: $CURRENT"
   exit 1
@@ -40,11 +40,11 @@ CURRENT=$(gh variable get NEXT_ALPHA_VERSION --repo "$REPO" 2>&1) || {
 
 # Validate it's a number
 if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
-  echo "ERROR: NEXT_ALPHA_VERSION is not a number: '$CURRENT'"
+  echo "ERROR: NEXT_BUILD_NUMBER is not a number: '$CURRENT'"
   exit 1
 fi
 
-echo "Read NEXT_ALPHA_VERSION: $CURRENT"
+echo "Read NEXT_BUILD_NUMBER: $CURRENT"
 
 # ── Step 2: Find and update SettingsView.swift ────────────────────────
 SETTINGS_FILE="${GAME_REPO_PATH:-game-code}/Views/SettingsView.swift"
@@ -85,12 +85,12 @@ echo "Updated SettingsView.swift to 1.1.0-${PREFIX}.${CURRENT}"
 
 # ── Step 3: Increment variable for next use ───────────────────────────
 NEXT=$((CURRENT + 1))
-gh variable set NEXT_ALPHA_VERSION --repo "$REPO" --body "$NEXT"
+gh variable set NEXT_BUILD_NUMBER --repo "$REPO" --body "$NEXT"
 
-echo "NEXT_ALPHA_VERSION set to ${NEXT}"
+echo "NEXT_BUILD_NUMBER set to ${NEXT}"
 echo "Version bumped to 1.1.0-${PREFIX}.${CURRENT}"
 
 # ── Export for workflow use ────────────────────────────────────────────
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "ALPHA_VERSION=${CURRENT}" >> "$GITHUB_OUTPUT"
+  echo "BUILD_NUMBER=${CURRENT}" >> "$GITHUB_OUTPUT"
 fi

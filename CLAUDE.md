@@ -78,9 +78,9 @@ The SDK runs in CI with `working-directory: Scripts/sdk`. This means `process.cw
 - JSON validation runs before and after every file modification
 
 ## Version Variable
-`NEXT_ALPHA_VERSION` on `RaufGlasgow/Sorting-History` — check before claiming any version number:
+`NEXT_BUILD_NUMBER` on `RaufGlasgow/Sorting-History` — check before claiming any version number:
 ```bash
-gh variable get NEXT_ALPHA_VERSION --repo RaufGlasgow/Sorting-History
+gh variable get NEXT_BUILD_NUMBER --repo RaufGlasgow/Sorting-History
 ```
 
 ## Secrets

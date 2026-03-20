@@ -78,7 +78,7 @@ export interface PRCreatedEmailInput {
     compilation: string;
     confidence: string;
     fixAttempts: number;
-    alphaVersion?: string;
+    buildNumber?: string;
     pipelineMode: string;
     /** Original issue body — displayed as "What's the bug" in the email */
     issueBody?: string;

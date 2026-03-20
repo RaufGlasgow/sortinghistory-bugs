@@ -477,8 +477,8 @@ export function buildPRCreatedEmailHtml(input) {
         const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
         fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
     }
-    const versionHtml = input.alphaVersion
-        ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Test Version</td><td style="padding:8px 12px;font-size:14px;color:#333333;">1.1.0-beta.${escapeHtml(input.alphaVersion)}</td></tr>`
+    const versionHtml = input.buildNumber
+        ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Build Number</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${escapeHtml(input.buildNumber)}</td></tr>`
         : "";
     const retryHtml = input.fixAttempts > 1
         ? `<tr><td style="padding:8px 12px;font-weight:600;color:#166534;font-size:13px;">Fix Attempts</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${input.fixAttempts} (with model escalation)</td></tr>`

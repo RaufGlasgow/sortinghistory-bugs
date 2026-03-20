@@ -275,7 +275,7 @@ describe("sendPRCreatedEmail", () => {
       compilation: "success",
       confidence: "high",
       fixAttempts: 2,
-      alphaVersion: "207",
+      buildNumber: "207",
       pipelineMode: "full",
     });
   });

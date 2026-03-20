@@ -406,7 +406,7 @@ jobs:
 
       # PV2-4.4 AC10: Fix git add -A bug — use safe git add pattern for version bump amend
       - name: Amend commit with version bump
-        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.bump-version.outputs.ALPHA_VERSION != ''
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full' && steps.bump-version.outputs.BUILD_NUMBER != ''
         working-directory: game-repo
         run: |
           # Stage only files with allowed extensions (same pattern as Commit step)
@@ -481,7 +481,7 @@ jobs:
           CONFIDENCE="${{ steps.fix.outputs.confidence }}"
           FILES_MODIFIED="${{ steps.fix.outputs.files_modified }}"
           FIX_ATTEMPTS="${{ steps.fix.outputs.fix_attempts }}"
-          ALPHA_VERSION="${{ steps.bump-version.outputs.ALPHA_VERSION }}"
+          BUILD_NUMBER="${{ steps.bump-version.outputs.BUILD_NUMBER }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           QA_SUMMARY_FILE="${{ github.workspace }}/qa-summary.md"
           MODE="${{ env.PIPELINE_MODE }}"
@@ -554,9 +554,9 @@ jobs:
               echo ""
             fi
 
-            if [ "$MODE" = "full" ] && [ -n "$ALPHA_VERSION" ]; then
+            if [ "$MODE" = "full" ] && [ -n "$BUILD_NUMBER" ]; then
               echo "### How to Test"
-              echo "1. Install build version **1.1.0-alpha.${ALPHA_VERSION}** on device or simulator"
+              echo "1. Install the build with the fix and verify issue #${ISSUE_NUM} is resolved"
               echo "2. Navigate to the area affected by issue #${ISSUE_NUM}"
               echo "3. Verify the bug is fixed"
               echo "4. Check for regressions in related functionality"
@@ -728,7 +728,7 @@ jobs:
           COMPILATION: ${{ steps.fix.outputs.compilation }}
           CONFIDENCE: ${{ steps.fix.outputs.confidence }}
           FIX_ATTEMPTS: ${{ steps.fix.outputs.fix_attempts }}
-          ALPHA_VERSION: ${{ steps.bump-version.outputs.ALPHA_VERSION }}
+          BUILD_NUMBER: ${{ steps.bump-version.outputs.BUILD_NUMBER }}
           PIPELINE_MODE: ${{ env.PIPELINE_MODE }}
           ISSUE_BODY_FILE: /tmp/issue-body.txt
           QA_SUMMARY_FILE: /tmp/qa-summary-email.txt
