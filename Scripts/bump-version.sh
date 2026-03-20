@@ -55,29 +55,40 @@ if [ ! -f "$SETTINGS_FILE" ]; then
   exit 1
 fi
 
-# Use regex pattern match, NOT line numbers (line numbers shift)
-# Handle both macOS (BSD sed) and Linux (GNU sed)
-if [[ "${OSTYPE:-}" == darwin* ]]; then
-  sed -i '' "s/1\.1\.0-alpha\.[0-9][0-9]*/1.1.0-alpha.${CURRENT}/" "$SETTINGS_FILE"
-else
-  sed -i "s/1\.1\.0-alpha\.[0-9][0-9]*/1.1.0-alpha.${CURRENT}/" "$SETTINGS_FILE"
-fi
-
-# Verify the replacement happened
-if ! grep -q "1.1.0-alpha.${CURRENT}" "$SETTINGS_FILE"; then
-  echo "ERROR: Version replacement failed in $SETTINGS_FILE"
-  echo "Expected to find '1.1.0-alpha.${CURRENT}' after sed replacement."
+# Detect current prefix (alpha or beta) from the existing version string
+EXISTING_VERSION=$(grep -oE '1\.1\.0-(alpha|beta)\.[0-9]+' "$SETTINGS_FILE" | head -1)
+if [ -z "$EXISTING_VERSION" ]; then
+  echo "ERROR: Could not detect existing version pattern (1.1.0-alpha.N or 1.1.0-beta.N) in $SETTINGS_FILE"
   exit 1
 fi
 
-echo "Updated SettingsView.swift to 1.1.0-alpha.${CURRENT}"
+# Extract the prefix (alpha or beta)
+PREFIX=$(echo "$EXISTING_VERSION" | grep -oE '(alpha|beta)')
+echo "Detected version prefix: $PREFIX (from $EXISTING_VERSION)"
+
+# Replace version, preserving detected prefix
+# Handle both macOS (BSD sed) and Linux (GNU sed)
+if [[ "${OSTYPE:-}" == darwin* ]]; then
+  sed -i '' "s/1\.1\.0-\(alpha\|beta\)\.[0-9][0-9]*/1.1.0-${PREFIX}.${CURRENT}/" "$SETTINGS_FILE"
+else
+  sed -i "s/1\.1\.0-\(alpha\|beta\)\.[0-9][0-9]*/1.1.0-${PREFIX}.${CURRENT}/" "$SETTINGS_FILE"
+fi
+
+# Verify the replacement happened
+if ! grep -q "1.1.0-${PREFIX}.${CURRENT}" "$SETTINGS_FILE"; then
+  echo "ERROR: Version replacement failed in $SETTINGS_FILE"
+  echo "Expected to find '1.1.0-${PREFIX}.${CURRENT}' after sed replacement."
+  exit 1
+fi
+
+echo "Updated SettingsView.swift to 1.1.0-${PREFIX}.${CURRENT}"
 
 # ── Step 3: Increment variable for next use ───────────────────────────
 NEXT=$((CURRENT + 1))
 gh variable set NEXT_ALPHA_VERSION --repo "$REPO" --body "$NEXT"
 
 echo "NEXT_ALPHA_VERSION set to ${NEXT}"
-echo "Version bumped to 1.1.0-alpha.${CURRENT}"
+echo "Version bumped to 1.1.0-${PREFIX}.${CURRENT}"
 
 # ── Export for workflow use ────────────────────────────────────────────
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

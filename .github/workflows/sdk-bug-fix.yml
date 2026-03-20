@@ -151,6 +151,27 @@ jobs:
           git checkout "$BRANCH"
           echo "Checked out existing fix branch: $BRANCH"
 
+      # ── Capture version before subagent (defense against version clobbering) ──
+
+      - name: Capture version string before subagent
+        id: pre-version
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
+        working-directory: game-repo
+        run: |
+          VERSION_LINE=$(grep -n '1\.1\.0-\(alpha\|beta\)\.[0-9]' Views/SettingsView.swift | head -1)
+          if [ -n "$VERSION_LINE" ]; then
+            LINE_NUM=$(echo "$VERSION_LINE" | cut -d: -f1)
+            LINE_CONTENT=$(echo "$VERSION_LINE" | cut -d: -f2-)
+            echo "line_num=$LINE_NUM" >> $GITHUB_OUTPUT
+            echo "line_content<<EOF" >> $GITHUB_OUTPUT
+            echo "$LINE_CONTENT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "Captured version line $LINE_NUM: $LINE_CONTENT"
+          else
+            echo "WARNING: Could not find version string in SettingsView.swift"
+            echo "line_num=" >> $GITHUB_OUTPUT
+          fi
+
       # ── Run SDK orchestrator ──
 
       - name: Run SDK bug-fix subagent with QA gate
@@ -219,6 +240,34 @@ jobs:
 
           exit $EXIT_CODE
         continue-on-error: true
+
+      # ── Defense: revert version string if subagent clobbered it ──
+
+      - name: Revert version string if subagent clobbered it
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.pre-version.outputs.line_num != ''
+        working-directory: game-repo
+        run: |
+          PRE_LINE="${{ steps.pre-version.outputs.line_content }}"
+          LINE_NUM="${{ steps.pre-version.outputs.line_num }}"
+          SETTINGS_FILE="Views/SettingsView.swift"
+
+          CURRENT_LINE=$(sed -n "${LINE_NUM}p" "$SETTINGS_FILE")
+
+          if [ "$CURRENT_LINE" != "$PRE_LINE" ]; then
+            echo "WARNING: Subagent modified version string!"
+            echo "  Before: $PRE_LINE"
+            echo "  After:  $CURRENT_LINE"
+            echo "Reverting to pre-subagent version..."
+            if [[ "${OSTYPE:-}" == darwin* ]]; then
+              sed -i '' "${LINE_NUM}s|.*|${PRE_LINE}|" "$SETTINGS_FILE"
+            else
+              sed -i "${LINE_NUM}s|.*|${PRE_LINE}|" "$SETTINGS_FILE"
+            fi
+            REVERTED=$(sed -n "${LINE_NUM}p" "$SETTINGS_FILE")
+            echo "Reverted to: $REVERTED"
+          else
+            echo "Version string unchanged by subagent (good)"
+          fi
 
       # ── Full mode: check for changes, commit, version bump ──
 
