@@ -283,6 +283,9 @@ jobs:
                 ACTUAL_BEHAVIOR=""
               fi
 
+              # Extract screenshot URL from bug report body
+              SCREENSHOT_URL=$(echo "$BODY" | grep -oE 'https://[^)]+/screenshots/BUG-[A-Z0-9-]+\.png' | head -1)
+
               # Extract severity and type from issue labels
               SEVERITY=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(startswith("P"))] | first // "Unknown"')
               TYPE=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name | select(. != "from-app" and . != "needs-human-review" and . != "needs-triage" and . != "needs-review" and (startswith("P") | not))] | first // "Unknown"')
@@ -362,6 +365,9 @@ jobs:
                 CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
                 if [ -n "$SAFE_ACTUAL" ]; then
                   CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+                fi
+                if [ -n "$SCREENSHOT_URL" ]; then
+                  CARD="${CARD}<div style=\"margin:0 0 12px 0;\"><img src=\"${SCREENSHOT_URL}\" alt=\"Bug screenshot\" style=\"max-width:300px;border-radius:8px;border:1px solid #ddd;\"></div>"
                 fi
                 CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:13px;color:#666;\">Filed: ${SAFE_DATE} | Labels: $(html_escape "$ALL_LABELS")</p>"
 
@@ -491,6 +497,9 @@ jobs:
                 if [ -n "$SAFE_ACTUAL" ]; then
                   CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
                 fi
+                if [ -n "$SCREENSHOT_URL" ]; then
+                  CARD="${CARD}<div style=\"margin:0 0 12px 0;\"><img src=\"${SCREENSHOT_URL}\" alt=\"Bug screenshot\" style=\"max-width:300px;border-radius:8px;border:1px solid #ddd;\"></div>"
+                fi
                 CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
                 CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
                 CARD="${CARD}<p style=\"margin:0 0 12px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_ANALYSIS}</p>"
@@ -522,6 +531,9 @@ jobs:
                 CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
                 if [ -n "$SAFE_ACTUAL" ]; then
                   CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
+                fi
+                if [ -n "$SCREENSHOT_URL" ]; then
+                  CARD="${CARD}<div style=\"margin:0 0 12px 0;\"><img src=\"${SCREENSHOT_URL}\" alt=\"Bug screenshot\" style=\"max-width:300px;border-radius:8px;border:1px solid #ddd;\"></div>"
                 fi
                 CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#666;\">Severity: ${SAFE_SEVERITY} | Type: ${SAFE_TYPE} | Filed: ${SAFE_DATE}</p>"
                 CARD="${CARD}<p style=\"margin:0 0 4px 0;font-size:13px;font-weight:bold;color:#333;\">ANALYSIS:</p>"
