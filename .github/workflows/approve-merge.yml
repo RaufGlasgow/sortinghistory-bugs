@@ -1,0 +1,415 @@
+# PIPE-011 AC-15: Approve Merge — rebase, merge PR, bump version, close issue
+# Triggered by Cloudflare Worker -> repository_dispatch
+#
+# Flow:
+#   1. Checkout private repo with full history
+#   2. Find and verify the PR
+#   3. Rebase fix branch against main
+#   4. Squash merge the PR
+#   5. Bump version permanently with NEXT_BUILD_NUMBER, commit, push
+#   6. Close issue with label 'fixed'
+#   7. Send confirmation email
+
+name: Approve and Merge
+
+on:
+  repository_dispatch:
+    types: [approve-merge]
+
+concurrency:
+  group: approve-merge-main
+  cancel-in-progress: false
+
+jobs:
+  merge-to-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PRIVATE_REPO: RaufGlasgow/Sorting-History
+      BUGS_REPO: RaufGlasgow/sortinghistory-bugs
+      GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+
+    steps:
+      - name: Extract payload
+        id: payload
+        run: |
+          ISSUE_NUMBER="${{ github.event.client_payload.issue_number }}"
+          PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+          HEAD_BRANCH="${{ github.event.client_payload.head_branch }}"
+
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "Approve-merge for PR #${PR_NUMBER} (issue #${ISSUE_NUMBER}), branch: ${HEAD_BRANCH}"
+
+      - name: Check PR state
+        id: check
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_JSON=$(gh api "repos/${PRIVATE_REPO}/pulls/${PR_NUMBER}" 2>/dev/null || echo '{"state":"error"}')
+          PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "error"')
+          PR_MERGED=$(echo "$PR_JSON" | jq -r '.merged // false')
+          PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // "Unknown"')
+
+          echo "pr_state=${PR_STATE}" >> "$GITHUB_OUTPUT"
+          echo "pr_merged=${PR_MERGED}" >> "$GITHUB_OUTPUT"
+          echo "pr_title=${PR_TITLE}" >> "$GITHUB_OUTPUT"
+
+          if [ "$PR_MERGED" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=already merged" >> "$GITHUB_OUTPUT"
+          elif [ "$PR_STATE" = "closed" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=PR is closed" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify skip
+        if: steps.check.outputs.skip == 'true'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          SKIP_REASON="${{ steps.check.outputs.skip_reason }}"
+
+          cat > /tmp/skip-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#6b7280;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Approve-Merge Skipped</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">PR #${PR_NUMBER} ${SKIP_REASON}. The approve-merge action was skipped.</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Approve-merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Approve-merge skipped: PR #${PR_NUMBER} — ${SKIP_REASON}" \
+            --rawfile html /tmp/skip-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: skip notification email failed"
+
+      - name: Checkout private repo at fix branch
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          fetch-depth: 0
+          ref: ${{ steps.payload.outputs.head_branch }}
+
+      - name: Check branch exists
+        if: steps.check.outputs.skip != 'true'
+        id: branch_check
+        run: |
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+          if ! git rev-parse --verify "origin/${HEAD_BRANCH}" >/dev/null 2>&1; then
+            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase against main
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true'
+        id: rebase
+        run: |
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+
+          git config user.email "pipeline@sortinghistory.com"
+          git config user.name "SortingHistory Pipeline"
+
+          git fetch origin main
+
+          BEHIND_COUNT=$(git rev-list --count "HEAD..origin/main")
+          echo "Branch is ${BEHIND_COUNT} commits behind main"
+
+          if [ "$BEHIND_COUNT" -eq 0 ]; then
+            echo "rebase_needed=false" >> "$GITHUB_OUTPUT"
+            echo "rebase_result=clean" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "rebase_needed=true" >> "$GITHUB_OUTPUT"
+
+          if git rebase origin/main; then
+            echo "rebase_result=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "rebase_result=conflict" >> "$GITHUB_OUTPUT"
+            CONFLICT_FILES=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "unknown")
+            echo "conflict_files<<EOF" >> "$GITHUB_OUTPUT"
+            echo "$CONFLICT_FILES" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            git rebase --abort
+          fi
+
+      - name: Send conflict email
+        if: steps.check.outputs.skip != 'true' && steps.rebase.outputs.rebase_result == 'conflict'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          CONFLICT_FILES="${{ steps.rebase.outputs.conflict_files }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          FILE_LIST_HTML=""
+          while IFS= read -r file; do
+            if [ -n "$file" ]; then
+              FILE_LIST_HTML="${FILE_LIST_HTML}<li style=\"margin:4px 0;\"><code>${file}</code></li>"
+            fi
+          done <<< "$CONFLICT_FILES"
+
+          cat > /tmp/conflict-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#d97706;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Merge Conflict on PR #${PR_NUMBER}</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fffbeb;border-left:4px solid #d97706;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#d97706;font-weight:600;">CONFLICT</p>
+                <p style="margin:0;font-size:14px;color:#333;line-height:1.5;">The PR could not be automatically rebased against main.</p>
+              </div>
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #dc2626;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#dc2626;font-weight:600;">Conflicting Files</p>
+                <ul style="margin:4px 0 0 0;padding-left:20px;font-size:14px;color:#333;line-height:1.8;">${FILE_LIST_HTML}</ul>
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">View PR</a>
+              </div>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Approve-merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merge Conflict: PR #${PR_NUMBER} needs manual resolution" \
+            --rawfile html /tmp/conflict-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: conflict email failed"
+
+      - name: Force-push rebased branch
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'clean' && steps.rebase.outputs.rebase_needed == 'true'
+        run: |
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+          git push --force-with-lease origin "${HEAD_BRANCH}"
+          sleep 10
+
+      - name: Squash merge PR
+        if: steps.check.outputs.skip != 'true' && steps.branch_check.outputs.branch_exists == 'true' && steps.rebase.outputs.rebase_result == 'clean'
+        id: merge
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+
+          MERGE_OK=false
+          for attempt in 1 2 3; do
+            if gh pr merge "${PR_NUMBER}" --squash --repo "${PRIVATE_REPO}"; then
+              MERGE_OK=true
+              break
+            fi
+            echo "Merge attempt ${attempt} failed, waiting 10s..."
+            sleep 10
+          done
+
+          if [ "$MERGE_OK" = true ]; then
+            echo "merge_result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "merge_result=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Bump version permanently
+        if: steps.merge.outputs.merge_result == 'success'
+        id: version
+        run: |
+          # Checkout main after merge
+          git fetch origin main
+          git checkout main
+          git pull origin main
+
+          git config user.email "pipeline@sortinghistory.com"
+          git config user.name "SortingHistory Pipeline"
+
+          # Read NEXT_BUILD_NUMBER
+          CURRENT=$(gh variable get NEXT_BUILD_NUMBER --repo "$PRIVATE_REPO" 2>&1) || {
+            echo "ERROR: Failed to read NEXT_BUILD_NUMBER"
+            exit 1
+          }
+
+          if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: NEXT_BUILD_NUMBER is not a number: '$CURRENT'"
+            exit 1
+          fi
+
+          echo "build_number=${CURRENT}" >> "$GITHUB_OUTPUT"
+
+          SETTINGS_FILE="Views/SettingsView.swift"
+          EXISTING_VERSION=$(grep -oE '1\.1\.0-(alpha|beta)\.[0-9]+' "$SETTINGS_FILE" | head -1)
+          PREFIX=$(echo "$EXISTING_VERSION" | grep -oE '(alpha|beta)')
+          if [ -z "$PREFIX" ]; then PREFIX="beta"; fi
+
+          FULL_VERSION="1.1.0-${PREFIX}.${CURRENT}"
+          echo "full_version=${FULL_VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Replace version
+          sed -i "s/1\.1\.0-\(alpha\|beta\)\.[0-9][0-9]*/1.1.0-${PREFIX}.${CURRENT}/" "$SETTINGS_FILE"
+
+          # Verify
+          if ! grep -q "1.1.0-${PREFIX}.${CURRENT}" "$SETTINGS_FILE"; then
+            echo "ERROR: Version replacement failed"
+            exit 1
+          fi
+
+          # Also bump CFBundleVersion
+          PLIST_FILE="Info.plist"
+          if [ -f "$PLIST_FILE" ]; then
+            # Use sed on Linux (no PlistBuddy)
+            sed -i "/<key>CFBundleVersion<\/key>/{ n; s/<string>[0-9]*<\/string>/<string>${CURRENT}<\/string>/; }" "$PLIST_FILE" || true
+          fi
+
+          # Commit and push
+          git add "$SETTINGS_FILE"
+          if [ -f "$PLIST_FILE" ]; then git add "$PLIST_FILE"; fi
+          git commit -m "chore: bump version to ${FULL_VERSION} after merge of issue fix"
+          git push origin main
+
+          echo "Version bumped to ${FULL_VERSION}"
+
+          # Increment for next use
+          NEXT=$((CURRENT + 1))
+          gh variable set NEXT_BUILD_NUMBER --repo "$PRIVATE_REPO" --body "$NEXT"
+          echo "NEXT_BUILD_NUMBER incremented to ${NEXT}"
+
+      - name: Close issue with label
+        if: steps.merge.outputs.merge_result == 'success'
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+
+          # Add 'fixed' label
+          gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUMBER}/labels" \
+            -X POST \
+            --field 'labels[]=fixed' \
+            --field 'labels[]=merged-by-pipeline' 2>/dev/null || echo "Warning: failed to add labels"
+
+          # Close the issue
+          gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUMBER}" \
+            -X PATCH \
+            --field 'state=closed' \
+            --field 'state_reason=completed' 2>/dev/null || echo "Warning: failed to close issue"
+
+          echo "Issue #${ISSUE_NUMBER} closed with label 'fixed'"
+
+      - name: Send success email
+        if: steps.merge.outputs.merge_result == 'success'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          PR_TITLE="${{ steps.check.outputs.pr_title }}"
+          VERSION="${{ steps.version.outputs.full_version }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+
+          cat > /tmp/success-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#2563eb;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#1d4ed8;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Approved &amp; Merged</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Fix Merged to Main</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#eff6ff;border-left:4px solid #2563eb;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#2563eb;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">PR #${PR_NUMBER}</p>
+                <p style="margin:0;font-size:15px;color:#333333;line-height:1.5;">${PR_TITLE}</p>
+              </div>
+              <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+                <tr><td style="padding:8px 12px;font-weight:600;width:120px;background:#eff6ff;color:#2563eb;font-size:13px;">Status</td><td style="padding:8px 12px;background:#eff6ff;font-size:14px;color:#333333;">Merged to main</td></tr>
+                <tr><td style="padding:8px 12px;font-weight:600;color:#2563eb;font-size:13px;">Issue</td><td style="padding:8px 12px;font-size:14px;color:#333333;">#${ISSUE_NUMBER} (closed)</td></tr>
+                <tr><td style="padding:8px 12px;font-weight:600;color:#2563eb;font-size:13px;">Version</td><td style="padding:8px 12px;font-size:14px;color:#333333;">${VERSION}</td></tr>
+              </table>
+              <div style="padding:14px 16px;background:#eff6ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">Fix merged to main. Build ${VERSION} is the production version.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Merged PR</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Approve-merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merged: PR #${PR_NUMBER} — ${PR_TITLE} (${VERSION})" \
+            --rawfile html /tmp/success-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: success email failed"
+
+      - name: Send merge failure email
+        if: failure() && steps.check.outputs.skip != 'true' && steps.rebase.outputs.rebase_result == 'clean'
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_URL="https://github.com/${PRIVATE_REPO}/pull/${PR_NUMBER}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          cat > /tmp/failure-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Approve-Merge Failed</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0;font-size:14px;color:#333;line-height:1.5;">The merge or version bump for PR #${PR_NUMBER} failed. Check the workflow run for details.</p>
+              <div style="text-align:center;margin-top:20px;">
+                <a href="${RUN_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Workflow Run</a>
+                <a href="${PR_URL}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View PR</a>
+              </div>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Approve-merge notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Merge failed: PR #${PR_NUMBER} — check workflow run" \
+            --rawfile html /tmp/failure-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: failure email failed"

@@ -459,10 +459,14 @@ describe("Story 3.4: PR-created email buttons", () => {
       pipelineMode: "full",
     });
 
-    // Review PR, Reject Fix, Fix Locally
-    assert.ok(html.includes(">Review PR #155</a>"), "Review PR button missing");
-    assert.ok(html.includes(">Reject Fix</a>"), "Reject Fix button missing");
+    // Review, Approve, Rework, Reject, Fix Locally (PIPE-011 Phase 3)
+    assert.ok(html.includes(">Review</a>"), "Review button missing");
+    assert.ok(html.includes(">Approve</a>"), "Approve button missing");
+    assert.ok(html.includes(">Rework</a>"), "Rework button missing");
+    assert.ok(html.includes(">Reject</a>"), "Reject button missing");
     assert.ok(html.includes(">Fix Locally</a>"), "Fix Locally button missing");
+    assert.ok(html.includes("/api/pipeline/review-build?issue=152"), "Review build URL incorrect");
+    assert.ok(html.includes("/api/pipeline/approve-merge?issue=152"), "Approve merge URL incorrect");
     assert.ok(html.includes("/api/pipeline/fix-locally?issue=152"), "Fix Locally URL incorrect");
   });
 });

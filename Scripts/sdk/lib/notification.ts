@@ -687,15 +687,23 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   const modeLabel = input.pipelineMode === "qa-only" ? " (QA-Only Re-Run)" : "";
 
   const authToken = process.env.AUTH_TOKEN;
+  let reviewButtonHtml = "";
+  let approveButtonHtml = "";
   let rejectButtonHtml = "";
   let reworkButtonHtml = "";
   let fixLocallyButtonHtml = "";
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
-    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject Fix</a>`;
+    // PIPE-011 AC-7/AC-8: Review button — builds app, uploads to TestFlight (Empty Cup only)
+    const reviewUrl = `https://sortinghistory.com/api/pipeline/review-build?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    reviewButtonHtml = `<a href="${reviewUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Review</a>`;
+    // PIPE-011 AC-15: Approve button — merges PR to main after device testing
+    const approveUrl = `https://sortinghistory.com/api/pipeline/approve-merge?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    approveButtonHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve</a>`;
     const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     reworkButtonHtml = `<a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>`;
+    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>`;
     const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
     fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
   }
@@ -802,12 +810,13 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
 
     <!-- Action callout -->
     <div style="padding:14px 16px;background:#f0fdf4;border:2px solid #86efac;border-radius:8px;margin-bottom:24px;">
-      <p style="margin:0;font-weight:700;color:#166534;font-size:14px;">The pipeline has generated a fix and it passed QA review. Please review and merge, or reject if incorrect.</p>
+      <p style="margin:0;font-weight:700;color:#166534;font-size:14px;">The pipeline has generated a fix and it passed QA review. Click Review to build and test on TestFlight, then Approve to merge, Rework to retry, or Reject to discard.</p>
     </div>
 
-    <!-- Action buttons -->
+    <!-- Action buttons (PIPE-011 AC-7: Review, Approve, Rework, Reject, Fix Locally) -->
     <div style="text-align:center;">
-      <a href="${input.prUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Review PR #${input.prNumber}</a>
+      ${reviewButtonHtml}
+      ${approveButtonHtml}
       ${reworkButtonHtml}
       ${rejectButtonHtml}
       ${fixLocallyButtonHtml}

@@ -1,0 +1,381 @@
+# PIPE-011 AC-10/AC-11/AC-12: Review Build — build from fix branch, upload to TestFlight (Empty Cup only)
+# Triggered by Cloudflare Worker -> repository_dispatch
+#
+# Flow:
+#   1. Checkout private repo at fix branch (NOT main — PR not merged yet)
+#   2. Temporarily bump version in SettingsView.swift (not committed/pushed)
+#   3. Install code signing cert + provisioning profile
+#   4. Archive and export IPA
+#   5. Upload to App Store Connect (Empty Cup internal group only)
+#   6. Send confirmation email
+#   7. Label issue review-build-sent
+#
+# Does NOT merge the PR. Does NOT push any changes.
+
+name: Review Build (TestFlight)
+
+on:
+  repository_dispatch:
+    types: [review-build]
+
+concurrency:
+  group: review-build-testflight
+  cancel-in-progress: false
+
+jobs:
+  build-for-review:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      PRIVATE_REPO: RaufGlasgow/Sorting-History
+      GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+
+    steps:
+      - name: Extract payload
+        id: payload
+        run: |
+          ISSUE_NUMBER="${{ github.event.client_payload.issue_number }}"
+          PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+          HEAD_BRANCH="${{ github.event.client_payload.head_branch }}"
+
+          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "head_branch=${HEAD_BRANCH}" >> "$GITHUB_OUTPUT"
+
+          echo "Review build for PR #${PR_NUMBER} (issue #${ISSUE_NUMBER}), branch: ${HEAD_BRANCH}"
+
+      - name: Check PR state
+        id: check
+        run: |
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_JSON=$(gh api "repos/${PRIVATE_REPO}/pulls/${PR_NUMBER}" 2>/dev/null || echo '{"state":"error"}')
+          PR_STATE=$(echo "$PR_JSON" | jq -r '.state // "error"')
+          PR_TITLE=$(echo "$PR_JSON" | jq -r '.title // "Unknown"')
+
+          echo "pr_state=${PR_STATE}" >> "$GITHUB_OUTPUT"
+          echo "pr_title=${PR_TITLE}" >> "$GITHUB_OUTPUT"
+
+          if [ "$PR_STATE" != "open" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "PR #${PR_NUMBER} is not open (state: ${PR_STATE}). Skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout private repo at fix branch
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          ref: ${{ steps.payload.outputs.head_branch }}
+          fetch-depth: 0
+
+      - name: Read and bump version (temporary, not pushed)
+        if: steps.check.outputs.skip != 'true'
+        id: version
+        run: |
+          # Read NEXT_BUILD_NUMBER
+          CURRENT=$(gh variable get NEXT_BUILD_NUMBER --repo "$PRIVATE_REPO" 2>&1) || {
+            echo "ERROR: Failed to read NEXT_BUILD_NUMBER"
+            exit 1
+          }
+
+          if ! [[ "$CURRENT" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: NEXT_BUILD_NUMBER is not a number: '$CURRENT'"
+            exit 1
+          fi
+
+          echo "build_number=${CURRENT}" >> "$GITHUB_OUTPUT"
+
+          SETTINGS_FILE="Views/SettingsView.swift"
+          if [ ! -f "$SETTINGS_FILE" ]; then
+            echo "ERROR: SettingsView.swift not found"
+            exit 1
+          fi
+
+          # Detect current prefix
+          EXISTING_VERSION=$(grep -oE '1\.1\.0-(alpha|beta)\.[0-9]+' "$SETTINGS_FILE" | head -1)
+          PREFIX=$(echo "$EXISTING_VERSION" | grep -oE '(alpha|beta)')
+          if [ -z "$PREFIX" ]; then PREFIX="beta"; fi
+
+          echo "version_prefix=${PREFIX}" >> "$GITHUB_OUTPUT"
+          echo "full_version=1.1.0-${PREFIX}.${CURRENT}" >> "$GITHUB_OUTPUT"
+
+          # Replace version in SettingsView.swift (temporary — not committed)
+          sed -i '' "s/1\.1\.0-\(alpha\|beta\)\.[0-9][0-9]*/1.1.0-${PREFIX}.${CURRENT}/" "$SETTINGS_FILE"
+
+          # Also bump CFBundleVersion in Info.plist for TestFlight
+          PLIST_FILE="Info.plist"
+          if [ -f "$PLIST_FILE" ]; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${CURRENT}" "$PLIST_FILE"
+            echo "CFBundleVersion set to ${CURRENT}"
+          fi
+
+          echo "Version set to 1.1.0-${PREFIX}.${CURRENT}"
+
+          # Increment for next use
+          NEXT=$((CURRENT + 1))
+          gh variable set NEXT_BUILD_NUMBER --repo "$PRIVATE_REPO" --body "$NEXT"
+          echo "NEXT_BUILD_NUMBER incremented to ${NEXT}"
+
+      - name: Select Xcode
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode_16.1.app/Contents/Developer || \
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install signing certificate
+        if: steps.check.outputs.skip != 'true'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DISTRIBUTION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DISTRIBUTION_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+
+          echo -n "$CERTIFICATE_BASE64" | base64 --decode > $CERT_PATH
+
+          security create-keychain -p "" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "" $KEYCHAIN_PATH
+          security import $CERT_PATH -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
+
+          echo "Signing certificate installed"
+
+      - name: Install provisioning profile
+        if: steps.check.outputs.skip != 'true'
+        env:
+          PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo -n "$PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/profile.mobileprovision
+          echo "Provisioning profile installed"
+
+      - name: Archive app
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          xcodebuild archive \
+            -scheme SortingHistory \
+            -archivePath build/SortingHistory.xcarchive \
+            -destination 'generic/platform=iOS' \
+            -allowProvisioningUpdates \
+            -quiet \
+            2>&1 | tail -50
+
+          if [ ! -d "build/SortingHistory.xcarchive" ]; then
+            echo "ERROR: Archive not created"
+            exit 1
+          fi
+          echo "Archive created successfully"
+
+      - name: Export IPA
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build/SortingHistory.xcarchive \
+            -exportOptionsPlist build/ExportOptions.plist \
+            -exportPath build/export \
+            -allowProvisioningUpdates \
+            2>&1 | tail -30
+
+          # Find the IPA file
+          IPA_PATH=$(find build/export -name "*.ipa" -type f | head -1)
+          if [ -z "$IPA_PATH" ]; then
+            echo "ERROR: No IPA found in build/export"
+            ls -la build/export/ || true
+            exit 1
+          fi
+          echo "IPA exported: $IPA_PATH"
+          echo "ipa_path=${IPA_PATH}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup App Store Connect API key
+        if: steps.check.outputs.skip != 'true'
+        env:
+          ASC_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo -n "$ASC_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          echo "App Store Connect API key installed"
+
+      - name: Upload to TestFlight
+        if: steps.check.outputs.skip != 'true'
+        id: upload
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          IPA_PATH=$(find build/export -name "*.ipa" -type f | head -1)
+
+          xcrun altool --upload-app \
+            -f "$IPA_PATH" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            2>&1 | tee /tmp/upload-output.txt
+
+          if [ ${PIPESTATUS[0]} -eq 0 ]; then
+            echo "upload_result=success" >> "$GITHUB_OUTPUT"
+            echo "Upload successful"
+          else
+            echo "upload_result=failed" >> "$GITHUB_OUTPUT"
+            echo "Upload failed"
+            exit 1
+          fi
+
+      - name: Label issue and comment
+        if: steps.check.outputs.skip != 'true' && steps.upload.outputs.upload_result == 'success'
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          VERSION="${{ steps.version.outputs.full_version }}"
+
+          # Add review-build-sent label
+          gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUMBER}/labels" \
+            -X POST \
+            --field 'labels[]=review-build-sent' 2>/dev/null || echo "Warning: failed to add label"
+
+          # Post comment on issue
+          COMMENT="Review build \`${VERSION}\` uploaded to TestFlight (Empty Cup only). Test on device, then Approve/Rework/Reject from the PR email."
+          gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUMBER}/comments" \
+            -X POST \
+            --field "body=${COMMENT}" 2>/dev/null || echo "Warning: failed to post comment"
+
+      - name: Send success email
+        if: steps.check.outputs.skip != 'true' && steps.upload.outputs.upload_result == 'success'
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          PR_TITLE="${{ steps.check.outputs.pr_title }}"
+          VERSION="${{ steps.version.outputs.full_version }}"
+
+          cat > /tmp/success-email.html << 'EMAILEOF'
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#166534;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#15803d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">TestFlight Ready</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">TestFlight Build Ready for Review</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #22c55e;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Build Details</p>
+          EMAILEOF
+
+          # Inject dynamic content
+          cat >> /tmp/success-email.html << EMAILEOF
+                <table style="width:100%;border-collapse:collapse;">
+                  <tr><td style="padding:4px 0;font-size:14px;color:#333;font-weight:600;">Version</td><td style="padding:4px 0;font-size:14px;color:#333;">${VERSION}</td></tr>
+                  <tr><td style="padding:4px 0;font-size:14px;color:#333;font-weight:600;">Issue</td><td style="padding:4px 0;font-size:14px;color:#333;">#${ISSUE_NUMBER}</td></tr>
+                  <tr><td style="padding:4px 0;font-size:14px;color:#333;font-weight:600;">PR</td><td style="padding:4px 0;font-size:14px;color:#333;">#${PR_NUMBER}</td></tr>
+                  <tr><td style="padding:4px 0;font-size:14px;color:#333;font-weight:600;">Group</td><td style="padding:4px 0;font-size:14px;color:#333;">Empty Cup (internal only)</td></tr>
+                </table>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">Estimated availability: ~15-30 minutes for TestFlight processing.</p>
+                <p style="margin:8px 0 0;font-size:13px;color:#1e40af;">Come back to the original PR email to Approve, Rework, or Reject after testing.</p>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Review build notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "TestFlight Ready: ${VERSION} for issue #${ISSUE_NUMBER}" \
+            --rawfile html /tmp/success-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: success email failed"
+
+      - name: Send failure email
+        if: failure() && steps.check.outputs.skip != 'true'
+        run: |
+          ISSUE_NUMBER="${{ steps.payload.outputs.issue_number }}"
+          PR_NUMBER="${{ steps.payload.outputs.pr_number }}"
+          HEAD_BRANCH="${{ steps.payload.outputs.head_branch }}"
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          # Capture last 50 lines of build output if available
+          ERROR_DETAIL="Build or upload failed. Check the workflow run for details."
+          if [ -f /tmp/upload-output.txt ]; then
+            ERROR_DETAIL=$(tail -50 /tmp/upload-output.txt | head -50)
+          fi
+
+          cat > /tmp/failure-email.html << 'EMAILEOF'
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Build Failed</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Review Build Failed</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+          EMAILEOF
+
+          cat >> /tmp/failure-email.html << EMAILEOF
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">The review build for PR #${PR_NUMBER} (issue #${ISSUE_NUMBER}) on branch <code style="background:#fef2f2;padding:1px 4px;border-radius:3px;">${HEAD_BRANCH}</code> failed during build or upload.</p>
+              </div>
+              <div style="margin:0 0 20px 0;padding:10px 14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#64748b;font-weight:600;">Error Details (last 50 lines)</p>
+                <pre style="margin:0;font-size:11px;color:#334155;line-height:1.4;white-space:pre-wrap;overflow-wrap:break-word;">${ERROR_DETAIL}</pre>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">The PR is still open and unmerged. Fix the build issue and try again.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${RUN_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">View Workflow Run</a>
+              </div>
+            </div>
+            <div style="padding:20px 24px;background:#faf8f4;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <p style="margin:0 0 4px 0;font-size:14px;color:#8B6914;font-weight:600;text-align:center;">Sorting History</p>
+              <p style="margin:0;font-size:13px;color:#777777;text-align:center;">Sort history's greatest moments into the correct order</p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Review build notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Build Failed: Review build for issue #${ISSUE_NUMBER}" \
+            --rawfile html /tmp/failure-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Warning: failure email failed"
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain $KEYCHAIN_PATH 2>/dev/null || true
+          fi
+          rm -f ~/.appstoreconnect/private_keys/*.p8 2>/dev/null || true

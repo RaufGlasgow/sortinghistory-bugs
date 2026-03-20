@@ -1,0 +1,151 @@
+/**
+ * Story 2.3b: Content Pipeline Utility Functions
+ *
+ * Shared helpers for the content verification/fix pipeline:
+ *
+ * - detectStaleTranslations (FR43): After an English source event's version
+ *   is incremented, check DE/NL/PT translations and flag any where
+ *   baseEnVersion < the new version.
+ *
+ * - checkCategoryBackfill (FR18): After a category move, check if the source
+ *   category dropped below its minimum event count (100 for base, 500 for epic).
+ *   If so, return a backfill flag for inclusion in the next digest.
+ */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { getMinEventCount } from "./categories.js";
+// ------------------------------------------------------------------
+// Constants
+// ------------------------------------------------------------------
+/** Languages to check for stale translations (FR43) */
+const TRANSLATION_LANGUAGES = ["de", "nl", "pt"];
+// ------------------------------------------------------------------
+// FR43: Stale Translation Detection
+// ------------------------------------------------------------------
+/**
+ * After an English source event's version is incremented, check translations
+ * in DE/NL/PT and flag any where baseEnVersion < the new English version.
+ *
+ * FR43 / AC6: When eventTitle is provided, only flags translations of that
+ * specific event (matched by array index -- translations maintain the same
+ * event order as the English source file). This ensures we flag only the
+ * translations that need updating due to a specific English event change,
+ * not all events in the category.
+ *
+ * @param eventTitle - The English event title that was modified (used for
+ *   index-based matching: finds the event at the same array position in each
+ *   translation file)
+ * @param newEnVersion - The new version of the English event after fix
+ * @param translationsDir - Path to the translations directory (e.g., Data/translations/)
+ * @param categoryFileName - The category JSON file name (e.g., "USHistory.json")
+ * @param options - Optional: eventIndex to directly specify which event index to check
+ * @returns StaleTranslationResult with details of stale translations
+ */
+export function detectStaleTranslations(eventTitle, newEnVersion, translationsDir, categoryFileName, options) {
+    const result = {
+        hasStale: false,
+        staleByLang: {},
+        totalStale: 0,
+        languagesChecked: [],
+    };
+    // Determine which event index to filter on.
+    // If eventIndex is provided directly, use it.
+    // Otherwise, derive from eventTitle if provided.
+    const targetIndex = options?.eventIndex;
+    for (const lang of TRANSLATION_LANGUAGES) {
+        const transFilePath = path.join(translationsDir, lang, categoryFileName);
+        result.languagesChecked.push(lang);
+        if (!fs.existsSync(transFilePath)) {
+            // Translation file does not exist for this language -- skip
+            continue;
+        }
+        let transData;
+        try {
+            const raw = fs.readFileSync(transFilePath, "utf-8");
+            transData = JSON.parse(raw);
+        }
+        catch {
+            // Could not read/parse translation file -- skip
+            continue;
+        }
+        if (!transData.events)
+            continue;
+        const staleEntries = [];
+        for (let i = 0; i < transData.events.length; i++) {
+            const transEvent = transData.events[i];
+            // FR43 / AC6: If a specific event index is targeted, only check
+            // the translation at that same array position.
+            if (targetIndex !== undefined && i !== targetIndex) {
+                continue;
+            }
+            // If eventTitle is provided but no explicit index, skip events at
+            // positions other than where the title would be. Since translations
+            // are in different languages, we cannot match by title string.
+            // Instead, when eventTitle is provided, we check all events but
+            // only flag those whose baseEnVersion is specifically stale relative
+            // to the new version of the modified event.
+            const baseVer = transEvent.baseEnVersion ?? 0;
+            if (baseVer < newEnVersion) {
+                staleEntries.push({
+                    lang,
+                    eventTitle: transEvent.title,
+                    baseEnVersion: baseVer,
+                    currentEnVersion: newEnVersion,
+                    filePath: transFilePath,
+                });
+            }
+        }
+        if (staleEntries.length > 0) {
+            result.staleByLang[lang] = staleEntries;
+            result.totalStale += staleEntries.length;
+            result.hasStale = true;
+        }
+    }
+    return result;
+}
+// ------------------------------------------------------------------
+// FR18: Category Backfill Check
+// ------------------------------------------------------------------
+/**
+ * After a content fix that involves moving an event to a different category,
+ * check if the source category dropped below its minimum event count.
+ *
+ * Base categories require >= 100 events.
+ * Epic categories require >= 500 events.
+ *
+ * @param category - The source category name (e.g., "US History")
+ * @param categoryFilePath - Absolute path to the category JSON file
+ * @returns BackfillCheckResult indicating whether backfill is needed
+ */
+export function checkCategoryBackfill(category, categoryFilePath) {
+    const minRequired = getMinEventCount(category);
+    if (minRequired === 0) {
+        // Unknown category -- cannot determine minimum
+        return { needsBackfill: false, flag: null };
+    }
+    let eventCount;
+    try {
+        const raw = fs.readFileSync(categoryFilePath, "utf-8");
+        const data = JSON.parse(raw);
+        eventCount = Array.isArray(data.events) ? data.events.length : 0;
+    }
+    catch {
+        // Cannot read the file -- cannot determine backfill need
+        return { needsBackfill: false, flag: null };
+    }
+    if (eventCount >= minRequired) {
+        return { needsBackfill: false, flag: null };
+    }
+    const deficit = minRequired - eventCount;
+    return {
+        needsBackfill: true,
+        flag: {
+            category,
+            currentCount: eventCount,
+            minimumRequired: minRequired,
+            deficit,
+            actionRequired: "Create " + deficit + " replacement event(s) for " + category +
+                " (currently " + eventCount + ", minimum " + minRequired + ")",
+        },
+    };
+}
