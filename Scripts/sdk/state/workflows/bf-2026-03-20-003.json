@@ -1,0 +1,89 @@
+{
+  "workflow_id": "bf-2026-03-20-003",
+  "workflow_type": "bug_fix",
+  "status": "complete",
+  "session_id": null,
+  "created_at": "2026-03-20T14:50:29.521Z",
+  "updated_at": "2026-03-20T14:57:43.421Z",
+  "trigger": "dispatch",
+  "category": null,
+  "findings": [],
+  "approved_findings": [],
+  "rejected_findings": [],
+  "fix_attempts": 2,
+  "max_fix_attempts": 3,
+  "fix_results": [
+    {
+      "files_modified": [
+        "Views/ResultsView.swift"
+      ],
+      "fix_summary": "Removed the 'Main Menu' text label from the home button in ResultsView, keeping only the house.fill icon as requested by the user. The text label was causing translation issues and taking up unnecessary space. The fix maintains WCAG accessibility compliance by adding an explicit accessibilityLabel that still provides the 'Main Menu' text for VoiceOver users. The icon size was increased from .body to .title2 to make it more prominent as a standalone icon button.",
+      "compilation_result": "success",
+      "confidence": "high"
+    }
+  ],
+  "pr_number": null,
+  "error": null,
+  "issue_number": 166,
+  "attempt_log": [
+    {
+      "attempt_number": 1,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "Removed the 'Main Menu' text label from the home button in ResultsView, keeping only the house.fill icon. This addresses the user's concern about translation issues and simplifies the UI to show just the home icon as requested. The button now displays only the house icon with proper accessibility labels for VoiceOver support, maintaining WCAG compliance while solving the translation hassle mentioned in the bug report.",
+      "result": "error",
+      "error_output": "qa_infra_failure: QA subagent failed (code): Subagent error: error_max_turns",
+      "timestamp": "2026-03-20T14:54:22.668Z"
+    },
+    {
+      "attempt_number": 2,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "Removed the 'Main Menu' text label from the home button in ResultsView, keeping only the house.fill icon as requested by the user. The text label was causing translation issues and taking up unnecessary space. The fix maintains WCAG accessibility compliance by adding an explicit accessibilityLabel that still provides the 'Main Menu' text for VoiceOver users. The icon size was increased from .body to .title2 to make it more prominent as a standalone icon button.",
+      "result": "success",
+      "error_output": null,
+      "timestamp": "2026-03-20T14:57:43.417Z"
+    }
+  ],
+  "qa_results": [
+    {
+      "attempt_number": 2,
+      "verdict": "pass",
+      "findings": [],
+      "summary": "The fix correctly addresses the bug by removing the visible 'Main Menu' text that was not translating properly, leaving only the house icon as requested. The accessibility label ensures screen readers still identify the button correctly. No regressions are introduced—the button functionality, styling, and accessibility are all preserved.",
+      "timestamp": "2026-03-20T14:57:43.415Z"
+    }
+  ],
+  "models_used": [
+    {
+      "step": "fix_attempt_1",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 4893,
+      "output_tokens": 2769,
+      "cost_estimate": 0.5104885,
+      "timestamp": "2026-03-20T14:53:47.131Z"
+    },
+    {
+      "step": "qa_review_1",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 74,
+      "output_tokens": 1844,
+      "cost_estimate": 0.07400385000000001,
+      "timestamp": "2026-03-20T14:54:22.665Z"
+    },
+    {
+      "step": "fix_attempt_2",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 51,
+      "output_tokens": 3191,
+      "cost_estimate": 0.48518775000000003,
+      "timestamp": "2026-03-20T14:57:01.670Z"
+    },
+    {
+      "step": "qa_review_2",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 59,
+      "output_tokens": 2349,
+      "cost_estimate": 0.061904400000000005,
+      "timestamp": "2026-03-20T14:57:43.409Z"
+    }
+  ]
+}
