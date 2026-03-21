@@ -132,16 +132,11 @@ jobs:
             # Post auto-retry comment
             # =============================================
             NEXT_RETRY=$((RETRY_COUNT + 1))
-            COMMENT_BODY="## Auto-Retry #${NEXT_RETRY}
-
-Automatic retry triggered by scheduled pipeline health check.
-
----
-*Auto-retry #${NEXT_RETRY} of ${MAX_RETRIES} max*"
+            COMMENT_BODY="## Auto-Retry #${NEXT_RETRY}\n\nAutomatic retry triggered by scheduled pipeline health check.\n\n---\n*Auto-retry #${NEXT_RETRY} of ${MAX_RETRIES} max*"
 
             gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/comments" \
               --method POST \
-              -f body="${COMMENT_BODY}" 2>/dev/null || true
+              -f body="$(printf '%b' "$COMMENT_BODY")" 2>/dev/null || true
             echo "  Posted auto-retry comment (#${NEXT_RETRY})"
 
             # =============================================
