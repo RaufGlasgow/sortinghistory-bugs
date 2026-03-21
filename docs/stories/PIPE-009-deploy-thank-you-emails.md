@@ -1,8 +1,9 @@
 # PIPE-009: Deploy FR-160 Thank-You Emails to Production
 
 **Epic:** Bug Reporter Reward Pipeline
-**Prerequisites:** Resend account with verified domain, Apple offer codes generated
+**Prerequisites:** Resend account with verified domain, Apple offer codes generated (BLOCKED — subscription products not yet in ASC)
 **Blocks:** PIPE-008 (duplicate detection assumes email-sent label exists)
+**Handoff:** `.bmad/handoffs/Session-20260320-PM-BugRewardCodes-Handoff.md` — offer code process, blocker status, step-by-step for Ra'uf
 **FRs Covered:** FR-160 (thank-you email), reporter reward fulfillment
 **Branch:** `feature/engagement-retention` (code exists but is NOT deployed)
 
@@ -278,7 +279,9 @@ Ordered. Each step depends on the previous.
 |------------|-------|--------|--------|
 | Resend account + verified domain | Ra'uf (manual) | NOT DONE | AC-1, AC-2, AC-10 |
 | `RESEND_API_KEY` Cloudflare secret | Ra'uf (manual) | NOT DONE | AC-2, AC-10 |
-| Apple offer codes (App Store Connect) | Ra'uf (manual) | NOT DONE | AC-4, AC-5 |
+| Subscription group + Historian Monthly product in ASC | ASR team / Ra'uf | NOT DONE (BLOCKER) | AC-4, AC-5 |
+| Apple review of subscription product | Apple | NOT DONE (BLOCKER) | AC-4, AC-5 |
+| First batch of 100 offer codes generated (CSV from Ra'uf) | Ra'uf | BLOCKED on above | AC-4, AC-5 |
 | `feature/engagement-retention` merged to `main` | Integration team | NOT DONE | AC-10 |
 | `wrangler` CLI authenticated | Ra'uf | DONE (assumed) | AC-10 |
 | `PIPELINE_KV` namespace | Already bound | DONE | AC-5 |
