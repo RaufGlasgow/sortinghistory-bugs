@@ -88,6 +88,19 @@ jobs:
           ---
           *Posted by SDK bug fix pipeline.*"
 
+      # Clean stale labels from previous attempts (moved here from auto-retry per architect review)
+      - name: Clean stale labels on startup
+        if: (steps.guard.outputs.blocked || 'false') != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          STALE_LABELS=("fix-failed" "needs-claude-code" "needs-handoff-review" "pr-created" "fix-generated" "approved")
+          for LABEL in "${STALE_LABELS[@]}"; do
+            gh api "repos/RaufGlasgow/Sorting-History/issues/${{ env.ISSUE_NUM }}/labels/${LABEL}" \
+              --method DELETE 2>&1 || true
+          done
+          echo "Cleaned stale labels for issue #${{ env.ISSUE_NUM }}"
+
       - name: Checkout public repo (automation scripts + SDK)
         if: (steps.guard.outputs.blocked || 'false') != 'true'
         uses: actions/checkout@v4
@@ -275,11 +288,8 @@ jobs:
             echo "  Before: $PRE_LINE"
             echo "  After:  $CURRENT_LINE"
             echo "Reverting to pre-subagent version..."
-            if [[ "${OSTYPE:-}" == darwin* ]]; then
-              sed -i '' "${LINE_NUM}s|.*|${PRE_LINE}|" "$SETTINGS_FILE"
-            else
-              sed -i "${LINE_NUM}s|.*|${PRE_LINE}|" "$SETTINGS_FILE"
-            fi
+            # Use awk for safe line replacement (sed breaks on |, &, \ in content)
+            awk -v ln="$LINE_NUM" -v content="$PRE_LINE" 'NR==ln{print content; next}1' "$SETTINGS_FILE" > "${SETTINGS_FILE}.tmp" && mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
             REVERTED=$(sed -n "${LINE_NUM}p" "$SETTINGS_FILE")
             echo "Reverted to: $REVERTED"
           else

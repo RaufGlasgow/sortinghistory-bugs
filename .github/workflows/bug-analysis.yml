@@ -49,6 +49,19 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Clean stale triage labels on startup (moved here from auto-retry per architect review)
+      - name: Clean stale labels on startup
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+        run: |
+          for LABEL in triage-failed needs-triage; do
+            gh api "repos/RaufGlasgow/Sorting-History/issues/${ISSUE_NUMBER}/labels/${LABEL}" \
+              --method DELETE 2>&1 || true
+          done
+          echo "Cleaned stale triage labels for issue #${ISSUE_NUMBER}"
+
       - name: Checkout public repo (automation scripts + SDK)
         if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v4

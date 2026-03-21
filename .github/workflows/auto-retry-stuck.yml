@@ -18,7 +18,7 @@ jobs:
       - name: Find and retry stuck issues
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
-          BUGS_PAT: ${{ secrets.BUGS_REPO_PAT }}
+          BUGS_PAT: ${{ secrets.PRIVATE_REPO_PAT }}  # Same PAT — has repo scope on both private and public repos
         run: |
           PRIVATE_REPO="RaufGlasgow/Sorting-History"
           BUGS_REPO="RaufGlasgow/sortinghistory-bugs"
@@ -37,7 +37,7 @@ jobs:
             -f name="needs-manual-fix" \
             -f color="7c3aed" \
             -f description="Exhausted all auto-retries — requires manual intervention" \
-            2>/dev/null || true  # Ignore 422 if label already exists
+            2>&1 || true  # Ignore 422 if label already exists
 
           # =============================================
           # Collect stuck issues across all failure labels
@@ -109,7 +109,7 @@ jobs:
                 --jq '[.[].name | select(. == "needs-manual-fix")] | length' 2>/dev/null || echo "0")
 
               if [ "$HAS_MANUAL_LABEL" -eq 0 ]; then
-                gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" --add-label "needs-manual-fix" 2>/dev/null || true
+                gh issue edit "$ISSUE_NUM" --repo "$PRIVATE_REPO" --add-label "needs-manual-fix" 2>&1 || true
                 echo "  Added needs-manual-fix label"
               fi
 
@@ -119,46 +119,38 @@ jobs:
             fi
 
             # =============================================
-            # Clean up stale labels from previous attempt
-            # =============================================
-            STALE_LABELS=("fix-failed" "needs-claude-code" "needs-handoff-review" "pr-created" "fix-generated" "approved" "triage-failed")
-            for STALE in "${STALE_LABELS[@]}"; do
-              gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/labels/${STALE}" \
-                --method DELETE 2>/dev/null || true
-            done
-            echo "  Cleaned stale labels"
-
-            # =============================================
-            # Post auto-retry comment
+            # Post auto-retry comment (BEFORE dispatch — always succeeds)
             # =============================================
             NEXT_RETRY=$((RETRY_COUNT + 1))
             COMMENT_BODY="## Auto-Retry #${NEXT_RETRY}\n\nAutomatic retry triggered by scheduled pipeline health check.\n\n---\n*Auto-retry #${NEXT_RETRY} of ${MAX_RETRIES} max*"
 
             gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/comments" \
               --method POST \
-              -f body="$(printf '%b' "$COMMENT_BODY")" 2>/dev/null || true
+              -f body="$(printf '%b' "$COMMENT_BODY")" 2>&1 || true
             echo "  Posted auto-retry comment (#${NEXT_RETRY})"
 
             # =============================================
             # Dispatch the appropriate workflow
+            # NOTE: Do NOT clean labels here. The target workflow
+            # (sdk-bug-fix or bug-analysis) cleans stale labels
+            # on successful startup. If dispatch fails, labels
+            # stay intact and the issue gets retried next day.
             # =============================================
             if [ "$MATCHED_LABEL" = "triage-failed" ]; then
-              # Re-triage
               echo "  Dispatching: analyze (re-triage)"
               GH_TOKEN="${BUGS_PAT}" gh api "repos/${BUGS_REPO}/dispatches" \
                 --method POST \
                 -f event_type="analyze" \
                 -f 'client_payload[issue_number]'="${ISSUE_NUM}" \
-                2>/dev/null || { echo "  ERROR: Failed to dispatch analyze event"; continue; }
+                2>&1 || { echo "  ERROR: Failed to dispatch analyze event"; continue; }
             else
-              # Re-fix (fix-failed, needs-claude-code, needs-handoff-review)
               echo "  Dispatching: sdk-bug-fix (mode=full)"
               GH_TOKEN="${BUGS_PAT}" gh api "repos/${BUGS_REPO}/dispatches" \
                 --method POST \
                 -f event_type="sdk-bug-fix" \
                 -f 'client_payload[issue_number]'="${ISSUE_NUM}" \
                 -f 'client_payload[mode]'="full" \
-                2>/dev/null || { echo "  ERROR: Failed to dispatch sdk-bug-fix event"; continue; }
+                2>&1 || { echo "  ERROR: Failed to dispatch sdk-bug-fix event"; continue; }
             fi
 
             RETRIED=$((RETRIED + 1))
