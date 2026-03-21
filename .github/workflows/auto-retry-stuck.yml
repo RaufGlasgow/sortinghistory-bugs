@@ -1,0 +1,186 @@
+name: Auto-Retry Stuck Issues
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # 08:00 UTC daily — before first digest at 10:00 UTC
+  workflow_dispatch: {}    # Manual trigger via gh CLI
+
+concurrency:
+  group: auto-retry
+  cancel-in-progress: false
+
+jobs:
+  retry-stuck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Find and retry stuck issues
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          BUGS_PAT: ${{ secrets.BUGS_REPO_PAT }}
+        run: |
+          PRIVATE_REPO="RaufGlasgow/Sorting-History"
+          BUGS_REPO="RaufGlasgow/sortinghistory-bugs"
+          MAX_RETRIES=3
+          TWENTY_FOUR_HOURS_AGO=$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-24H '+%Y-%m-%dT%H:%M:%SZ')
+
+          echo "=============================="
+          echo "Auto-Retry Stuck Issues"
+          echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Cutoff: $TWENTY_FOUR_HOURS_AGO"
+          echo "=============================="
+
+          # Ensure needs-manual-fix label exists on private repo
+          gh api "repos/${PRIVATE_REPO}/labels" \
+            --method POST \
+            -f name="needs-manual-fix" \
+            -f color="7c3aed" \
+            -f description="Exhausted all auto-retries — requires manual intervention" \
+            2>/dev/null || true  # Ignore 422 if label already exists
+
+          # =============================================
+          # Collect stuck issues across all failure labels
+          # =============================================
+          STUCK_LABELS=("fix-failed" "needs-claude-code" "needs-handoff-review" "triage-failed")
+          ALL_STUCK=""
+
+          for LABEL in "${STUCK_LABELS[@]}"; do
+            ISSUES=$(gh api "repos/${PRIVATE_REPO}/issues?labels=from-app,${LABEL}&state=open&per_page=100" \
+              --jq '.[] | "\(.number)|\(.updated_at)|\(.title)"' 2>/dev/null || echo "")
+            if [ -n "$ISSUES" ]; then
+              # Tag each line with the label that matched
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                ALL_STUCK="${ALL_STUCK}${line}|${LABEL}\n"
+              done <<< "$ISSUES"
+            fi
+          done
+
+          # Deduplicate by issue number (keep first occurrence — the label that matched)
+          STUCK_LIST=$(printf '%b' "$ALL_STUCK" | sort -t'|' -k1 -un | grep -v '^$' || true)
+
+          if [ -z "$STUCK_LIST" ]; then
+            echo ""
+            echo "No stuck issues found. Pipeline is healthy."
+            echo ""
+            echo "SUMMARY: 0 retried, 0 skipped (too recent), 0 maxed out"
+            exit 0
+          fi
+
+          TOTAL=$(echo "$STUCK_LIST" | wc -l | tr -d ' ')
+          echo "Found ${TOTAL} stuck issue(s)"
+          echo ""
+
+          # =============================================
+          # Process each stuck issue
+          # =============================================
+          RETRIED=0
+          SKIPPED_RECENT=0
+          MAXED_OUT=0
+
+          while IFS='|' read -r ISSUE_NUM UPDATED_AT TITLE MATCHED_LABEL; do
+            [ -z "$ISSUE_NUM" ] && continue
+
+            echo "--- Issue #${ISSUE_NUM}: ${TITLE} ---"
+            echo "  Label: ${MATCHED_LABEL}"
+            echo "  Last updated: ${UPDATED_AT}"
+
+            # Check if issue has been stuck for at least 24 hours
+            # Compare updated_at with cutoff
+            if [[ "$UPDATED_AT" > "$TWENTY_FOUR_HOURS_AGO" ]]; then
+              echo "  SKIP: Updated less than 24 hours ago — giving current run time to finish"
+              SKIPPED_RECENT=$((SKIPPED_RECENT + 1))
+              echo ""
+              continue
+            fi
+
+            # Count existing auto-retry comments
+            RETRY_COUNT=$(gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/comments?per_page=100" \
+              --jq '[.[] | select(.body | contains("## Auto-Retry"))] | length' 2>/dev/null || echo "0")
+            echo "  Previous auto-retries: ${RETRY_COUNT}"
+
+            # Check if maxed out
+            if [ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
+              echo "  MAXED OUT: ${RETRY_COUNT}/${MAX_RETRIES} retries exhausted"
+
+              # Check if needs-manual-fix already applied
+              HAS_MANUAL_LABEL=$(gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/labels" \
+                --jq '[.[].name | select(. == "needs-manual-fix")] | length' 2>/dev/null || echo "0")
+
+              if [ "$HAS_MANUAL_LABEL" -eq 0 ]; then
+                gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/labels" \
+                  --method POST \
+                  --jq '.' \
+                  -f "labels[]=needs-manual-fix" 2>/dev/null || true
+                echo "  Added needs-manual-fix label"
+              fi
+
+              MAXED_OUT=$((MAXED_OUT + 1))
+              echo ""
+              continue
+            fi
+
+            # =============================================
+            # Clean up stale labels from previous attempt
+            # =============================================
+            STALE_LABELS=("fix-failed" "needs-claude-code" "needs-handoff-review" "pr-created" "fix-generated" "approved" "triage-failed")
+            for STALE in "${STALE_LABELS[@]}"; do
+              gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/labels/${STALE}" \
+                --method DELETE 2>/dev/null || true
+            done
+            echo "  Cleaned stale labels"
+
+            # =============================================
+            # Post auto-retry comment
+            # =============================================
+            NEXT_RETRY=$((RETRY_COUNT + 1))
+            COMMENT_BODY="## Auto-Retry #${NEXT_RETRY}
+
+Automatic retry triggered by scheduled pipeline health check.
+
+---
+*Auto-retry #${NEXT_RETRY} of ${MAX_RETRIES} max*"
+
+            gh api "repos/${PRIVATE_REPO}/issues/${ISSUE_NUM}/comments" \
+              --method POST \
+              -f body="${COMMENT_BODY}" 2>/dev/null || true
+            echo "  Posted auto-retry comment (#${NEXT_RETRY})"
+
+            # =============================================
+            # Dispatch the appropriate workflow
+            # =============================================
+            if [ "$MATCHED_LABEL" = "triage-failed" ]; then
+              # Re-triage
+              echo "  Dispatching: analyze (re-triage)"
+              gh api "repos/${BUGS_REPO}/dispatches" \
+                --method POST \
+                -f event_type="analyze" \
+                -f 'client_payload[issue_number]'="${ISSUE_NUM}" \
+                2>/dev/null || { echo "  ERROR: Failed to dispatch analyze event"; continue; }
+            else
+              # Re-fix (fix-failed, needs-claude-code, needs-handoff-review)
+              echo "  Dispatching: sdk-bug-fix (mode=full)"
+              gh api "repos/${BUGS_REPO}/dispatches" \
+                --method POST \
+                -f event_type="sdk-bug-fix" \
+                -f 'client_payload[issue_number]'="${ISSUE_NUM}" \
+                -f 'client_payload[mode]'="full" \
+                2>/dev/null || { echo "  ERROR: Failed to dispatch sdk-bug-fix event"; continue; }
+            fi
+
+            RETRIED=$((RETRIED + 1))
+            echo "  RETRIED successfully"
+            echo ""
+          done <<< "$STUCK_LIST"
+
+          # =============================================
+          # Summary
+          # =============================================
+          echo "=============================="
+          echo "SUMMARY"
+          echo "  Retried:            ${RETRIED}"
+          echo "  Skipped (recent):   ${SKIPPED_RECENT}"
+          echo "  Maxed out:          ${MAXED_OUT}"
+          echo "  Total stuck:        ${TOTAL}"
+          echo "=============================="

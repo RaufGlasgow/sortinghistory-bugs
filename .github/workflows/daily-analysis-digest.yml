@@ -147,7 +147,7 @@ jobs:
           # AC1: Query issues with attention-needed labels
           STUCK_ISSUES=""
           STUCK_COUNT=0
-          for LABEL in dispatch-pending needs-manual-fix fix-failed triage-failed translation-fix-failed; do
+          for LABEL in dispatch-pending needs-manual-fix fix-failed triage-failed translation-fix-failed needs-claude-code needs-handoff-review; do
             ISSUES=$(gh api "repos/${PRIVATE_REPO}/issues?labels=${LABEL}&state=open&per_page=100" \
               --jq '.[] | "\(.number)|\(.title)|\(.html_url)"' 2>/dev/null || echo "")
             if [ -n "$ISSUES" ]; then
@@ -163,6 +163,36 @@ jobs:
           echo "stuck_count=${STUCK_COUNT}" >> "$GITHUB_OUTPUT"
           printf '%s' "$STUCK_ISSUES" > /tmp/stuck_issues.txt
           echo "Found ${STUCK_COUNT} stuck/failed issues"
+
+          # Auto-retry status: count retryable vs maxed-out issues (deduplicated)
+          RETRY_ELIGIBLE=0
+          RETRY_MAXED=0
+          SEEN_ISSUES=""
+          RETRY_LABELS=("fix-failed" "needs-claude-code" "needs-handoff-review" "triage-failed")
+          for LABEL in "${RETRY_LABELS[@]}"; do
+            ISSUE_NUMS=$(gh api "repos/${PRIVATE_REPO}/issues?labels=from-app,${LABEL}&state=open&per_page=100" \
+              --jq '.[].number' 2>/dev/null || echo "")
+            for NUM in $ISSUE_NUMS; do
+              [ -z "$NUM" ] && continue
+              # Skip if already processed (dedup across labels)
+              if echo "$SEEN_ISSUES" | grep -qw "$NUM"; then
+                continue
+              fi
+              SEEN_ISSUES="${SEEN_ISSUES} ${NUM}"
+              # Count auto-retry comments
+              RETRIES=$(gh api "repos/${PRIVATE_REPO}/issues/${NUM}/comments?per_page=100" \
+                --jq '[.[] | select(.body | contains("## Auto-Retry"))] | length' 2>/dev/null || echo "0")
+              if [ "$RETRIES" -ge 3 ]; then
+                RETRY_MAXED=$((RETRY_MAXED + 1))
+              else
+                RETRY_ELIGIBLE=$((RETRY_ELIGIBLE + 1))
+              fi
+            done
+          done
+
+          echo "retry_eligible=${RETRY_ELIGIBLE}" >> "$GITHUB_OUTPUT"
+          echo "retry_maxed=${RETRY_MAXED}" >> "$GITHUB_OUTPUT"
+          echo "Auto-retry: ${RETRY_ELIGIBLE} eligible for retry, ${RETRY_MAXED} maxed out"
 
           # AC2: Count pipeline runs in last 7 days
           SEVEN_DAYS_AGO=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-7d '+%Y-%m-%dT%H:%M:%SZ')
@@ -229,6 +259,8 @@ jobs:
           POOL_REMAINING: ${{ steps.reward_pool.outputs.pool_remaining }}
           POOL_TOTAL: ${{ steps.reward_pool.outputs.pool_total }}
           STUCK_COUNT: ${{ steps.pipeline_health.outputs.stuck_count }}
+          RETRY_ELIGIBLE: ${{ steps.pipeline_health.outputs.retry_eligible }}
+          RETRY_MAXED: ${{ steps.pipeline_health.outputs.retry_maxed }}
           TRIAGE_RUNS_7D: ${{ steps.pipeline_health.outputs.triage_runs_7d }}
           FIX_RUNS_7D: ${{ steps.pipeline_health.outputs.fix_runs_7d }}
           FIX_RUNS_MONTH: ${{ steps.pipeline_health.outputs.fix_runs_month }}
@@ -814,6 +846,28 @@ jobs:
             # Fallback: minimal health section when CLI produced no output
             EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:24px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">System Health</h3>"
             EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 12px 0;font-size:14px;color:#555;font-style:italic;\">No pipeline data yet &mdash; health metrics will appear after the first workflow completes.</p>"
+          fi
+
+          # Auto-retry status banner
+          RETRY_ELIGIBLE_COUNT="${RETRY_ELIGIBLE:-0}"
+          RETRY_MAXED_COUNT="${RETRY_MAXED:-0}"
+          if [ "$RETRY_ELIGIBLE_COUNT" -gt 0 ] || [ "$RETRY_MAXED_COUNT" -gt 0 ]; then
+            EMAIL_HTML="${EMAIL_HTML}<div style=\"margin:16px 0;padding:12px 16px;border-radius:8px;"
+            if [ "$RETRY_MAXED_COUNT" -gt 0 ]; then
+              EMAIL_HTML="${EMAIL_HTML}background:#fef2f2;border:1px solid #fca5a5;\">"
+              EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0;font-size:13px;color:#991b1b;line-height:1.5;\">"
+              EMAIL_HTML="${EMAIL_HTML}<strong>Auto-Retry:</strong> "
+              if [ "$RETRY_ELIGIBLE_COUNT" -gt 0 ]; then
+                EMAIL_HTML="${EMAIL_HTML}${RETRY_ELIGIBLE_COUNT} stuck issue(s) will be retried at 08:00 UTC tomorrow. "
+              fi
+              EMAIL_HTML="${EMAIL_HTML}${RETRY_MAXED_COUNT} issue(s) have exhausted all 3 retries &mdash; <strong>manual fix required</strong>."
+              EMAIL_HTML="${EMAIL_HTML}</p></div>"
+            else
+              EMAIL_HTML="${EMAIL_HTML}background:#eff6ff;border:1px solid #93c5fd;\">"
+              EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0;font-size:13px;color:#1e40af;line-height:1.5;\">"
+              EMAIL_HTML="${EMAIL_HTML}<strong>Auto-Retry:</strong> ${RETRY_ELIGIBLE_COUNT} stuck issue(s) will be retried at 08:00 UTC tomorrow."
+              EMAIL_HTML="${EMAIL_HTML}</p></div>"
+            fi
           fi
 
           EMAIL_HTML="${EMAIL_HTML}</div>"
