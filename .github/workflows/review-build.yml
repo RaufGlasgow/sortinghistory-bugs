@@ -199,18 +199,18 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         env:
           ASC_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo -n "$ASC_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
-          echo "App Store Connect API key installed"
+          echo "App Store Connect API key installed (key ID: ${ASC_KEY_ID})"
 
       - name: Upload to TestFlight
         if: steps.check.outputs.skip != 'true'
         id: upload
         env:
-          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
         run: |
           IPA_PATH=$(find build/export -name "*.ipa" -type f | head -1)
 
