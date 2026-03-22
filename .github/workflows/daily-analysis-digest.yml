@@ -289,6 +289,93 @@ jobs:
             echo "$display"
           }
 
+          # Story 3.8: Detect action history for an issue
+          # Returns a one-line status string showing the most recent owner/pipeline action
+          detect_issue_status() {
+            local comments_json="$1"
+            local labels="$2"
+            local body="$3"
+
+            # 1. Check for Owner Feedback comments (Need More Info action)
+            local feedback_date
+            feedback_date=$(echo "$comments_json" | jq -r '[.[] | select(.body | contains("## Owner Feedback"))] | first | .created_at // ""')
+            if [ -n "$feedback_date" ] && [ "$feedback_date" != "" ] && [ "$feedback_date" != "null" ]; then
+              local fmt_date
+              fmt_date=$(date -d "$feedback_date" '+%b %d' 2>/dev/null || echo "$feedback_date" | cut -c1-10)
+              # Check if reporter has contact email
+              if echo "$body" | grep -qE '\*\*Contact Email:\*\*\s*\S+@\S+'; then
+                echo "Need More Info requested ${fmt_date} — email sent to reporter"
+              else
+                echo "Need More Info requested ${fmt_date} — reporter unreachable (no email)"
+              fi
+              return
+            fi
+
+            # 2. Check for pipeline state labels (most specific first)
+            if echo "$labels" | grep -q 'fix-failed'; then
+              # Get date from the most recent Pipeline Handoff comment or fix-failed event
+              local fail_date
+              fail_date=$(echo "$comments_json" | jq -r '[.[] | select(.body | contains("Pipeline Handoff:"))] | first | .created_at // ""')
+              if [ -n "$fail_date" ] && [ "$fail_date" != "" ] && [ "$fail_date" != "null" ]; then
+                local fmt_date
+                fmt_date=$(date -d "$fail_date" '+%b %d' 2>/dev/null || echo "$fail_date" | cut -c1-10)
+                echo "Pipeline fix attempted ${fmt_date} — failed"
+              else
+                echo "Pipeline fix attempted — failed"
+              fi
+              return
+            fi
+
+            if echo "$labels" | grep -q 'approved'; then
+              local approve_date
+              approve_date=$(echo "$comments_json" | jq -r '[.[] | select(.body | (contains("approved") or contains("Approved")))] | first | .created_at // ""')
+              if [ -n "$approve_date" ] && [ "$approve_date" != "" ] && [ "$approve_date" != "null" ]; then
+                local fmt_date
+                fmt_date=$(date -d "$approve_date" '+%b %d' 2>/dev/null || echo "$approve_date" | cut -c1-10)
+                echo "Approved ${fmt_date} — pipeline running"
+              else
+                echo "Approved — pipeline running"
+              fi
+              return
+            fi
+
+            if echo "$labels" | grep -q 'needs-claude-code'; then
+              local handoff_date
+              handoff_date=$(echo "$comments_json" | jq -r '[.[] | select(.body | contains("Pipeline Handoff:"))] | first | .created_at // ""')
+              if [ -n "$handoff_date" ] && [ "$handoff_date" != "" ] && [ "$handoff_date" != "null" ]; then
+                local fmt_date
+                fmt_date=$(date -d "$handoff_date" '+%b %d' 2>/dev/null || echo "$handoff_date" | cut -c1-10)
+                echo "Handed off to Claude Code ${fmt_date}"
+              else
+                echo "Handed off to Claude Code"
+              fi
+              return
+            fi
+
+            # 2b. Check for Rework action (rework comment from pipeline)
+            local rework_date
+            rework_date=$(echo "$comments_json" | jq -r '[.[] | select(.body | (contains("Rework") and contains("pipeline email action")))] | first | .created_at // ""')
+            if [ -n "$rework_date" ] && [ "$rework_date" != "" ] && [ "$rework_date" != "null" ]; then
+              local fmt_date
+              fmt_date=$(date -d "$rework_date" '+%b %d' 2>/dev/null || echo "$rework_date" | cut -c1-10)
+              echo "Rework requested ${fmt_date} — awaiting new fix"
+              return
+            fi
+
+            # 3. Check for Owner Reclassification comments
+            local reclass_date
+            reclass_date=$(echo "$comments_json" | jq -r '[.[] | select(.body | contains("## Owner Reclassification"))] | first | .created_at // ""')
+            if [ -n "$reclass_date" ] && [ "$reclass_date" != "" ] && [ "$reclass_date" != "null" ]; then
+              local fmt_date
+              fmt_date=$(date -d "$reclass_date" '+%b %d' 2>/dev/null || echo "$reclass_date" | cut -c1-10)
+              echo "Reclassified ${fmt_date}"
+              return
+            fi
+
+            # 4. No action taken — return empty
+            echo ""
+          }
+
           # =============================================
           # Section 1: Bugs Awaiting Review
           # =============================================
@@ -345,6 +432,13 @@ jobs:
               # Fetch comments (newest first)
               COMMENTS_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${NUM}/comments?sort=created&direction=desc&per_page=50" 2>/dev/null || echo "[]")
 
+              # Story 3.8: Detect action history status line
+              STATUS_LINE=$(detect_issue_status "$COMMENTS_JSON" "$ALL_LABELS" "$BODY")
+              SAFE_STATUS_LINE=$(html_escape "$STATUS_LINE")
+              if [ -n "$STATUS_LINE" ]; then
+                echo "  Status: ${STATUS_LINE}"
+              fi
+
               # Story 3.13: Check for owner reclassification comment FIRST (authoritative)
               OWNER_RECLASS_COMMENT=$(echo "$COMMENTS_JSON" | jq -r '[.[] | select(.body | contains("## Owner Reclassification"))] | first | .body // ""')
               OWNER_TYPE=""
@@ -395,6 +489,10 @@ jobs:
                 fi
 
                 CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+                # Story 3.8: Status line for untriaged cards
+                if [ -n "$SAFE_STATUS_LINE" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:12px;color:#6b7280;font-style:italic;\">${SAFE_STATUS_LINE}</p>"
+                fi
                 if [ -n "$SAFE_ACTUAL" ]; then
                   CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
                 fi
@@ -526,6 +624,10 @@ jobs:
                 CARD="<div style=\"border:2px solid #dc2626;border-radius:8px;padding:16px;margin-bottom:16px;background:#fef2f2;\">"
                 CARD="${CARD}<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:8px;\"><span style=\"background:#dc2626;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;\">FIX FAILED</span><span style=\"background:#7c3aed;color:#fff;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:bold;\">NEEDS CLAUDE CODE</span></div>"
                 CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+                # Story 3.8: Status line for fix-failed cards
+                if [ -n "$SAFE_STATUS_LINE" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:12px;color:#6b7280;font-style:italic;\">${SAFE_STATUS_LINE}</p>"
+                fi
                 if [ -n "$SAFE_ACTUAL" ]; then
                   CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
                 fi
@@ -561,6 +663,10 @@ jobs:
                 # ---- NORMAL CARD ----
                 CARD="<div style=\"border:1px solid #ddd;border-radius:8px;padding:16px;margin-bottom:16px;background:#fafafa;\">"
                 CARD="${CARD}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#1a1a1a;white-space:normal;overflow-wrap:break-word;word-wrap:break-word;\">BUG #${NUM} &mdash; ${SAFE_TITLE}</h3>"
+                # Story 3.8: Status line for normal cards
+                if [ -n "$SAFE_STATUS_LINE" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:12px;color:#6b7280;font-style:italic;\">${SAFE_STATUS_LINE}</p>"
+                fi
                 if [ -n "$SAFE_ACTUAL" ]; then
                   CARD="${CARD}<p style=\"margin:0 0 10px 0;font-size:14px;color:#333;line-height:1.4;font-style:italic;\">&ldquo;${SAFE_ACTUAL}&rdquo;</p>"
                 fi
@@ -578,16 +684,30 @@ jobs:
                   CARD="${CARD}<p style=\"margin:0 0 16px 0;font-size:14px;color:#1a1a1a;line-height:1.4;\">${SAFE_FIX}</p>"
                 fi
 
+                # Story 3.9: Check if reporter has contact email (for needs-human-review no-email routing)
+                HAS_CONTACT_EMAIL="yes"
+                if ! echo "$BODY" | grep -qE '\*\*Contact Email:\*\*\s*\S+@\S+'; then
+                  HAS_CONTACT_EMAIL="no"
+                fi
+
                 # Action buttons — large tap targets (min 44px height, generous padding)
                 CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
                 if [ "$COMMENT_TYPE" != "needs_human_review" ] && [ "$TYPE" != "needs_human_review" ]; then
                   CARD="${CARD}<a href=\"${APPROVE_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Approve Fix</a>"
                 fi
-                CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
-                CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
-                CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
                 FIX_LOCALLY_URL="https://sortinghistory.com/api/pipeline/fix-locally?issue=${NUM}&token=${AUTH_TOKEN}"
-                CARD="${CARD}<a href=\"${FIX_LOCALLY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#6b7280;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally</a>"
+                # Story 3.9: For needs-human-review with no email, suppress Need More Info and promote Fix Locally
+                if { [ "$COMMENT_TYPE" = "needs_human_review" ] || [ "$TYPE" = "needs_human_review" ]; } && [ "$HAS_CONTACT_EMAIL" = "no" ]; then
+                  CARD="${CARD}<p style=\"margin:0 0 8px 0;font-size:13px;color:#b91c1c;font-weight:bold;\">No contact email &mdash; reporter unreachable</p>"
+                  CARD="${CARD}<a href=\"${FIX_LOCALLY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#7c3aed;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally</a>"
+                  CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+                  CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
+                else
+                  CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
+                  CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
+                  CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
+                  CARD="${CARD}<a href=\"${FIX_LOCALLY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#6b7280;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally</a>"
+                fi
                 CARD="${CARD}</div></div>"
               fi
 

@@ -130,6 +130,28 @@ jobs:
             --remove-label "needs-triage" 2>/dev/null || true
           echo "Removed needs-triage label from issue #$ISSUE_NUMBER"
 
+      # Story 3.9: Flag issues with no contact email after triage
+      - name: Flag no-email issues
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          ISSUE="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
+          # Check if issue has needs-human-review label
+          HAS_NHR=$(gh issue view "$ISSUE" --repo RaufGlasgow/Sorting-History --json labels --jq '[.labels[].name] | if index("needs-human-review") then "yes" else "no" end' 2>/dev/null || echo "no")
+          if [ "$HAS_NHR" = "yes" ]; then
+            # Check issue body for contact email
+            ISSUE_BODY=$(gh issue view "$ISSUE" --repo RaufGlasgow/Sorting-History --json body --jq '.body // ""' 2>/dev/null || echo "")
+            if ! echo "$ISSUE_BODY" | grep -q '\*\*Contact Email:\*\*'; then
+              echo "Issue #$ISSUE has needs-human-review but no contact email — posting note"
+              gh issue comment "$ISSUE" --repo RaufGlasgow/Sorting-History --body "> **Note:** No contact email on this issue — reporter cannot be followed up. Use **Fix Locally** to resolve, or **Reject** if insufficient info."
+            else
+              echo "Issue #$ISSUE has contact email — no action needed"
+            fi
+          else
+            echo "Issue #$ISSUE is not needs-human-review — skipping no-email check"
+          fi
+
       # BA-008.1 AC3a+AC5: Branded failure email with jq-safe JSON
       - name: Notify on failure
         if: failure()
