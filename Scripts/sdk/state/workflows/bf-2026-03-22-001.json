@@ -1,0 +1,89 @@
+{
+  "workflow_id": "bf-2026-03-22-001",
+  "workflow_type": "bug_fix",
+  "status": "escalated",
+  "session_id": null,
+  "created_at": "2026-03-22T20:37:45.922Z",
+  "updated_at": "2026-03-22T20:44:17.654Z",
+  "trigger": "dispatch",
+  "category": null,
+  "findings": [],
+  "approved_findings": [],
+  "rejected_findings": [],
+  "fix_attempts": 3,
+  "max_fix_attempts": 3,
+  "fix_results": [
+    {
+      "files_modified": [
+        "ViewModels/GameManager.swift"
+      ],
+      "fix_summary": "Fixed bug where paused games would always restart from the beginning instead of resuming. The issue was that when a game ended (via endGame() or trackAbandon()), the saved game state in UserDefaults was never cleared. This caused the 'Resume Game' button to appear on the main menu even after completing a game, and clicking it would load the old completed game state. Added clearSavedGameState() calls to both endGame() (line 1078) and trackAbandon() (line 2119) to properly clean up the saved state when games finish or are abandoned.",
+      "compilation_result": "success",
+      "confidence": "high"
+    }
+  ],
+  "pr_number": null,
+  "error": "All fix attempts exhausted",
+  "issue_number": 168,
+  "attempt_log": [
+    {
+      "attempt_number": 1,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "subagent error: Subagent error: error_max_turns",
+      "result": "error",
+      "error_output": "Subagent error: error_max_turns",
+      "timestamp": "2026-03-22T20:38:44.895Z"
+    },
+    {
+      "attempt_number": 2,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "subagent error: Subagent error: error_max_turns",
+      "result": "error",
+      "error_output": "Subagent error: error_max_turns",
+      "timestamp": "2026-03-22T20:39:56.474Z"
+    },
+    {
+      "attempt_number": 3,
+      "model": "claude-sonnet-4-5-20250929",
+      "approach": "Fixed bug where paused games would always restart from the beginning instead of resuming. The issue was that when a game ended (via endGame() or trackAbandon()), the saved game state in UserDefaults was never cleared. This caused the 'Resume Game' button to appear on the main menu even after completing a game, and clicking it would load the old completed game state. Added clearSavedGameState() calls to both endGame() (line 1078) and trackAbandon() (line 2119) to properly clean up the saved state when games finish or are abandoned.",
+      "result": "error",
+      "error_output": "qa_infra_failure: QA subagent failed (code): Subagent error: error_max_turns",
+      "timestamp": "2026-03-22T20:44:15.363Z"
+    }
+  ],
+  "qa_results": [],
+  "models_used": [
+    {
+      "step": "fix_attempt_1",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 1506,
+      "output_tokens": 2557,
+      "cost_estimate": 0.6462014999999999,
+      "timestamp": "2026-03-22T20:38:44.892Z"
+    },
+    {
+      "step": "fix_attempt_2",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 88,
+      "output_tokens": 3212,
+      "cost_estimate": 0.45136825,
+      "timestamp": "2026-03-22T20:39:56.471Z"
+    },
+    {
+      "step": "fix_attempt_3",
+      "model": "claude-sonnet-4-5-20250929",
+      "input_tokens": 81,
+      "output_tokens": 4520,
+      "cost_estimate": 0.81978175,
+      "timestamp": "2026-03-22T20:43:34.216Z"
+    },
+    {
+      "step": "qa_review_3",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 105,
+      "output_tokens": 3759,
+      "cost_estimate": 0.07081525000000001,
+      "timestamp": "2026-03-22T20:44:15.359Z"
+    }
+  ]
+}
