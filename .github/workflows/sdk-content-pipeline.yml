@@ -183,3 +183,86 @@ jobs:
           git config user.email "sdk-bot@users.noreply.github.com"
           git add Scripts/sdk/state/ || true
           git diff --cached --quiet && echo "No state changes to commit" || (git commit -m "state: update workflow state" && git push)
+
+      # ── Story 3.6a: Pipeline Outcome Logging ──
+      - name: Log pipeline outcome
+        if: always() && (github.event.action == 'sdk-content-verify' || github.event.action == 'sdk-content-resume')
+        run: |
+          # Resolve issue number from whichever dispatch type ran
+          ISSUE="${{ github.event.client_payload.issue_number }}"
+          if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "No valid issue number — skipping outcome log"
+            exit 0
+          fi
+
+          # Determine outcome from job status
+          JOB_STATUS="${{ job.status }}"
+          if [ "$JOB_STATUS" = "success" ]; then
+            OUTCOME="success"
+            ERROR_DETAIL="null"
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            OUTCOME="runner_crash"
+            ERROR_DETAIL="\"Job was cancelled\""
+          else
+            OUTCOME="model_crash"
+            ERROR_DETAIL="\"Content pipeline failed — check workflow log\""
+          fi
+
+          # Determine stage based on dispatch type
+          ACTION="${{ github.event.action }}"
+          if [ "$ACTION" = "sdk-content-verify" ]; then
+            STAGE="fix"
+          else
+            STAGE="fix"
+          fi
+
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Build JSON with jq for safe escaping
+          JSON_LINE=$(jq -n -c \
+            --argjson issue_number "$ISSUE" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg stage "$STAGE" \
+            --arg classification "content_error" \
+            --argjson severity null \
+            --argjson confidence null \
+            --argjson model null \
+            --argjson turns_used null \
+            --argjson max_turns null \
+            --argjson cost_usd null \
+            --arg outcome "$OUTCOME" \
+            --argjson attempt_number 1 \
+            --argjson error_detail "$ERROR_DETAIL" \
+            '{
+              issue_number: $issue_number,
+              timestamp: $timestamp,
+              stage: $stage,
+              classification: $classification,
+              severity: $severity,
+              confidence: $confidence,
+              model: $model,
+              turns_used: $turns_used,
+              max_turns: $max_turns,
+              cost_usd: $cost_usd,
+              outcome: $outcome,
+              attempt_number: $attempt_number,
+              error_detail: $error_detail
+            }')
+
+          echo "Logging outcome: $JSON_LINE"
+          echo "$JSON_LINE" >> pipeline-outcomes.jsonl
+
+          git config user.name "sdk-bot"
+          git config user.email "sdk-bot@users.noreply.github.com"
+          git add pipeline-outcomes.jsonl
+          git commit -m "log: content outcome for #$ISSUE"
+
+          # Retry push with rebase for concurrent append handling
+          for i in 1 2 3; do
+            if git push; then
+              echo "Push succeeded on attempt $i"
+              break
+            fi
+            echo "Push failed, retrying with rebase (attempt $i)..."
+            git pull --rebase origin main || true
+          done

@@ -4,7 +4,7 @@ SortingHistory is a historical trivia game where players sort events into chrono
 
 ## Your Job
 
-Read the bug report, classify it into exactly one of the 10 classifications below, assign a severity, and return structured JSON.
+Read the bug report, classify it into exactly one of the 14 classifications below, assign a severity, and return structured JSON.
 
 ## Cost Awareness
 
@@ -145,6 +145,7 @@ Affects game logic, scoring, event ordering, turn management, or causes data los
 - "The app freezes for 10 seconds during a round" -- use `performance_issue` (slow, not wrong)
 - "The sorting animation looks choppy" -- use `ui_bug` (visual, not logic)
 - "The moon landing date is wrong" -- use `content_error` (data error, not game logic)
+- If the user reports data that was LOST, RESET, or MISSING, classify as `data_corruption`, not `gameplay_bug`.
 
 ### code_bug
 A bug in the application code that doesn't fit the specific categories above. This covers logic errors in non-game systems (analytics, notifications, subscriptions, navigation, settings), infrastructure bugs, or code-level defects that aren't about game mechanics, UI layout, content data, or translations.
@@ -187,6 +188,42 @@ The app terminates unexpectedly or becomes completely unresponsive (requiring fo
 - "Game crashes when sorting more than 10 events quickly" -- this says "crash" but if the game continues running with wrong results, use `gameplay_bug`. If the app actually terminates, use `crash_bug`. When the report says "crash" ambiguously, lean toward `crash_bug`
 - "The app freezes for a few seconds then recovers" -- use `performance_issue` (temporary, recoverable)
 - "Score resets unexpectedly" -- use `gameplay_bug` (app still running, data issue)
+
+### purchase_error
+purchase_error: The user reports a problem with purchasing, subscribing, or accessing paid content.
+This includes: subscription purchase failing, paid features not unlocking, entitlement mismatch
+(paid but see ads, paid but categories locked), StoreKit errors, App Store payment issues,
+"restore purchases" not working, wrong subscription tier applied.
+Examples: "I paid for Historian but still see ads", "Purchase failed, charged but no access",
+"Restore purchases does nothing", "Upgraded but locked categories didn't unlock"
+SEVERITY: Always P0 or P1. Monetization bugs are existential threats.
+DO NOT classify as purchase_error: General feedback about pricing, feature requests about new tiers,
+or reports that mention purchases incidentally but describe a different bug.
+
+### data_corruption
+data_corruption: The user reports lost, reset, or corrupted game data.
+This includes: streaks disappeared, mastery progress reset, category stats zeroed out,
+game state invalid after update, play history lost, settings reset.
+DISTINGUISH FROM gameplay_bug: data_corruption is about STORED DATA being wrong/missing.
+gameplay_bug is about GAME LOGIC behaving incorrectly during active play.
+If the user says data "disappeared," "was lost," "reset to zero" -> data_corruption.
+If the user says the game "did the wrong thing" during play -> gameplay_bug.
+Examples: "My 30-day streak is gone", "All categories show 0 games played",
+"After updating the app, my progress was wiped", "My Historian Path tiers all reset"
+SEVERITY: Always P1. Progress loss = uninstall.
+
+### multiplayer_error
+multiplayer_error: The user reports a problem with multiplayer features (BOTH network play AND Pass & Play).
+This includes: network game won't start, stuck on "loading historical events",
+disconnected mid-game, opponent's moves not syncing, Pass & Play handoff broken,
+can't find other players, game hangs when joining/hosting, scores don't match between players.
+IMPORTANT: Pass & Play bugs ARE multiplayer_error even though they don't use networking.
+Any bug involving two players interacting (whether via network or passing the device) is multiplayer_error.
+Distinguish from gameplay_bug: multiplayer_error involves MULTI-PLAYER interaction issues.
+gameplay_bug involves SINGLE-PLAYER game rules/logic being wrong.
+Examples: "Network game stuck on loading screen", "Got disconnected and game ended",
+"Other player's timeline doesn't update", "Pass & Play won't switch to next player"
+SEVERITY: P2 default. P1 if data loss involved (e.g., "disconnected and lost my progress").
 
 ### feature_request
 User asking for something that does not exist in the current app. Not a bug -- a wish.
@@ -264,7 +301,7 @@ Output ONLY a JSON object. No markdown code blocks, no explanation before or aft
 
 ```
 {
-  "classification": "content_error" | "content_category_error" | "content_duplicate" | "translation_error" | "ui_bug" | "gameplay_bug" | "code_bug" | "performance_issue" | "crash_bug" | "feature_request" | "needs_human_review",
+  "classification": "content_error" | "content_category_error" | "content_duplicate" | "translation_error" | "ui_bug" | "gameplay_bug" | "code_bug" | "performance_issue" | "crash_bug" | "purchase_error" | "data_corruption" | "multiplayer_error" | "feature_request" | "needs_human_review",
   "confidence": 0.0-1.0,
   "severity": "P1" | "P2" | "P3" | "P4",
   "reasoning": "Brief explanation of why this classification was chosen",

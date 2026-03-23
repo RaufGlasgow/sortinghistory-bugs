@@ -135,11 +135,181 @@ jobs:
         working-directory: Scripts/sdk
         run: npm run build
 
+      # ── Story 3.6c: Auto-bypass check for failing classifications ──
+      # Runs BEFORE the fix subagent. Checks always-handoff list and historical failure rate.
+      # If bypass triggers: skips fix, posts handoff comment, logs outcome.
+
+      - name: Check auto-bypass (Story 3.6c)
+        id: bypass_check
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          ISSUE="${{ env.ISSUE_NUM }}"
+
+          # Fetch classification from issue labels (hyphen format on GitHub)
+          LABELS=$(gh issue view "$ISSUE" --repo RaufGlasgow/Sorting-History --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          CLASSIFICATION=""
+          CLASSIFICATION_LABEL=""
+          for LABEL in $LABELS; do
+            case "$LABEL" in
+              content-error)        CLASSIFICATION="content_error"; CLASSIFICATION_LABEL="$LABEL" ;;
+              translation-error)    CLASSIFICATION="translation_error"; CLASSIFICATION_LABEL="$LABEL" ;;
+              crash-bug)            CLASSIFICATION="crash_bug"; CLASSIFICATION_LABEL="$LABEL" ;;
+              ui-bug)               CLASSIFICATION="ui_bug"; CLASSIFICATION_LABEL="$LABEL" ;;
+              gameplay-bug)         CLASSIFICATION="gameplay_bug"; CLASSIFICATION_LABEL="$LABEL" ;;
+              code-bug)             CLASSIFICATION="code_bug"; CLASSIFICATION_LABEL="$LABEL" ;;
+              performance-issue)    CLASSIFICATION="performance_issue"; CLASSIFICATION_LABEL="$LABEL" ;;
+              purchase-error)       CLASSIFICATION="purchase_error"; CLASSIFICATION_LABEL="$LABEL" ;;
+              data-corruption)      CLASSIFICATION="data_corruption"; CLASSIFICATION_LABEL="$LABEL" ;;
+              multiplayer-error)    CLASSIFICATION="multiplayer_error"; CLASSIFICATION_LABEL="$LABEL" ;;
+            esac
+          done
+
+          echo "classification=$CLASSIFICATION" >> $GITHUB_OUTPUT
+          echo "classification_label=$CLASSIFICATION_LABEL" >> $GITHUB_OUTPUT
+
+          if [ -z "$CLASSIFICATION" ]; then
+            echo "No recognized classification label found — proceeding with fix"
+            echo "bypass=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Classification: $CLASSIFICATION (label: $CLASSIFICATION_LABEL)"
+
+          # ── Always-handoff check (P0 severity — never attempt LLM fix) ──
+          # Keep in sync with ALWAYS_HANDOFF_CLASSIFICATIONS in config.ts
+          if [[ "$CLASSIFICATION" == "crash_bug" || "$CLASSIFICATION" == "purchase_error" ]]; then
+            echo "bypass=true" >> $GITHUB_OUTPUT
+            echo "reason=P0 severity — always handoff" >> $GITHUB_OUTPUT
+            echo "Auto-bypass triggered: $CLASSIFICATION is in always-handoff list"
+            exit 0
+          fi
+
+          # ── Historical failure rate check ──
+          # Threshold: 5 (keep in sync with AUTO_BYPASS_THRESHOLD in config.ts)
+          AUTO_BYPASS_THRESHOLD=5
+
+          if [ -f pipeline-outcomes.jsonl ]; then
+            FAIL_COUNT=$(cat pipeline-outcomes.jsonl | jq -s "[.[] | select(.classification == \"$CLASSIFICATION\" and .stage == \"fix\" and .outcome != \"success\")] | length")
+            TOTAL_COUNT=$(cat pipeline-outcomes.jsonl | jq -s "[.[] | select(.classification == \"$CLASSIFICATION\" and .stage == \"fix\")] | length")
+
+            echo "Historical fix stats for $CLASSIFICATION: $FAIL_COUNT failures / $TOTAL_COUNT total"
+
+            if [ "$TOTAL_COUNT" -ge "$AUTO_BYPASS_THRESHOLD" ] && [ "$FAIL_COUNT" -eq "$TOTAL_COUNT" ]; then
+              echo "bypass=true" >> $GITHUB_OUTPUT
+              echo "reason=${CLASSIFICATION} fixes have failed ${TOTAL_COUNT}/${TOTAL_COUNT} times" >> $GITHUB_OUTPUT
+              echo "Auto-bypass triggered: 100% failure rate at or above threshold"
+              exit 0
+            fi
+          else
+            echo "No pipeline-outcomes.jsonl found — no historical data, proceeding with fix"
+          fi
+
+          echo "bypass=false" >> $GITHUB_OUTPUT
+          echo "No auto-bypass triggered — proceeding with fix"
+
+      - name: Log auto-bypass outcome (Story 3.6c)
+        if: steps.bypass_check.outputs.bypass == 'true'
+        run: |
+          ISSUE="${{ env.ISSUE_NUM }}"
+          CLASSIFICATION="${{ steps.bypass_check.outputs.classification }}"
+          REASON="${{ steps.bypass_check.outputs.reason }}"
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          JSON_LINE=$(jq -n -c \
+            --argjson issue_number "$ISSUE" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg stage "fix" \
+            --arg classification "$CLASSIFICATION" \
+            --argjson severity null \
+            --argjson confidence null \
+            --argjson model null \
+            --argjson turns_used 0 \
+            --argjson max_turns 0 \
+            --argjson cost_usd 0 \
+            --arg outcome "auto_bypassed" \
+            --argjson attempt_number 0 \
+            --arg error_detail "$REASON" \
+            '{
+              issue_number: $issue_number,
+              timestamp: $timestamp,
+              stage: $stage,
+              classification: $classification,
+              severity: $severity,
+              confidence: $confidence,
+              model: $model,
+              turns_used: $turns_used,
+              max_turns: $max_turns,
+              cost_usd: $cost_usd,
+              outcome: $outcome,
+              attempt_number: $attempt_number,
+              error_detail: $error_detail
+            }')
+
+          echo "Logging auto-bypass: $JSON_LINE"
+          echo "$JSON_LINE" >> pipeline-outcomes.jsonl
+
+          git config user.name "SDK Bug Fix Bot"
+          git config user.email "bot@sortinghistory.com"
+          git add pipeline-outcomes.jsonl
+          git commit -m "log: auto-bypass for #$ISSUE ($CLASSIFICATION)"
+
+          for i in 1 2 3; do
+            if git push; then
+              echo "Push succeeded on attempt $i"
+              break
+            fi
+            echo "Push failed, retrying with rebase (attempt $i)..."
+            git pull --rebase origin main || true
+          done
+
+      - name: Post auto-bypass handoff comment (Story 3.6c)
+        if: steps.bypass_check.outputs.bypass == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          ISSUE="${{ env.ISSUE_NUM }}"
+          CLASSIFICATION="${{ steps.bypass_check.outputs.classification }}"
+          REASON="${{ steps.bypass_check.outputs.reason }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          {
+            echo "## Auto-Bypass: Routed to Fix Locally"
+            echo ""
+            echo "**Classification:** \`$CLASSIFICATION\`"
+            echo "**Reason:** $REASON"
+            echo ""
+            echo "The pipeline has skipped the LLM fix attempt for this issue because:"
+            if [[ "$CLASSIFICATION" == "crash_bug" || "$CLASSIFICATION" == "purchase_error" ]]; then
+              echo "- This classification is P0 severity and always routes to manual handoff."
+            else
+              echo "- Historical data shows this classification has a 100% failure rate for automated fixes."
+            fi
+            echo ""
+            echo "**Action required:** Fix this issue manually (Fix Locally)."
+            echo ""
+            echo "---"
+            echo "*Posted by [SDK bug fix pipeline — auto-bypass](${RUN_URL}) (Story 3.6c).*"
+          } > /tmp/bypass-comment.md
+
+          gh issue comment --repo RaufGlasgow/Sorting-History "$ISSUE" -F /tmp/bypass-comment.md
+
+          # Add needs-dev-handoff label
+          gh issue edit --repo RaufGlasgow/Sorting-History "$ISSUE" \
+            --add-label "needs-dev-handoff" 2>/dev/null || true
+
+          # Remove approved label since we're not proceeding with fix
+          gh issue edit --repo RaufGlasgow/Sorting-History "$ISSUE" \
+            --remove-label "approved" 2>/dev/null || true
+
+          echo "Auto-bypass handoff comment posted and labels updated for issue #$ISSUE"
+
       # ── Branch setup: different for full vs qa-only ──
 
       - name: Create fix branch in game repo (full mode)
         id: branch
-        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'full'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && (steps.bypass_check.outputs.bypass || 'false') != 'true' && env.PIPELINE_MODE == 'full'
         working-directory: game-repo
         run: |
           BRANCH="fix/sdk-bug-${{ env.ISSUE_NUM }}"
@@ -149,7 +319,7 @@ jobs:
       # PV2-4.4 AC3a: Checkout existing fix branch (qa-only mode)
       - name: Checkout existing fix branch (qa-only mode)
         id: branch-qa
-        if: (steps.guard.outputs.blocked || 'false') != 'true' && env.PIPELINE_MODE == 'qa-only'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && (steps.bypass_check.outputs.bypass || 'false') != 'true' && env.PIPELINE_MODE == 'qa-only'
         working-directory: game-repo
         run: |
           BRANCH="fix/sdk-bug-${{ env.ISSUE_NUM }}"
@@ -168,7 +338,7 @@ jobs:
 
       - name: Capture version string before subagent
         id: pre-version
-        if: (steps.guard.outputs.blocked || 'false') != 'true'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && (steps.bypass_check.outputs.bypass || 'false') != 'true'
         working-directory: game-repo
         run: |
           VERSION_LINE=$(grep -n '1\.1\.0-\(alpha\|beta\)\.[0-9]' Views/SettingsView.swift | head -1)
@@ -189,7 +359,7 @@ jobs:
 
       - name: Run SDK bug-fix subagent with QA gate
         id: fix
-        if: (steps.guard.outputs.blocked || 'false') != 'true'
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && (steps.bypass_check.outputs.bypass || 'false') != 'true'
         working-directory: Scripts/sdk
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -274,7 +444,7 @@ jobs:
       # ── Defense: revert version string if subagent clobbered it ──
 
       - name: Revert version string if subagent clobbered it
-        if: (steps.guard.outputs.blocked || 'false') != 'true' && steps.pre-version.outputs.line_num != ''
+        if: (steps.guard.outputs.blocked || 'false') != 'true' && (steps.bypass_check.outputs.bypass || 'false') != 'true' && steps.pre-version.outputs.line_num != ''
         working-directory: game-repo
         run: |
           PRE_LINE="${{ steps.pre-version.outputs.line_content }}"
@@ -866,3 +1036,143 @@ jobs:
       # The retry-loop.ts Handoff email (amber, with per-attempt detail) is now
       # the single failure notification. The "Handle failure" step above still
       # posts a comment and adds the fix-failed label.
+
+      # ── Story 3.6a: Pipeline Outcome Logging ──
+      # Story 3.6c: Skip if auto-bypass already logged its own entry
+      - name: Log pipeline outcome
+        if: always() && (steps.guard.outputs.blocked || 'false') != 'true' && (steps.bypass_check.outputs.bypass || 'false') != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          ISSUE="${{ env.ISSUE_NUM }}"
+          if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "No valid issue number — skipping outcome log"
+            exit 0
+          fi
+
+          # Determine outcome from fix step results
+          FIX_APPLIED="${{ steps.fix.outputs.applied }}"
+          FIX_EXIT_CODE="${{ steps.fix.outputs.exit_code }}"
+          HAS_CHANGES="${{ steps.changes.outputs.has_changes }}"
+          COMPILE_RESULT="${{ steps.compile-check.outcome }}"
+          PR_CREATED="${{ steps.create-pr.outputs.pr_url }}"
+
+          if [ -n "$PR_CREATED" ]; then
+            OUTCOME="success"
+            ERROR_DETAIL="null"
+          elif [ "$COMPILE_RESULT" = "failure" ]; then
+            OUTCOME="validation_failed"
+            ERROR_DETAIL="\"Independent compilation check failed\""
+          elif [ "$FIX_APPLIED" != "true" ]; then
+            # Parse error from orchestrator output
+            ERROR_SUMMARY="${{ steps.fix.outputs.error_summary }}"
+            if echo "$ERROR_SUMMARY" | grep -qi "max.*turn\|turn.*limit\|exceeded.*turn"; then
+              OUTCOME="error_max_turns"
+              ERROR_DETAIL="\"Exceeded turn budget\""
+            elif echo "$ERROR_SUMMARY" | grep -qi "cost\|budget\|spending"; then
+              OUTCOME="cost_cap"
+              ERROR_DETAIL="\"Cost cap exceeded\""
+            elif echo "$ERROR_SUMMARY" | grep -qi "diff.*too.*large\|too.*many.*changes"; then
+              OUTCOME="diff_too_large"
+              ERROR_DETAIL="\"Diff too large for review\""
+            elif echo "$ERROR_SUMMARY" | grep -qi "handoff"; then
+              OUTCOME="handoff_generated"
+              ERROR_DETAIL="\"Escalated to handoff\""
+            else
+              OUTCOME="model_crash"
+              ERROR_DETAIL="\"Fix subagent failed — exit code $FIX_EXIT_CODE\""
+            fi
+          elif [ "$HAS_CHANGES" != "true" ]; then
+            OUTCOME="model_crash"
+            ERROR_DETAIL="\"Subagent ran but produced no file changes\""
+          else
+            OUTCOME="model_crash"
+            ERROR_DETAIL="\"Unknown failure — fix applied but no PR created\""
+          fi
+
+          # Fetch classification and severity from issue labels
+          LABELS=$(gh issue view "$ISSUE" --repo RaufGlasgow/Sorting-History --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          CLASSIFICATION="null"
+          SEVERITY="null"
+          for LABEL in $LABELS; do
+            case "$LABEL" in
+              content_error|translation_error|crash_bug|ui_bug|logic_bug|gameplay_bug|performance_bug|feature_request|duplicate|not_a_bug)
+                CLASSIFICATION="\"$LABEL\""
+                ;;
+              P0|P1|P2|P3)
+                SEVERITY="\"$LABEL\""
+                ;;
+            esac
+          done
+
+          # Extract available metrics from fix step outputs
+          CONFIDENCE="${{ steps.fix.outputs.confidence }}"
+          FIX_ATTEMPTS="${{ steps.fix.outputs.fix_attempts }}"
+          ATTEMPT_NUM="${FIX_ATTEMPTS:-1}"
+          if [ "$ATTEMPT_NUM" = "0" ] || [ "$ATTEMPT_NUM" = "unknown" ] || [ -z "$ATTEMPT_NUM" ]; then
+            ATTEMPT_NUM=1
+          fi
+
+          # Confidence as number or null
+          if [ -n "$CONFIDENCE" ] && [ "$CONFIDENCE" != "unknown" ] && [ "$CONFIDENCE" != "null" ]; then
+            # Strip percentage sign if present, convert to decimal
+            CONFIDENCE_NUM=$(echo "$CONFIDENCE" | sed 's/%//' | awk '{if ($1 > 1) print $1/100; else print $1}')
+            if ! echo "$CONFIDENCE_NUM" | grep -qE '^[0-9]*\.?[0-9]+$'; then
+              CONFIDENCE_NUM="null"
+            fi
+          else
+            CONFIDENCE_NUM="null"
+          fi
+
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Build JSON with jq for safe escaping
+          JSON_LINE=$(jq -n -c \
+            --argjson issue_number "$ISSUE" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg stage "fix" \
+            --argjson classification "$CLASSIFICATION" \
+            --argjson severity "$SEVERITY" \
+            --argjson confidence "$CONFIDENCE_NUM" \
+            --argjson model null \
+            --argjson turns_used null \
+            --argjson max_turns null \
+            --argjson cost_usd null \
+            --arg outcome "$OUTCOME" \
+            --argjson attempt_number "$ATTEMPT_NUM" \
+            --argjson error_detail "$ERROR_DETAIL" \
+            '{
+              issue_number: $issue_number,
+              timestamp: $timestamp,
+              stage: $stage,
+              classification: $classification,
+              severity: $severity,
+              confidence: $confidence,
+              model: $model,
+              turns_used: $turns_used,
+              max_turns: $max_turns,
+              cost_usd: $cost_usd,
+              outcome: $outcome,
+              attempt_number: $attempt_number,
+              error_detail: $error_detail
+            }')
+
+          echo "Logging outcome: $JSON_LINE"
+
+          # Append to log file in the public repo (current checkout)
+          echo "$JSON_LINE" >> pipeline-outcomes.jsonl
+
+          git config user.name "SDK Bug Fix Bot"
+          git config user.email "bot@sortinghistory.com"
+          git add pipeline-outcomes.jsonl
+          git commit -m "log: fix outcome for #$ISSUE"
+
+          # Retry push with rebase for concurrent append handling
+          for i in 1 2 3; do
+            if git push; then
+              echo "Push succeeded on attempt $i"
+              break
+            fi
+            echo "Push failed, retrying with rebase (attempt $i)..."
+            git pull --rebase origin main || true
+          done

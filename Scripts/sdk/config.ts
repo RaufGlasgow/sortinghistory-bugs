@@ -114,6 +114,27 @@ export const LIMITS = {
   MAX_PER_BUG_COST_USD: 3,
 } as const;
 
+// ---------------------------------------------------------------------------
+// Story 3.6c: Auto-bypass rules for failing categories (Architecture 4.5)
+// ---------------------------------------------------------------------------
+
+/** Minimum fix attempts with 100% failure rate before auto-bypass triggers.
+ *  The actual check lives in sdk-bug-fix.yml (not in TS — can't import from YAML).
+ *  This constant is the documented source of truth; keep the YAML value in sync. */
+export const AUTO_BYPASS_THRESHOLD = 5;
+
+/** Master switch for auto-bypass. Set to false to disable bypass and always attempt fixes. */
+export const AUTO_BYPASS_ENABLED = true;
+
+/** Classifications that ALWAYS route to handoff, regardless of fix history.
+ *  crash_bug = P0 severity, too critical for LLM guessing.
+ *  purchase_error = P0 severity, monetization bugs are existential threats.
+ *  The actual check lives in sdk-bug-fix.yml; keep the YAML list in sync. */
+export const ALWAYS_HANDOFF_CLASSIFICATIONS: readonly Classification[] = [
+  "crash_bug",
+  "purchase_error",
+] as const;
+
 /** Read-only tools for verifier subagents */
 export const VERIFIER_TOOLS = ["Read", "Glob", "Grep", "Bash"] as const;
 
@@ -145,6 +166,9 @@ export const CLASSIFICATIONS = [
   "code_bug",
   "performance_issue",
   "crash_bug",
+  "purchase_error",
+  "data_corruption",
+  "multiplayer_error",
   "feature_request",
   "needs_human_review",
 ] as const;
@@ -193,6 +217,9 @@ export const ROUTING = {
   LABEL_PERFORMANCE_ISSUE: "performance-issue",
   LABEL_CODE_BUG: "code-bug",
   LABEL_CRASH_BUG: "crash-bug",
+  LABEL_PURCHASE_ERROR: "purchase-error",
+  LABEL_DATA_CORRUPTION: "data-corruption",
+  LABEL_MULTIPLAYER_ERROR: "multiplayer-error",
   LABEL_NEEDS_DEV_HANDOFF: "needs-dev-handoff",
   /** Story 3.2: Label for failed fix attempts (retryable) */
   LABEL_FIX_FAILED: "fix-failed",

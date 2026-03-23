@@ -245,6 +245,169 @@ jobs:
             echo "No health metrics data available"
           fi
 
+      # Story 3.6b: Aggregate pipeline-outcomes.jsonl for Pipeline Stats section
+      - name: Aggregate pipeline outcome stats (Story 3.6b)
+        id: pipeline_stats
+        run: |
+          LOGFILE="pipeline-outcomes.jsonl"
+
+          if [ ! -f "$LOGFILE" ] || [ ! -s "$LOGFILE" ]; then
+            echo "No pipeline-outcomes.jsonl found or file is empty"
+            echo "" > /tmp/pipeline_stats_section.html
+            echo "has_pipeline_stats=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Compute 7-day cutoff (GNU date on ubuntu-latest)
+          CUTOFF=$(date -u -d '7 days ago' '+%Y-%m-%dT%H:%M:%SZ')
+          echo "7-day cutoff: $CUTOFF"
+
+          # Filter entries from the last 7 days
+          RECENT=$(jq -c --arg cutoff "$CUTOFF" 'select(.timestamp >= $cutoff)' "$LOGFILE" 2>/dev/null || true)
+
+          if [ -z "$RECENT" ]; then
+            echo "No pipeline activity in last 7 days"
+            echo "" > /tmp/pipeline_stats_section.html
+            echo "has_pipeline_stats=empty" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Aggregate stats using jq -s (slurp all recent entries)
+          # Output: per-classification fix stats, triage stats, stage counts, total cost, alerts
+          STATS_JSON=$(echo "$RECENT" | jq -s '
+            # Per-classification fix success rates
+            def fix_stats:
+              [.[] | select(.stage == "fix")]
+              | group_by(.classification)
+              | map({
+                  classification: .[0].classification,
+                  attempts: length,
+                  successes: ([.[] | select(.outcome == "success")] | length),
+                  rate: (if length == 0 then 0 else (([.[] | select(.outcome == "success")] | length) * 100 / length) end)
+                })
+              | sort_by(-.attempts);
+
+            # Triage success rate (overall)
+            def triage_stats:
+              [.[] | select(.stage == "triage")]
+              | {
+                  attempts: length,
+                  successes: ([.[] | select(.outcome == "success")] | length),
+                  rate: (if length == 0 then 0 else (([.[] | select(.outcome == "success")] | length) * 100 / length) end)
+                };
+
+            # Issues processed by stage
+            def stage_counts:
+              group_by(.stage)
+              | map({stage: .[0].stage, count: length})
+              | sort_by(.stage);
+
+            # Total cost
+            def total_cost:
+              [.[] | .cost_usd // 0] | add // 0;
+
+            # Alerts: classifications with 0% fix rate over 5+ attempts
+            def alerts:
+              [.[] | select(.stage == "fix")]
+              | group_by(.classification)
+              | map({
+                  classification: .[0].classification,
+                  attempts: length,
+                  successes: ([.[] | select(.outcome == "success")] | length)
+                })
+              | [.[] | select(.attempts >= 5 and .successes == 0)]
+              | map("ALERT: \(.classification) — 0% fix rate over \(.attempts) attempts. Consider auto-bypass.");
+
+            {
+              fix_classifications: fix_stats,
+              triage: triage_stats,
+              stages: stage_counts,
+              total_cost: total_cost,
+              alerts: alerts
+            }
+          ' 2>/dev/null)
+
+          if [ -z "$STATS_JSON" ] || [ "$STATS_JSON" = "null" ]; then
+            echo "jq aggregation returned empty"
+            echo "" > /tmp/pipeline_stats_section.html
+            echo "has_pipeline_stats=empty" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Stats JSON: $STATS_JSON"
+
+          # Build HTML
+          STATS_HTML="<h3 style=\"margin:24px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">Pipeline Stats (last 7 days)</h3>"
+
+          # Fix success rate table
+          FIX_COUNT=$(echo "$STATS_JSON" | jq '.fix_classifications | length')
+          if [ "$FIX_COUNT" -gt 0 ]; then
+            STATS_HTML="${STATS_HTML}<table style=\"width:100%;border-collapse:collapse;margin-bottom:12px;font-size:13px;\">"
+            STATS_HTML="${STATS_HTML}<tr style=\"background:#f3f4f6;\"><th style=\"text-align:left;padding:8px 10px;border-bottom:2px solid #ddd;\">Classification</th><th style=\"text-align:center;padding:8px 10px;border-bottom:2px solid #ddd;\">Fix Attempts</th><th style=\"text-align:center;padding:8px 10px;border-bottom:2px solid #ddd;\">Successes</th><th style=\"text-align:center;padding:8px 10px;border-bottom:2px solid #ddd;\">Rate</th></tr>"
+
+            for i in $(seq 0 $((FIX_COUNT - 1))); do
+              CLASS=$(echo "$STATS_JSON" | jq -r ".fix_classifications[$i].classification")
+              ATTEMPTS=$(echo "$STATS_JSON" | jq -r ".fix_classifications[$i].attempts")
+              SUCCESSES=$(echo "$STATS_JSON" | jq -r ".fix_classifications[$i].successes")
+              RATE=$(echo "$STATS_JSON" | jq -r ".fix_classifications[$i].rate")
+
+              # Color the rate: green >= 50, amber >= 25, red < 25
+              if [ "$RATE" -ge 50 ]; then
+                RATE_COLOR="#16a34a"
+              elif [ "$RATE" -ge 25 ]; then
+                RATE_COLOR="#d97706"
+              else
+                RATE_COLOR="#dc2626"
+              fi
+
+              ROW_BG=""
+              if [ $((i % 2)) -eq 1 ]; then ROW_BG=" style=\"background:#fafafa;\""; fi
+              STATS_HTML="${STATS_HTML}<tr${ROW_BG}><td style=\"padding:6px 10px;border-bottom:1px solid #eee;\">${CLASS}</td><td style=\"text-align:center;padding:6px 10px;border-bottom:1px solid #eee;\">${ATTEMPTS}</td><td style=\"text-align:center;padding:6px 10px;border-bottom:1px solid #eee;\">${SUCCESSES}</td><td style=\"text-align:center;padding:6px 10px;border-bottom:1px solid #eee;color:${RATE_COLOR};font-weight:bold;\">${RATE}%</td></tr>"
+            done
+
+            STATS_HTML="${STATS_HTML}</table>"
+          fi
+
+          # Triage success rate
+          TRIAGE_ATTEMPTS=$(echo "$STATS_JSON" | jq -r '.triage.attempts')
+          TRIAGE_SUCCESSES=$(echo "$STATS_JSON" | jq -r '.triage.successes')
+          TRIAGE_RATE=$(echo "$STATS_JSON" | jq -r '.triage.rate')
+          if [ "$TRIAGE_ATTEMPTS" -gt 0 ]; then
+            STATS_HTML="${STATS_HTML}<p style=\"margin:0 0 8px 0;font-size:13px;color:#555;\">Triage success rate: <strong>${TRIAGE_SUCCESSES}/${TRIAGE_ATTEMPTS} (${TRIAGE_RATE}%)</strong></p>"
+          fi
+
+          # Issues processed by stage
+          STAGE_COUNT=$(echo "$STATS_JSON" | jq '.stages | length')
+          if [ "$STAGE_COUNT" -gt 0 ]; then
+            STAGE_LINE="Issues processed: "
+            for i in $(seq 0 $((STAGE_COUNT - 1))); do
+              STAGE=$(echo "$STATS_JSON" | jq -r ".stages[$i].stage")
+              SCOUNT=$(echo "$STATS_JSON" | jq -r ".stages[$i].count")
+              if [ "$i" -gt 0 ]; then STAGE_LINE="${STAGE_LINE}, "; fi
+              STAGE_LINE="${STAGE_LINE}${STAGE}: ${SCOUNT}"
+            done
+            STATS_HTML="${STATS_HTML}<p style=\"margin:0 0 8px 0;font-size:13px;color:#555;\">${STAGE_LINE}</p>"
+          fi
+
+          # Total API cost
+          TOTAL_COST=$(echo "$STATS_JSON" | jq -r '.total_cost')
+          # Format to 2 decimal places
+          FORMATTED_COST=$(printf '%.2f' "$TOTAL_COST")
+          STATS_HTML="${STATS_HTML}<p style=\"margin:0 0 12px 0;font-size:13px;color:#555;\">Total API cost (7d): <strong>\$${FORMATTED_COST}</strong></p>"
+
+          # Alerts
+          ALERT_COUNT=$(echo "$STATS_JSON" | jq '.alerts | length')
+          if [ "$ALERT_COUNT" -gt 0 ]; then
+            for i in $(seq 0 $((ALERT_COUNT - 1))); do
+              ALERT_MSG=$(echo "$STATS_JSON" | jq -r ".alerts[$i]")
+              STATS_HTML="${STATS_HTML}<div style=\"margin:8px 0;padding:8px 12px;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;font-size:13px;color:#991b1b;font-weight:bold;\">${ALERT_MSG}</div>"
+            done
+          fi
+
+          echo "$STATS_HTML" > /tmp/pipeline_stats_section.html
+          echo "has_pipeline_stats=data" >> "$GITHUB_OUTPUT"
+          echo "Pipeline stats HTML generated ($(echo "$STATS_HTML" | wc -c | tr -d ' ') bytes)"
+
       - name: Build digest email
         id: build
         env:
@@ -988,6 +1151,22 @@ jobs:
               EMAIL_HTML="${EMAIL_HTML}<strong>Auto-Retry:</strong> ${RETRY_ELIGIBLE_COUNT} stuck issue(s) will be retried at 08:00 UTC tomorrow."
               EMAIL_HTML="${EMAIL_HTML}</p></div>"
             fi
+          fi
+
+          # Story 3.6b: Pipeline Stats section (from pipeline-outcomes.jsonl)
+          PIPELINE_STATS_HTML=""
+          HAS_PIPELINE_STATS="${{ steps.pipeline_stats.outputs.has_pipeline_stats }}"
+          if [ -f /tmp/pipeline_stats_section.html ]; then
+            PIPELINE_STATS_HTML=$(cat /tmp/pipeline_stats_section.html)
+          fi
+          if [ "$HAS_PIPELINE_STATS" = "data" ] && [ -n "$PIPELINE_STATS_HTML" ]; then
+            EMAIL_HTML="${EMAIL_HTML}${PIPELINE_STATS_HTML}"
+          elif [ "$HAS_PIPELINE_STATS" = "empty" ]; then
+            EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:24px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">Pipeline Stats (last 7 days)</h3>"
+            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 12px 0;font-size:14px;color:#555;font-style:italic;\">No pipeline activity in the last 7 days</p>"
+          elif [ "$HAS_PIPELINE_STATS" = "none" ]; then
+            EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:24px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">Pipeline Stats (last 7 days)</h3>"
+            EMAIL_HTML="${EMAIL_HTML}<p style=\"margin:0 0 12px 0;font-size:14px;color:#555;font-style:italic;\">No pipeline data yet</p>"
           fi
 
           EMAIL_HTML="${EMAIL_HTML}</div>"
