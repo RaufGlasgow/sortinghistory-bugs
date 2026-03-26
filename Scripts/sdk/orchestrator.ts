@@ -162,37 +162,54 @@ async function runWorkflow(params: WorkflowParams): Promise<void> {
 
 /** Resume a paused workflow after human approval/rejection (legacy JSON path). */
 async function resumeWorkflow(params: ResumeParams): Promise<void> {
+  // Legacy resume path — all current workflows use flag-based resume instead.
+  // This function only fires from the legacy JSON payload path.
+  // Every exit posts a FIX LOCALLY comment so the owner is never left in the dark.
+  const issueNum = params.issueNumber || 0;
+
   let workflowId = params.workflowId;
 
-  // Resolve workflowId from issueNumber if not provided directly
   if (!workflowId && params.issueNumber) {
     const foundState = await findWorkflowByIssue(params.issueNumber);
     if (!foundState) {
       console.error(`[orchestrator] No workflow found for issue #${params.issueNumber}`);
+      if (issueNum > 0) {
+        postFixLocallyComment(issueNum, "No workflow state found for this issue.", "Attempted legacy resume path.");
+        addDevHandoffLabel(issueNum);
+      }
       process.exit(1);
     }
     workflowId = foundState.workflow_id;
-    console.log(`[orchestrator] Resolved issue #${params.issueNumber} -> ${workflowId}`);
   }
 
   if (!workflowId) {
     console.error("[orchestrator] resume requires workflowId or issueNumber");
+    if (issueNum > 0) {
+      postFixLocallyComment(issueNum, "Resume called without workflow ID or issue number.", "Attempted legacy resume path.");
+      addDevHandoffLabel(issueNum);
+    }
     process.exit(1);
   }
 
   const session = await getSession(workflowId);
   if (!session) {
     console.error(`[orchestrator] No paused session found for ${workflowId}`);
+    if (issueNum > 0) {
+      postFixLocallyComment(issueNum, `No paused session found for workflow ${workflowId}.`, "Attempted legacy resume path.");
+      addDevHandoffLabel(issueNum);
+    }
     process.exit(1);
   }
 
   const state = await loadWorkflowState(workflowId);
   if (!state) {
     console.error(`[orchestrator] No state file found for ${workflowId}`);
+    if (issueNum > 0) {
+      postFixLocallyComment(issueNum, `No state file found for workflow ${workflowId}.`, "Attempted legacy resume path.");
+      addDevHandoffLabel(issueNum);
+    }
     process.exit(1);
   }
-
-  console.log(`[orchestrator] Resuming ${workflowId} with action=${params.action}`);
 
   if (params.action === "reject") {
     await updateWorkflowState(workflowId, {
@@ -204,8 +221,13 @@ async function resumeWorkflow(params: ResumeParams): Promise<void> {
     return;
   }
 
-  // Approval flow — Story 1.5 proves pause/resume, Story 2.3 implements full pipeline
-  console.log(`[orchestrator] Resume with SDK session ${session.session_id} — not yet implemented`);
+  // Approval via legacy path — not implemented, fall through to FIX LOCALLY
+  console.error(`[orchestrator] Legacy resume approve not implemented for ${workflowId}`);
+  if (issueNum > 0) {
+    postFixLocallyComment(issueNum, "Legacy resume approve path is not implemented.", "Attempted legacy resume. Use the flag-based resume path instead.");
+    addDevHandoffLabel(issueNum);
+  }
+  process.exit(1);
 }
 
 /** Query the status of a workflow */

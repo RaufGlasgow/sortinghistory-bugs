@@ -155,9 +155,9 @@ jobs:
           ISSUE="${{ github.event.client_payload.issue_number }}"
           PRIVATE_REPO="RaufGlasgow/Sorting-History"
 
-          # Add failure label so pipeline health catches it
+          # Add failure + handoff labels so pipeline health and digest catch it
           gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
-            --add-label "translation-fix-failed" 2>/dev/null || true
+            --add-label "translation-fix-failed" --add-label "needs-dev-handoff" 2>/dev/null || true
 
           # Remove approved so digest skip filter does not hide this issue (parity with sdk-bug-fix.yml)
           gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
