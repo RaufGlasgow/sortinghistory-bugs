@@ -99,6 +99,13 @@ const CLASSIFICATION_TO_WORKFLOW: Record<string, string | null> = {
   'content-duplication': 'sdk-bug-fix',
 };
 
+// Approve dispatches the "resume" variant for pipelines that have a verify→pause→resume flow.
+// Pipelines without a resume variant (e.g. sdk-bug-fix) keep the same event type.
+const WORKFLOW_TO_RESUME: Record<string, string> = {
+  'sdk-content-verify': 'sdk-content-resume',
+  'sdk-translation-fix': 'sdk-translation-resume',
+};
+
 // Story 1.7: Dynamic valid labels for error page (excludes legacy aliases)
 const LEGACY_ALIASES = ['ux-bug'];
 const validLabels = Object.keys(CLASSIFICATION_TO_WORKFLOW)
@@ -831,13 +838,16 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
           });
         }
 
-        // Build dispatch payload — content-error needs category for sdk-content-verify
+        // Build dispatch payload — content errors need category
         // Story 3.14: Map Worker labels to SDK classifications in dispatch payload
+        // Use the resume event type for pipelines with a verify→pause→resume flow
+        const resumeEventType = WORKFLOW_TO_RESUME[workflow] || workflow;
         const dispatchPayload: Record<string, unknown> = {
           issue_number: parseInt(issueNumber, 10),
           labels: labels.map(l => WORKER_LABEL_TO_SDK_CLASSIFICATION[l.name] || l.name),
+          action: 'approve',
         };
-        if (classification === 'content-error') {
+        if (classification === 'content-error' || classification === 'content-category-error') {
           dispatchPayload.category = extractCategoryFromBody(issueBody);
         }
 
@@ -851,25 +861,25 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
             'X-GitHub-Api-Version': '2022-11-28',
           },
           body: JSON.stringify({
-            event_type: workflow,
+            event_type: resumeEventType,
             client_payload: dispatchPayload,
           }),
         });
 
         if (!dispatchResp.ok && dispatchResp.status !== 204) {
           const errText = await dispatchResp.text();
-          console.error(`Pipeline approve dispatch failed (${workflow}): ${dispatchResp.status} ${errText}`);
-          return new Response(pipelinePageHtml('Dispatch Failed', `Could not trigger ${workflow} pipeline: ${dispatchResp.status}`, true), {
+          console.error(`Pipeline approve dispatch failed (${resumeEventType}): ${dispatchResp.status} ${errText}`);
+          return new Response(pipelinePageHtml('Dispatch Failed', `Could not trigger ${resumeEventType} pipeline: ${dispatchResp.status}`, true), {
             status: 502, headers: { 'Content-Type': 'text/html' },
           });
         }
 
-        console.log(`Dispatched ${workflow} for issue #${issueNumber} (classification: ${classification})`);
+        console.log(`Dispatched ${resumeEventType} for issue #${issueNumber} (classification: ${classification})`);
 
         // Record in KV for idempotency (24h TTL)
         await env.PIPELINE_KV.put(kvKey, JSON.stringify({
           action: 'approve',
-          workflow,
+          workflow: resumeEventType,
           classification,
           dispatched_at: new Date().toISOString(),
         }), { expirationTtl: 86400 });
@@ -903,7 +913,7 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
         // Story 1.6: Record training verdict (fire-and-forget)
         dispatchTrainingVerdict(env, issueNumber, 'approved').catch(() => {});
 
-        return new Response(pipelinePageHtml('Fix Pipeline Triggered', `Issue #${issueNumber} has been approved. The ${workflow} pipeline is now running (classification: ${classification}).`, false, 'Check your next digest email for the fix result.'), {
+        return new Response(pipelinePageHtml('Fix Pipeline Triggered', `Issue #${issueNumber} has been approved. The ${resumeEventType} pipeline is now running (classification: ${classification}).`, false, 'Check your next digest email for the fix result.'), {
           status: 200, headers: { 'Content-Type': 'text/html' },
         });
 
@@ -1505,8 +1515,8 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
             issue_number: parseInt(issueNumber, 10),
             labels: [sdkClassification],
           };
-          // content-error needs category for sdk-content-verify
-          if (newClassification === 'content-error') {
+          // content errors need category for sdk-content-verify
+          if (newClassification === 'content-error' || newClassification === 'content-category-error') {
             try {
               const issueData = await fetchIssueLabels(env, issueNumber);
               dispatchPayload.category = extractCategoryFromBody(issueData.body);
