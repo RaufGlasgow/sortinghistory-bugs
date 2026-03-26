@@ -34,10 +34,10 @@ import {
 import { runContentE2ETest } from "./workflows/content-e2e-test.js";
 import { runRealTriage } from "./workflows/triage.js";
 import { runBugFix, type BugFixInput } from "./workflows/bug-fix.js";
-import { categoryToFilePath, isKnownCategory, allCategoryNames } from "./lib/categories.js";
+import { categoryToFilePath, isKnownCategory, allCategoryNames, extractCategoryFromText } from "./lib/categories.js";
 import { runTranslationE2E, resumeTranslationE2E } from "./workflows/translation-e2e.js";
 import { validateFix, type IssueData } from "./lib/validate-fix.js";
-import { fetchIssueData } from "./lib/github-utils.js";
+import { fetchIssueData, addDevHandoffLabel, postFixLocallyComment } from "./lib/github-utils.js";
 
 /**
  * Parse a named flag from process.argv.
@@ -111,20 +111,19 @@ function parseActionFlag(): "approve" | "reject" {
 
 /**
  * Parse and validate --category flag for content-e2e command.
- * Must be a known category name.
+ * Returns the category name if valid, or null if missing/invalid.
+ * Callers should attempt to extract category from the issue body when null.
  */
-function parseCategoryFlag(): string {
+function parseCategoryFlag(): string | null {
   const category = parseFlag("category");
   if (!category) {
-    console.error("content-e2e requires --category <name> flag");
-    console.error("Usage: orchestrator.ts content-e2e --category \"US History\" --issue 42 --no-dry-run");
-    process.exit(1);
+    console.log("[orchestrator] No --category flag provided, will attempt extraction from issue body");
+    return null;
   }
 
   if (!isKnownCategory(category)) {
-    console.error("Unknown category: \"" + category + "\"");
-    console.error("Valid categories: " + allCategoryNames().join(", "));
-    process.exit(1);
+    console.log("[orchestrator] Unknown category from flag: \"" + category + "\", will attempt extraction from issue body");
+    return null;
   }
 
   return category;
@@ -284,13 +283,13 @@ async function main(): Promise<void> {
         if (!foundState) {
           console.error("[orchestrator] No paused workflow found for issue #" + issueNumber);
 
-          // AC14: Post comment on issue about missing workflow
-          postIssueComment(
+          // ROBUST-A: Post FIX LOCALLY comment, label, and exit gracefully
+          postFixLocallyComment(
             issueNumber,
-            "## Resume Failed\n\n" +
-              "No paused workflow found for this issue. " +
-              "It may have already been completed or was never started.",
+            "No prior verification found for this issue. The pipeline cannot resume without a prior run. Please fix locally.",
+            "Attempted to resume content verification workflow for issue #" + issueNumber + " but no prior workflow state exists.",
           );
+          addDevHandoffLabel(issueNumber);
 
           process.exit(1);
         }
@@ -448,9 +447,41 @@ async function main(): Promise<void> {
       // Supports both flag-based (CI) and JSON payload (legacy/test) modes
       if (hasFlag("category") || hasFlag("issue") || hasFlag("no-dry-run")) {
         // Flag-based path for CI (Story 2.4b AC5)
-        const category = parseCategoryFlag();
+        let category = parseCategoryFlag();
         const issueNumber = parseIssueFlag();
         const noDryRun = hasFlag("no-dry-run");
+
+        // ROBUST-B: If category flag is missing/invalid, try extracting from issue body
+        if (!category) {
+          console.log("[orchestrator] Attempting to extract category from issue body...");
+          try {
+            const issueData = fetchIssueData(issueNumber);
+            const extracted = extractCategoryFromText(issueData.body);
+            if (extracted) {
+              console.log("[orchestrator] Extracted category from issue body: \"" + extracted + "\"");
+              category = extracted;
+            } else {
+              console.error("[orchestrator] Could not determine category from issue body");
+              postFixLocallyComment(
+                issueNumber,
+                "Pipeline couldn't determine which category file to check. The bug report doesn't mention a specific category.",
+                "Attempted to extract a game content category from the --category flag and issue body text, but neither contained a recognized category name.",
+              );
+              addDevHandoffLabel(issueNumber);
+              process.exit(1);
+            }
+          } catch (fetchErr: unknown) {
+            const fetchMsg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+            console.error("[orchestrator] Failed to fetch issue body for category extraction: " + fetchMsg);
+            postFixLocallyComment(
+              issueNumber,
+              "Pipeline couldn't determine which category file to check. The --category flag was missing/invalid and the issue body could not be fetched.",
+              "Attempted to fetch issue #" + issueNumber + " body for category extraction but failed: " + fetchMsg,
+            );
+            addDevHandoffLabel(issueNumber);
+            process.exit(1);
+          }
+        }
 
         // Resolve workspace root (GITHUB_WORKSPACE in CI, two levels up from Scripts/sdk locally)
         const workspaceRoot = process.env.GITHUB_WORKSPACE ?? resolve(process.cwd(), "../..");
@@ -670,10 +701,15 @@ async function main(): Promise<void> {
       const foundState = await findWorkflowByIssue(issueNumber);
       if (!foundState) {
         console.error("[orchestrator] No paused workflow found for issue #" + issueNumber);
-        postIssueComment(
+
+        // ROBUST-A: Post FIX LOCALLY comment, label, and exit gracefully
+        postFixLocallyComment(
           issueNumber,
-          "## Translation Resume Failed\n\nNo paused workflow found for this issue.",
+          "No prior verification found for this issue. The pipeline cannot resume without a prior run. Please fix locally.",
+          "Attempted to resume translation workflow for issue #" + issueNumber + " but no prior workflow state exists.",
         );
+        addDevHandoffLabel(issueNumber);
+
         process.exit(1);
       }
 
@@ -690,6 +726,18 @@ async function main(): Promise<void> {
       if (resumeResult.error) {
         console.error("[orchestrator] Error: " + resumeResult.error);
       }
+
+      // ROBUST-D: When translation resume escalates, notify the owner
+      if (resumeResult.status === "escalated") {
+        postFixLocallyComment(
+          issueNumber,
+          resumeResult.error ?? "Translation fix could not be completed automatically.",
+          "Attempted to apply automated translation fix for issue #" + issueNumber + " but the workflow escalated after exhausting retries or encountering an unrecoverable error.",
+        );
+        addDevHandoffLabel(issueNumber);
+        process.exit(1);
+      }
+
       break;
     }
     case "validate-fix": {

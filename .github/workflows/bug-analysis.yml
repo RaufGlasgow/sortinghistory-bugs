@@ -39,6 +39,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
+          # Allow re-triage when correction notes are provided
+          CORRECTION_NOTES="${{ github.event.client_payload.correction_notes || github.event.inputs.correction_notes }}"
+          if [ -n "$CORRECTION_NOTES" ]; then
+            echo "Correction notes provided — allowing re-triage despite sdk-routed label"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Check if issue already has sdk-routed label (triage already ran)
           LABELS=$(gh issue view "$ISSUE_NUMBER" --repo RaufGlasgow/Sorting-History --json labels --jq '.labels[].name' 2>/dev/null || echo "")
           if echo "$LABELS" | grep -q "^sdk-routed$"; then
@@ -254,7 +262,7 @@ jobs:
       - name: Log pipeline outcome
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           ISSUE="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
           if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then

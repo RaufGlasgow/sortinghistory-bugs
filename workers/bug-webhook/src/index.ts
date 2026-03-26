@@ -156,6 +156,62 @@ const CONTENT_PIPELINE_LABELS = new Set([
   'translation-error',
 ]);
 
+// ROBUST-B: Known game category names for text extraction from issue body.
+// Sorted longest-first so "Sports History Epic" matches before "Sports History".
+// SYNC REQUIRED: Must match Scripts/sdk/lib/categories.ts CATEGORY_FILE_MAP keys.
+const KNOWN_CATEGORY_NAMES = [
+  "Revolutions & Independence",
+  "Technological Inventions",
+  "Scientific Discoveries",
+  "South American History",
+  "Music & Entertainment",
+  "Ancient Civilizations",
+  "Medical Breakthroughs",
+  "Artists & Literature",
+  "Sports History Epic",
+  "Natural Disasters",
+  "Portuguese History",
+  "World Wars Epic",
+  "US History Epic",
+  "Film History Epic",
+  "TV History Epic",
+  "Space Exploration",
+  "European History",
+  "Medieval History",
+  "Economic Events",
+  "Political Events",
+  "Religious Events",
+  "Geography History",
+  "African History",
+  "Sports History",
+  "Women's History",
+  "German History",
+  "Animal History",
+  "LGBTQ History",
+  "Black History",
+  "Asian History",
+  "Film History",
+  "Food & Drink",
+  "TV History",
+  "US History",
+  "World Wars",
+];
+
+/**
+ * Extract a known category name from free text (e.g., issue body).
+ * Returns the first match (longest-first to prefer more specific names), or null.
+ */
+function extractCategoryFromText(text: string): string | null {
+  if (!text) return null;
+  const lowerText = text.toLowerCase();
+  for (const name of KNOWN_CATEGORY_NAMES) {
+    if (lowerText.includes(name.toLowerCase())) {
+      return name;
+    }
+  }
+  return null;
+}
+
 function isSDKContentPipelineIssue(labels: GitHubLabel[]): boolean {
   return labels.some(l => CONTENT_PIPELINE_LABELS.has(l.name));
 }
@@ -848,7 +904,13 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
           action: 'approve',
         };
         if (classification === 'content-error' || classification === 'content-category-error') {
-          dispatchPayload.category = extractCategoryFromBody(issueBody);
+          // ROBUST-B: Try structured extraction first, then fall back to text search
+          let extractedCategory = extractCategoryFromBody(issueBody);
+          if (!extractedCategory) {
+            extractedCategory = extractCategoryFromText(issueBody) ?? '';
+          }
+          // Send null (not empty string) when no category found — SDK handles gracefully
+          dispatchPayload.category = extractedCategory || null;
         }
 
         // Dispatch to the correct pipeline based on classification
@@ -1519,10 +1581,16 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
           if (newClassification === 'content-error' || newClassification === 'content-category-error') {
             try {
               const issueData = await fetchIssueLabels(env, issueNumber);
-              dispatchPayload.category = extractCategoryFromBody(issueData.body);
+              // ROBUST-B: Try structured extraction first, then fall back to text search
+              let reworkCategory = extractCategoryFromBody(issueData.body);
+              if (!reworkCategory) {
+                reworkCategory = extractCategoryFromText(issueData.body) ?? '';
+              }
+              dispatchPayload.category = reworkCategory || null;
             } catch (fetchErr) {
               console.error(`Rework: failed to fetch issue body for category extraction on #${issueNumber}:`, fetchErr);
-              // Continue without category — sdk-content-verify can still process without it
+              // Continue without category — SDK handles null gracefully
+              dispatchPayload.category = null;
             }
           }
           const dispatchResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {

@@ -178,3 +178,28 @@ export function getMinEventCount(category: string): number {
   if (!isKnownCategory(category)) return 0;
   return EPIC_CATEGORIES.has(category) ? EPIC_MIN_EVENTS : BASE_MIN_EVENTS;
 }
+
+/**
+ * Extract a game category name from free text (e.g., an issue body).
+ * Searches for known category names as substrings, longest match first
+ * to prefer "Sports History Epic" over "Sports History".
+ *
+ * Returns the first matching category name, or null if none found.
+ */
+export function extractCategoryFromText(text: string): string | null {
+  if (!text) return null;
+
+  // Sort by length descending so longer (more specific) names match first
+  const sortedNames = allCategoryNames().sort((a, b) => b.length - a.length);
+
+  // Case-insensitive search
+  const lowerText = text.toLowerCase();
+
+  for (const name of sortedNames) {
+    if (lowerText.includes(name.toLowerCase())) {
+      return name;
+    }
+  }
+
+  return null;
+}
