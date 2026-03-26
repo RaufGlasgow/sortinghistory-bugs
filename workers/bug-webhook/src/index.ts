@@ -820,9 +820,22 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
       const failedLabels = ['needs-dev-handoff', 'fix-failed', 'content-fix-failed', 'translation-fix-failed'];
       const hasFailed = issueLabelsResp.some((l: string) => failedLabels.includes(l));
       if (hasFailed) {
-        // Pipeline failed last time — clear KV lock and allow re-approval
-        await env.PIPELINE_KV.delete(kvKey);
-        console.log(`Cleared idempotency lock for issue #${issueNumber} — pipeline previously failed, allowing retry`);
+        // Pipeline already failed — don't re-dispatch, show Download or Cancel
+        const fixLocallyUrl = `${url.origin}/api/pipeline/fix-locally?issue=${issueNum}&token=${token}`;
+        const rejectUrl = `${url.origin}/api/pipeline/reject?issue=${issueNum}&token=${token}`;
+        return new Response(
+          pipelinePageHtml(
+            'Pipeline Could Not Auto-Fix This Issue',
+            `<p>The automated pipeline already attempted to fix issue #${issueNumber} but <strong>failed</strong>. Re-running it will produce the same result.</p>
+            <p>Choose one:</p>
+            <div style="margin:20px 0;">
+              <a href="${fixLocallyUrl}" style="display:inline-block;padding:12px 24px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;margin-right:12px;">Download &amp; Fix Locally</a>
+              <a href="${rejectUrl}" style="display:inline-block;padding:12px 24px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;">Cancel &amp; Close Issue</a>
+            </div>
+            <p style="color:#666;font-size:14px;">Download gives you the full issue context to fix in Claude Code. Cancel closes the issue permanently.</p>`,
+          ),
+          { status: 200, headers: { 'Content-Type': 'text/html' } },
+        );
       } else {
         return new Response(
           pipelinePageHtml(
