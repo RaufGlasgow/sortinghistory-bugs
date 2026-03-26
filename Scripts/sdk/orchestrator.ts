@@ -788,7 +788,30 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
+main().catch(async (err: unknown) => {
   console.error("[orchestrator] Fatal error:", err);
+
+  // CATCH-ALL FAILSAFE: If ANYTHING crashes, the owner must be told.
+  // Extract issue number from argv so we can post a comment.
+  const issueArg = process.argv.find((_, i, a) => a[i - 1] === "--issue");
+  const issueNumber = issueArg ? parseInt(issueArg, 10) : NaN;
+  const errorMsg = err instanceof Error ? err.message : String(err);
+
+  if (!isNaN(issueNumber) && issueNumber > 0) {
+    try {
+      await postFixLocallyComment(
+        issueNumber,
+        `Unexpected pipeline crash: ${errorMsg}`,
+        "The pipeline crashed before it could complete. This is an unhandled error — not a normal failure path.",
+      );
+      await addDevHandoffLabel(issueNumber);
+      console.error(`[orchestrator] Posted FIX LOCALLY failsafe comment on issue #${issueNumber}`);
+    } catch (commentErr) {
+      console.error("[orchestrator] FAILSAFE: Could not even post the crash comment:", commentErr);
+    }
+  } else {
+    console.error("[orchestrator] FAILSAFE: No issue number found in argv — cannot notify owner. Args:", process.argv.join(" "));
+  }
+
   process.exit(1);
 });

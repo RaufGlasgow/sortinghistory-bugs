@@ -1011,9 +1011,9 @@ jobs:
 
           gh issue comment --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" -F /tmp/failure-comment.md
 
-          # Add fix-failed label, remove approved + pr-created if present
+          # Add fix-failed + needs-dev-handoff labels, remove approved + pr-created if present
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
-            --add-label "fix-failed" 2>/dev/null || true
+            --add-label "fix-failed" --add-label "needs-dev-handoff" 2>/dev/null || true
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
             --remove-label "approved" 2>/dev/null || true
           gh issue edit --repo RaufGlasgow/Sorting-History "${{ env.ISSUE_NUM }}" \
