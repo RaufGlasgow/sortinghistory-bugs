@@ -41,7 +41,7 @@ import {
 import { saveSession, removeSession } from "../lib/session.js";
 import { verifyTranslations, type TranslationVerifyInput, type TranslationVerifyResult } from "./translation-verify.js";
 import { logSubagentAttempt, logModelUsage, handleWorkflowFailure } from "../lib/audit-trail.js";
-import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
+import { fetchIssueData, addHandoffLabel, postFixLocallyComment } from "../lib/github-utils.js";
 
 // ------------------------------------------------------------------
 // Constants
@@ -622,7 +622,12 @@ export async function runTranslationE2E(
     });
 
     if (input.issueNumber) {
-      postIssueComment(input.issueNumber, "## Translation Fix Failed\n\nCould not analyze the bug report.\n\n**Error:** " + errMsg);
+      // ROBUST-B AC4: Specific failure reason + CLI command
+      postFixLocallyComment(
+        input.issueNumber,
+        "Translation analysis failed: " + errMsg,
+        "Attempted to analyze bug report and scan LocalizationHelper.swift for affected keys",
+      );
     }
 
     return {
@@ -1095,17 +1100,17 @@ export async function resumeTranslationE2E(
 
   if (state.issue_number) {
     addHandoffLabel(state.issue_number);
-    postIssueComment(
+
+    // ROBUST-B AC4: Specific failure reason + CLI command via postFixLocallyComment
+    const remainingDetail = remainingFindings.map(f =>
+      "`" + f.key + "`: missing in " + f.missingIn.join(", "),
+    ).join("; ");
+    postFixLocallyComment(
       state.issue_number,
-      "## Translation Fix Escalated\n\n" +
-      "After **" + fixAttempt + "** attempt(s), **" + remainingFindings.length +
-      "** finding(s) still need manual translation.\n\n" +
-      "### Remaining Issues\n" +
-      remainingFindings.map(f =>
-        "- `" + f.key + "`: missing in " + f.missingIn.join(", "),
-      ).join("\n") + "\n\n" +
-      "**Workflow:** `" + workflowId + "`\n\n" +
-      "Manual intervention is required.",
+      "Translation fix exhausted " + fixAttempt + " attempt(s). " +
+        remainingFindings.length + " finding(s) remain: " + remainingDetail,
+      "Automated translation fixer ran " + fixAttempt + " attempt(s) across " +
+        Array.from(allMissingLanguages).join(", "),
     );
   }
 

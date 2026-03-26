@@ -63,7 +63,7 @@ import { isKnownCategory, categoryToFileName } from "../lib/categories.js";
 import { detectStaleTranslations, type StaleTranslationResult } from "../lib/content-pipeline-utils.js";
 import { safeGitAdd } from "../lib/git-utils.js";
 import { handleWorkflowFailure } from "../lib/audit-trail.js";
-import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
+import { fetchIssueData, addHandoffLabel, postFixLocallyComment } from "../lib/github-utils.js";
 import {
   runRetryLoop,
   type TriageContext,
@@ -385,29 +385,15 @@ async function runContentRetryLoop(
 }
 
 /**
- * Post a generic failure comment on the issue (AC7: no silent failures).
+ * Post a specific failure comment on the issue (AC7: no silent failures).
+ * ROBUST-B AC4: Uses postFixLocallyComment for specific failure reason + CLI command.
  */
 function postFailureComment(issueNumber: number, error: string): void {
-  const repo = ROUTING.PRIVATE_REPO;
-  const comment = "## Content Fix Pipeline Failed\n\n" +
-    "The content fix pipeline could not resolve this issue automatically.\n\n" +
-    "**Error:** " + error + "\n\n" +
-    "Manual intervention is required.";
-
-  const tmpFile = path.join(tmpdir(), "gh-content-fail-" + issueNumber + "-" + Date.now() + ".md");
-  try {
-    fs.writeFileSync(tmpFile, comment, "utf-8");
-    execSync(
-      "gh issue comment " + issueNumber + " --repo " + repo + " --body-file " + tmpFile,
-      { encoding: "utf-8", timeout: 30_000 },
-    );
-    console.log("[content-e2e] Posted failure comment on issue #" + issueNumber);
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.log("[content-e2e] WARNING: Could not post failure comment: " + errMsg);
-  } finally {
-    try { fs.unlinkSync(tmpFile); } catch { /* cleanup best-effort */ }
-  }
+  postFixLocallyComment(
+    issueNumber,
+    error,
+    "Content fix pipeline attempted automated resolution",
+  );
 }
 
 

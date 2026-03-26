@@ -1003,16 +1003,81 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
           });
         }
 
+        // ROBUST-B AC2: Close any open PRs that reference this issue
+        let prsClosed = 0;
+        try {
+          const prSearchResp = await fetch(
+            `https://api.github.com/repos/${env.GITHUB_REPO}/pulls?state=open&per_page=50`,
+            {
+              headers: {
+                'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github+json',
+                'User-Agent': 'SortingHistory-BugWebhook/1.0',
+                'X-GitHub-Api-Version': '2022-11-28',
+              },
+            },
+          );
+          if (prSearchResp.ok) {
+            const prs = await prSearchResp.json() as Array<{ number: number; title: string; body: string | null; head: { ref: string } }>;
+            // Match PRs by branch name (fix/bug-N, fix/sdk-bug-N) or body/title containing #N or "Fixes #N"
+            const issuePattern = new RegExp(`(#${issueNumber}\\b|bug-${issueNumber}\\b)`, 'i');
+            for (const pr of prs) {
+              const matches = issuePattern.test(pr.title) ||
+                issuePattern.test(pr.body || '') ||
+                issuePattern.test(pr.head.ref);
+              if (matches) {
+                // Post comment then close
+                await fetch(
+                  `https://api.github.com/repos/${env.GITHUB_REPO}/pulls/${pr.number}/comments`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+                      'Accept': 'application/vnd.github+json',
+                      'User-Agent': 'SortingHistory-BugWebhook/1.0',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                    },
+                    body: JSON.stringify({ body: 'Owner rejected the fix.' }),
+                  },
+                ).catch(() => {});
+                const prCloseResp = await fetch(
+                  `https://api.github.com/repos/${env.GITHUB_REPO}/pulls/${pr.number}`,
+                  {
+                    method: 'PATCH',
+                    headers: {
+                      'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+                      'Accept': 'application/vnd.github+json',
+                      'User-Agent': 'SortingHistory-BugWebhook/1.0',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                    },
+                    body: JSON.stringify({ state: 'closed' }),
+                  },
+                );
+                if (prCloseResp.ok) {
+                  prsClosed++;
+                  console.log(`Closed PR #${pr.number} (associated with rejected issue #${issueNumber})`);
+                } else {
+                  console.error(`Failed to close PR #${pr.number}: ${prCloseResp.status}`);
+                }
+              }
+            }
+          }
+        } catch (prError) {
+          console.error(`Error closing associated PRs for issue #${issueNumber}:`, prError);
+        }
+
         // Record in KV for idempotency (24h TTL)
         await env.PIPELINE_KV.put(kvKey, JSON.stringify({
           action: 'reject',
           closed_at: new Date().toISOString(),
+          prs_closed: prsClosed,
         }), { expirationTtl: 86400 });
 
         // Story 1.6: Record training verdict (fire-and-forget)
         dispatchTrainingVerdict(env, issueNumber, 'rejected').catch(() => {});
 
-        return new Response(pipelinePageHtml('Issue Rejected', `Issue #${issueNumber} has been closed as not planned.`, false, 'This issue has been closed and will not appear in future digests.'), {
+        const prNote = prsClosed > 0 ? ` ${prsClosed} associated PR(s) also closed.` : '';
+        return new Response(pipelinePageHtml('Issue Rejected', `Issue #${issueNumber} has been closed as not planned.${prNote}`, false, 'This issue has been closed and will not appear in future digests.'), {
           status: 200, headers: { 'Content-Type': 'text/html' },
         });
       }
@@ -3106,6 +3171,16 @@ async function handleHandoffDownload(request: Request, env: Env, ctx: ExecutionC
   if (issue.state === 'open') {
     ctx.waitUntil((async () => {
       try {
+        // ROBUST-B AC3: Add needs-dev-handoff label for tracking
+        await fetch(
+          `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`,
+          {
+            method: 'POST',
+            headers: githubHeaders,
+            body: JSON.stringify({ labels: ['needs-dev-handoff'] }),
+          }
+        ).catch((labelErr) => console.error(`Failed to add needs-dev-handoff label: ${labelErr}`));
+
         // Post a comment explaining the auto-close
         await fetch(
           `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/comments`,
