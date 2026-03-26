@@ -1028,7 +1028,7 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
               if (matches) {
                 // Post comment then close
                 await fetch(
-                  `https://api.github.com/repos/${env.GITHUB_REPO}/pulls/${pr.number}/comments`,
+                  `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${pr.number}/comments`,
                   {
                     method: 'POST',
                     headers: {
