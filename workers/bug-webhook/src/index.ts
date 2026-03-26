@@ -811,15 +811,32 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
       );
     }
 
-    // Idempotency check via KV
+    // Idempotency check via KV — but allow retry if pipeline already failed
     const kvKey = `${action}:${issueNum}`;
     const existing = await env.PIPELINE_KV.get(kvKey);
-    if (existing) {
-      const actionLabel = action === 'approve' ? 'Approve' : 'Reject';
+    if (existing && action === 'approve') {
+      // Check if pipeline failed — if so, clear KV and allow retry
+      const issueLabelsResp = await fetchIssueLabels(issueNumber, env);
+      const failedLabels = ['needs-dev-handoff', 'fix-failed', 'content-fix-failed', 'translation-fix-failed'];
+      const hasFailed = issueLabelsResp.some((l: string) => failedLabels.includes(l));
+      if (hasFailed) {
+        // Pipeline failed last time — clear KV lock and allow re-approval
+        await env.PIPELINE_KV.delete(kvKey);
+        console.log(`Cleared idempotency lock for issue #${issueNumber} — pipeline previously failed, allowing retry`);
+      } else {
+        return new Response(
+          pipelinePageHtml(
+            'Already Processed',
+            `Approve for issue #${issueNumber} has already been triggered. Check your email for the result.`,
+          ),
+          { status: 409, headers: { 'Content-Type': 'text/html' } },
+        );
+      }
+    } else if (existing) {
       return new Response(
         pipelinePageHtml(
           'Already Processed',
-          `${actionLabel} for issue #${issueNumber} has already been triggered. Check your email for the result.`,
+          `Reject for issue #${issueNumber} has already been triggered. Check your email for the result.`,
         ),
         { status: 409, headers: { 'Content-Type': 'text/html' } },
       );
