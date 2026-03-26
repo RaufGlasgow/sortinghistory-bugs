@@ -22,6 +22,7 @@ interface Env {
   SCREENSHOTS_BUCKET: R2Bucket;
   PIPELINE_KV: KVNamespace;  // KV namespace for pipeline action idempotency (approve, reject, merge)
   RESEND_API_KEY: string;    // FR-160: Resend API key for thank-you emails
+  OWNER_EMAIL: string;       // Story 5.2: Owner email for digest failure alerts
 }
 
 interface BugReport {
@@ -3400,6 +3401,94 @@ async function clearDedupEntry(
   }
 }
 
+// Story 5.2: Health check endpoint handler
+// ============================================================================
+
+interface DigestHealthData {
+  last_success?: string;
+  last_failure?: string;
+  status: 'ok' | 'error' | 'unknown';
+  error_message?: string;
+}
+
+async function handleHealthCheck(env: Env): Promise<Response> {
+  const now = new Date();
+  let digestHealth: DigestHealthData = { status: 'unknown' };
+  let stale = true;
+
+  try {
+    const raw = await env.PIPELINE_KV.get('health:digest');
+    if (raw) {
+      digestHealth = JSON.parse(raw) as DigestHealthData;
+    }
+  } catch {
+    // KV read failed — report as unknown
+  }
+
+  // Determine staleness: stale if last_success is >24h ago or missing
+  if (digestHealth.last_success) {
+    const lastSuccess = new Date(digestHealth.last_success);
+    const hoursSince = (now.getTime() - lastSuccess.getTime()) / (1000 * 60 * 60);
+    stale = hoursSince > 24;
+  }
+
+  const body = {
+    digest: {
+      last_success: digestHealth.last_success || null,
+      last_failure: digestHealth.last_failure || null,
+      status: digestHealth.status,
+      stale,
+    },
+    worker_version: '5.2',
+    timestamp: now.toISOString(),
+  };
+
+  return new Response(JSON.stringify(body, null, 2), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// Story 5.2: Alert email on digest dispatch failure
+async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: string): Promise<void> {
+  if (!env.RESEND_API_KEY || !env.OWNER_EMAIL) {
+    console.error('Cannot send digest failure alert: RESEND_API_KEY or OWNER_EMAIL not configured');
+    return;
+  }
+
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: 'Sorting History Pipeline <hello@sortinghistory.com>',
+        to: [env.OWNER_EMAIL],
+        subject: 'ALERT: Digest dispatch failed',
+        html: `
+          <h2 style="color:#cb2431;">Digest Dispatch Failed</h2>
+          <p><strong>Time:</strong> ${triggeredAt}</p>
+          <p><strong>Error:</strong></p>
+          <pre style="background:#f6f8fa;padding:12px;border-radius:6px;overflow-x:auto;">${errorMsg}</pre>
+          <p style="margin-top:16px;">Check the <a href="https://sortinghistory.com/api/pipeline/health">health endpoint</a> for current status.</p>
+          <hr style="margin-top:24px;border:none;border-top:1px solid #e1e4e8;">
+          <p style="color:#6a737d;font-size:12px;">Sorting History Pipeline Monitor</p>
+        `,
+      }),
+    });
+
+    if (res.ok) {
+      console.log('Digest failure alert email sent');
+    } else {
+      console.error(`Digest failure alert email failed: ${res.status}`);
+    }
+  } catch (emailErr) {
+    console.error('Digest failure alert email error:', emailErr);
+  }
+}
+
 // Main Router
 // ============================================================================
 
@@ -3408,24 +3497,72 @@ export default {
     // Dispatch the Pipeline Digest via repository_dispatch (not workflow_dispatch)
     // BUGS_REPO_PAT has contents:write which covers repository_dispatch
     // but NOT actions:write which workflow_dispatch requires
-    const response = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `token ${env.BUGS_REPO_PAT}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'SortingHistory-Pipeline-Cron',
-      },
-      body: JSON.stringify({
-        event_type: 'digest-cron',
-        client_payload: { triggered_at: new Date(event.scheduledTime).toISOString() },
-      }),
-    });
+    const triggeredAt = new Date(event.scheduledTime).toISOString();
 
-    if (!response.ok) {
-      const body = await response.text();
-      console.error(`Failed to dispatch digest: ${response.status} ${body}`);
-    } else {
-      console.log(`Digest dispatched at ${new Date(event.scheduledTime).toISOString()}`);
+    try {
+      const response = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `token ${env.BUGS_REPO_PAT}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'SortingHistory-Pipeline-Cron',
+        },
+        body: JSON.stringify({
+          event_type: 'digest-cron',
+          client_payload: { triggered_at: triggeredAt },
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        const errorMsg = `Digest dispatch HTTP ${response.status}: ${body}`;
+        console.error(`Failed to dispatch digest: ${errorMsg}`);
+
+        // Write failure to KV
+        const existing = await env.PIPELINE_KV.get('health:digest');
+        const prev: DigestHealthData = existing ? JSON.parse(existing) : { status: 'unknown' };
+        await env.PIPELINE_KV.put('health:digest', JSON.stringify({
+          ...prev,
+          last_failure: triggeredAt,
+          status: 'error',
+          error_message: errorMsg,
+        } satisfies DigestHealthData));
+
+        // Send alert email via Resend
+        await sendDigestFailureAlert(env, errorMsg, triggeredAt);
+      } else {
+        console.log(`Digest dispatched at ${triggeredAt}`);
+
+        // Write success to KV
+        await env.PIPELINE_KV.put('health:digest', JSON.stringify({
+          last_success: triggeredAt,
+          status: 'ok',
+        } satisfies DigestHealthData));
+      }
+    } catch (err) {
+      const errorMsg = `Digest dispatch exception: ${err instanceof Error ? err.message : String(err)}`;
+      console.error(errorMsg);
+
+      // Write failure to KV (best-effort)
+      try {
+        const existing = await env.PIPELINE_KV.get('health:digest');
+        const prev: DigestHealthData = existing ? JSON.parse(existing) : { status: 'unknown' };
+        await env.PIPELINE_KV.put('health:digest', JSON.stringify({
+          ...prev,
+          last_failure: new Date().toISOString(),
+          status: 'error',
+          error_message: errorMsg,
+        } satisfies DigestHealthData));
+      } catch {
+        // KV write failed — nothing we can do
+      }
+
+      // Send alert email (best-effort)
+      try {
+        await sendDigestFailureAlert(env, errorMsg, triggeredAt);
+      } catch {
+        console.error('Failed to send digest failure alert email');
+      }
     }
   },
 
@@ -3568,6 +3705,11 @@ export default {
         return new Response('Not Found', { status: 404 });
       }
       return handleScreenshotGet(env, key);
+    }
+
+    // Story 5.2: Health endpoint — always returns 200, reports digest health from KV
+    if (request.method === 'GET' && url.pathname === '/api/pipeline/health') {
+      return handleHealthCheck(env);
     }
 
     // Handoff endpoints — confirmation page + file download
