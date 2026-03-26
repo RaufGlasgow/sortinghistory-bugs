@@ -23,6 +23,16 @@ import { generateTriageHandoff, buildFallbackHandoffComment, type TriageOnlyHand
 // Types
 // ---------------------------------------------------------------------------
 
+/** Story 3.5: Structured triage handoff for needs_human_review classifications */
+export interface TriageHandoff {
+  best_guess_classification: string;
+  reasoning: string;
+  signals_found: string[];
+  signals_missing: string[];
+  suggested_steps: string[];
+  relevant_files: string[];
+}
+
 /** Input to the routing decision function */
 export interface RoutingInput {
   classification: string;
@@ -38,6 +48,8 @@ export interface RoutingInput {
   issue_body?: string;
   /** Triage reasoning — needed for handoff_to_dev routes */
   reasoning?: string;
+  /** Story 3.5: Triage handoff data for needs_human_review — contextual signals */
+  triage_handoff?: TriageHandoff;
 }
 
 /** Dispatch action — triggers a repository_dispatch event */
@@ -60,6 +72,8 @@ interface LabelAction {
   repo: string;
   issue_number: number;
   labels: string[];
+  /** Story 3.5: Triage handoff data attached to needs_human_review actions */
+  triage_handoff?: TriageHandoff;
 }
 
 /** Label + state file action — adds labels and creates workflow state */
@@ -125,6 +139,7 @@ export function decideRoute(input: RoutingInput): RoutingAction {
 
   // Gate 1 (BA-011 S4): Low confidence → safe label, cheapest action
   // Strictly less-than: 0.70 passes, 0.69 is blocked (FR6)
+  // Story 3.5: Carry triage_handoff through so the human reviewer gets signal context
   if (input.confidence < CONFIDENCE_THRESHOLD) {
     console.log("[routing] Gate 1: Low confidence " + input.confidence.toFixed(2) + " (threshold " + CONFIDENCE_THRESHOLD + ") for issue #" + input.issue_number + " — safe label fallback");
     return {
@@ -132,6 +147,7 @@ export function decideRoute(input: RoutingInput): RoutingAction {
       repo: ROUTING.PRIVATE_REPO,
       issue_number: input.issue_number,
       labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
+      triage_handoff: input.triage_handoff,
     };
   }
 
@@ -410,11 +426,13 @@ function routeByClassification(classification: Classification, input: RoutingInp
 
     case "needs_human_review": {
       // AC-7: manual triage queue
+      // Story 3.5: Attach triage_handoff when present (contextual signals analysis)
       return {
         type: "label",
         repo: ROUTING.PRIVATE_REPO,
         issue_number: input.issue_number,
         labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+        triage_handoff: input.triage_handoff,
       };
     }
 
@@ -594,6 +612,10 @@ export async function executeRoute(action: RoutingAction, dryRun: boolean): Prom
       console.log("[routing]   repo: " + action.repo);
       console.log("[routing]   issue_number: " + action.issue_number);
       console.log("[routing]   labels: [" + action.labels.join(", ") + "]");
+      if (action.triage_handoff) {
+        console.log("[routing]   triage_handoff.best_guess: " + action.triage_handoff.best_guess_classification);
+        console.log("[routing]   triage_handoff.signals_found: " + action.triage_handoff.signals_found.length);
+      }
     } else if (action.type === "label_and_state") {
       console.log("[routing]   repo: " + action.repo);
       console.log("[routing]   issue_number: " + action.issue_number);

@@ -75,6 +75,17 @@ export declare const LIMITS: {
      *  Abort + notify if cumulative cost exceeds this. ($30/month budget) */
     readonly MAX_PER_BUG_COST_USD: 3;
 };
+/** Minimum fix attempts with 100% failure rate before auto-bypass triggers.
+ *  The actual check lives in sdk-bug-fix.yml (not in TS — can't import from YAML).
+ *  This constant is the documented source of truth; keep the YAML value in sync. */
+export declare const AUTO_BYPASS_THRESHOLD = 5;
+/** Master switch for auto-bypass. Set to false to disable bypass and always attempt fixes. */
+export declare const AUTO_BYPASS_ENABLED = true;
+/** Classifications that ALWAYS route to handoff, regardless of fix history.
+ *  crash_bug = P0 severity, too critical for LLM guessing.
+ *  purchase_error = P0 severity, monetization bugs are existential threats.
+ *  The actual check lives in sdk-bug-fix.yml; keep the YAML list in sync. */
+export declare const ALWAYS_HANDOFF_CLASSIFICATIONS: readonly Classification[];
 /** Read-only tools for verifier subagents */
 export declare const VERIFIER_TOOLS: readonly ["Read", "Glob", "Grep", "Bash"];
 /** Minimal tools for proof workflow — truly read-only, no Bash */
@@ -90,7 +101,7 @@ export declare const BUG_FIX_TOOLS: readonly ["Read", "Write", "Edit", "Glob", "
 /** Canonical classification list — single source of truth (BA-011 AC1).
  *  Adding a classification requires changes in exactly 4 files:
  *  config.ts, bug-triager.md, routing.ts, routing-fixtures.ts (NFR14). */
-export declare const CLASSIFICATIONS: readonly ["content_error", "content_category_error", "content_duplicate", "translation_error", "ui_bug", "gameplay_bug", "code_bug", "performance_issue", "crash_bug", "feature_request", "needs_human_review"];
+export declare const CLASSIFICATIONS: readonly ["content_error", "content_category_error", "content_duplicate", "translation_error", "ui_bug", "gameplay_bug", "code_bug", "performance_issue", "crash_bug", "purchase_error", "data_corruption", "multiplayer_error", "feature_request", "needs_human_review"];
 /** Union type of all valid classifications */
 export type Classification = (typeof CLASSIFICATIONS)[number];
 /** Set for O(1) membership checks — derived from CLASSIFICATIONS (AC1) */
@@ -130,6 +141,9 @@ export declare const ROUTING: {
     readonly LABEL_PERFORMANCE_ISSUE: "performance-issue";
     readonly LABEL_CODE_BUG: "code-bug";
     readonly LABEL_CRASH_BUG: "crash-bug";
+    readonly LABEL_PURCHASE_ERROR: "purchase-error";
+    readonly LABEL_DATA_CORRUPTION: "data-corruption";
+    readonly LABEL_MULTIPLAYER_ERROR: "multiplayer-error";
     readonly LABEL_NEEDS_DEV_HANDOFF: "needs-dev-handoff";
     /** Story 3.2: Label for failed fix attempts (retryable) */
     readonly LABEL_FIX_FAILED: "fix-failed";

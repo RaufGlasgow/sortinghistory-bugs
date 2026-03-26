@@ -15,6 +15,15 @@
  * github.token CANNOT trigger repository_dispatch (proven lesson — CLAUDE.md rule).
  */
 import { type WorkflowType } from "../config.js";
+/** Story 3.5: Structured triage handoff for needs_human_review classifications */
+export interface TriageHandoff {
+    best_guess_classification: string;
+    reasoning: string;
+    signals_found: string[];
+    signals_missing: string[];
+    suggested_steps: string[];
+    relevant_files: string[];
+}
 /** Input to the routing decision function */
 export interface RoutingInput {
     classification: string;
@@ -30,6 +39,8 @@ export interface RoutingInput {
     issue_body?: string;
     /** Triage reasoning — needed for handoff_to_dev routes */
     reasoning?: string;
+    /** Story 3.5: Triage handoff data for needs_human_review — contextual signals */
+    triage_handoff?: TriageHandoff;
 }
 /** Dispatch action — triggers a repository_dispatch event */
 interface DispatchAction {
@@ -50,6 +61,8 @@ interface LabelAction {
     repo: string;
     issue_number: number;
     labels: string[];
+    /** Story 3.5: Triage handoff data attached to needs_human_review actions */
+    triage_handoff?: TriageHandoff;
 }
 /** Label + state file action — adds labels and creates workflow state */
 interface LabelAndStateAction {

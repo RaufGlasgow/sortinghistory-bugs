@@ -105,4 +105,13 @@ export const TRIAGE_FIXTURES = [
         expected_classification: ["translation_error", "ui_bug", "needs_human_review"],
         expected_severity_range: ["P3", "P4"],
     },
+    {
+        id: "test-N",
+        // Truly ambiguous report with NO context signals at all.
+        // No category name, no game mode, no CurrentScreen, no language, no date.
+        // Should classify as needs_human_review because there is nothing to go on.
+        report: "Something is broken and it does not work right",
+        expected_classification: "needs_human_review",
+        expected_severity_range: ["P3", "P4"],
+    },
 ];

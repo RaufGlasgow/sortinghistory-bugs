@@ -10,6 +10,7 @@ import { describe, it } from "node:test";
 import * as assert from "node:assert/strict";
 import { extractTriageSignals } from "../workflows/triage.js";
 import { generateTriageHandoff } from "../lib/handoff-generator.js";
+import { decideRoute, type RoutingInput, type TriageHandoff } from "../lib/routing.js";
 
 // ---------------------------------------------------------------------------
 // Signal extraction tests
@@ -187,7 +188,7 @@ describe("Story 3.5: triage fixtures validation", () => {
   it("all existing fixtures still have valid structure", async () => {
     const { TRIAGE_FIXTURES } = await import("./triage-fixtures.js");
 
-    assert.ok(TRIAGE_FIXTURES.length >= 13, `Should have at least 13 fixtures, got ${TRIAGE_FIXTURES.length}`);
+    assert.ok(TRIAGE_FIXTURES.length >= 14, `Should have at least 14 fixtures, got ${TRIAGE_FIXTURES.length}`);
 
     for (const fixture of TRIAGE_FIXTURES) {
       assert.ok(fixture.id, `Fixture should have an id`);
@@ -202,6 +203,123 @@ describe("Story 3.5: triage fixtures validation", () => {
         fixture.expected_severity_range.length > 0,
         `Fixture ${fixture.id} should have at least one expected severity`,
       );
+    }
+  });
+
+  it("test-N fixture is truly ambiguous (no context signals)", async () => {
+    const { TRIAGE_FIXTURES } = await import("./triage-fixtures.js");
+    const testN = TRIAGE_FIXTURES.find((f) => f.id === "test-N");
+    assert.ok(testN, "test-N fixture should exist");
+    assert.equal(testN!.expected_classification, "needs_human_review", "test-N should expect needs_human_review");
+    assert.ok(!testN!.report.includes("CurrentScreen"), "test-N should NOT have CurrentScreen");
+    // Verify no category names in report
+    const categories = ["us history", "world history", "european history", "ancient history", "sports history"];
+    for (const cat of categories) {
+      assert.ok(!testN!.report.toLowerCase().includes(cat), `test-N should not mention ${cat}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Story 3.5: Routing-level triage_handoff tests
+// ---------------------------------------------------------------------------
+
+describe("Story 3.5: routing triage_handoff", () => {
+  it("needs_human_review at high confidence carries triage_handoff", () => {
+    const handoff: TriageHandoff = {
+      best_guess_classification: "content_category_error",
+      reasoning: "Mentions ancient history in epic mode but vague",
+      signals_found: ["category_name: ancient history", "game_mode: epic"],
+      signals_missing: ["no specific event title"],
+      suggested_steps: ["Check Epic mode category filters"],
+      relevant_files: ["Data/Events/AncientHistory.json"],
+    };
+
+    const input: RoutingInput = {
+      classification: "needs_human_review",
+      severity: "P3",
+      confidence: 0.75,
+      extracted_context: {},
+      issue_number: 200,
+      triage_handoff: handoff,
+    };
+
+    const action = decideRoute(input);
+    assert.equal(action.type, "label", "Should route to label action");
+    if (action.type === "label") {
+      assert.ok(action.labels.includes("needs-human-review"), "Should have needs-human-review label");
+      assert.ok(action.triage_handoff, "Should carry triage_handoff");
+      assert.equal(action.triage_handoff!.best_guess_classification, "content_category_error");
+      assert.equal(action.triage_handoff!.signals_found.length, 2);
+      assert.equal(action.triage_handoff!.signals_missing.length, 1);
+      assert.equal(action.triage_handoff!.suggested_steps.length, 1);
+      assert.equal(action.triage_handoff!.relevant_files.length, 1);
+    }
+  });
+
+  it("low confidence gate carries triage_handoff through", () => {
+    const handoff: TriageHandoff = {
+      best_guess_classification: "translation_error",
+      reasoning: "Mentions German but very vague",
+      signals_found: ["language_signal: german"],
+      signals_missing: ["no category", "no screen"],
+      suggested_steps: ["Check German translation files"],
+      relevant_files: ["Data/Events/*_de.json"],
+    };
+
+    const input: RoutingInput = {
+      classification: "translation_error",
+      severity: "P3",
+      confidence: 0.45, // Below 0.70 threshold
+      extracted_context: {},
+      issue_number: 201,
+      triage_handoff: handoff,
+    };
+
+    const action = decideRoute(input);
+    assert.equal(action.type, "label", "Should route to label (low confidence gate)");
+    if (action.type === "label") {
+      assert.ok(action.labels.includes("low-confidence"), "Should have low-confidence label");
+      assert.ok(action.triage_handoff, "Should carry triage_handoff even through Gate 1");
+      assert.equal(action.triage_handoff!.best_guess_classification, "translation_error");
+      assert.equal(action.triage_handoff!.signals_found.length, 1);
+    }
+  });
+
+  it("triage_handoff has all required fields", () => {
+    const handoff: TriageHandoff = {
+      best_guess_classification: "ui_bug",
+      reasoning: "Some reasoning",
+      signals_found: [],
+      signals_missing: ["no category", "no game mode", "no CurrentScreen"],
+      suggested_steps: ["Ask reporter for details"],
+      relevant_files: [],
+    };
+
+    // Verify the type has all required fields
+    assert.equal(typeof handoff.best_guess_classification, "string");
+    assert.equal(typeof handoff.reasoning, "string");
+    assert.ok(Array.isArray(handoff.signals_found));
+    assert.ok(Array.isArray(handoff.signals_missing));
+    assert.ok(Array.isArray(handoff.suggested_steps));
+    assert.ok(Array.isArray(handoff.relevant_files));
+  });
+
+  it("routing without triage_handoff still works (backward compatible)", () => {
+    const input: RoutingInput = {
+      classification: "needs_human_review",
+      severity: "P3",
+      confidence: 0.75,
+      extracted_context: {},
+      issue_number: 202,
+      // No triage_handoff
+    };
+
+    const action = decideRoute(input);
+    assert.equal(action.type, "label");
+    if (action.type === "label") {
+      assert.ok(action.labels.includes("needs-human-review"));
+      assert.equal(action.triage_handoff, undefined, "Should be undefined when not provided");
     }
   });
 });

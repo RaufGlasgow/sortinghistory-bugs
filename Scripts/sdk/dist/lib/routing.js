@@ -42,6 +42,7 @@ export function decideRoute(input) {
     }
     // Gate 1 (BA-011 S4): Low confidence → safe label, cheapest action
     // Strictly less-than: 0.70 passes, 0.69 is blocked (FR6)
+    // Story 3.5: Carry triage_handoff through so the human reviewer gets signal context
     if (input.confidence < CONFIDENCE_THRESHOLD) {
         console.log("[routing] Gate 1: Low confidence " + input.confidence.toFixed(2) + " (threshold " + CONFIDENCE_THRESHOLD + ") for issue #" + input.issue_number + " — safe label fallback");
         return {
@@ -49,6 +50,7 @@ export function decideRoute(input) {
             repo: ROUTING.PRIVATE_REPO,
             issue_number: input.issue_number,
             labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_LOW_CONFIDENCE, ROUTING.LABEL_ROUTED],
+            triage_handoff: input.triage_handoff,
         };
     }
     // Gate 2 (BA-011 S1): Unknown classification → safe label, never crash
@@ -215,6 +217,91 @@ function routeByClassification(classification, input) {
                 },
             };
         }
+        case "purchase_error": {
+            // Story 4.1: Purchase/subscription errors — always P0, handoff to dev
+            // ENFORCE P0 severity regardless of triage AI assignment (monetization = existential)
+            if (!input.issue_title || !input.issue_body) {
+                console.log("[routing] handoff_to_dev for purchase_error missing issue_title/issue_body — falling back to label-only");
+                return {
+                    type: "label",
+                    repo: ROUTING.PRIVATE_REPO,
+                    issue_number: input.issue_number,
+                    labels: [ROUTING.LABEL_PURCHASE_ERROR, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P0", ROUTING.LABEL_ROUTED],
+                };
+            }
+            return {
+                type: "handoff_to_dev",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_PURCHASE_ERROR, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P0", ROUTING.LABEL_ROUTED],
+                triage_data: {
+                    classification: "purchase_error",
+                    confidence: input.confidence,
+                    severity: "P0",
+                    reasoning: input.reasoning ?? "",
+                    extracted_context: input.extracted_context,
+                    issue_title: input.issue_title,
+                    issue_body: input.issue_body,
+                },
+            };
+        }
+        case "data_corruption": {
+            // Story 4.2: Data corruption — always P1, handoff to dev
+            // ENFORCE P1 minimum severity (progress loss = uninstall)
+            if (!input.issue_title || !input.issue_body) {
+                console.log("[routing] handoff_to_dev for data_corruption missing issue_title/issue_body — falling back to label-only");
+                return {
+                    type: "label",
+                    repo: ROUTING.PRIVATE_REPO,
+                    issue_number: input.issue_number,
+                    labels: [ROUTING.LABEL_DATA_CORRUPTION, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P1", ROUTING.LABEL_ROUTED],
+                };
+            }
+            return {
+                type: "handoff_to_dev",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_DATA_CORRUPTION, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P1", ROUTING.LABEL_ROUTED],
+                triage_data: {
+                    classification: "data_corruption",
+                    confidence: input.confidence,
+                    severity: "P1",
+                    reasoning: input.reasoning ?? "",
+                    extracted_context: input.extracted_context,
+                    issue_title: input.issue_title,
+                    issue_body: input.issue_body,
+                },
+            };
+        }
+        case "multiplayer_error": {
+            // Story 4.3: Multiplayer/networking bugs (incl. Pass & Play) — handoff to dev
+            // ENFORCE P2 minimum severity; keep P1 if triage AI assigned it (data loss)
+            const mpSeverity = input.severity === "P1" ? "P1" : "P2";
+            if (!input.issue_title || !input.issue_body) {
+                console.log("[routing] handoff_to_dev for multiplayer_error missing issue_title/issue_body — falling back to label-only");
+                return {
+                    type: "label",
+                    repo: ROUTING.PRIVATE_REPO,
+                    issue_number: input.issue_number,
+                    labels: [ROUTING.LABEL_MULTIPLAYER_ERROR, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/" + mpSeverity, ROUTING.LABEL_ROUTED],
+                };
+            }
+            return {
+                type: "handoff_to_dev",
+                repo: ROUTING.PRIVATE_REPO,
+                issue_number: input.issue_number,
+                labels: [ROUTING.LABEL_MULTIPLAYER_ERROR, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/" + mpSeverity, ROUTING.LABEL_ROUTED],
+                triage_data: {
+                    classification: "multiplayer_error",
+                    confidence: input.confidence,
+                    severity: mpSeverity,
+                    reasoning: (input.reasoning ?? "") + "\n\nSee docs/bugs/MULTIPLAYER-BUG-TRACKER.md for multiplayer baseline context.",
+                    extracted_context: input.extracted_context,
+                    issue_title: input.issue_title,
+                    issue_body: input.issue_body,
+                },
+            };
+        }
         case "feature_request": {
             // AC-6: backlog
             return {
@@ -226,11 +313,13 @@ function routeByClassification(classification, input) {
         }
         case "needs_human_review": {
             // AC-7: manual triage queue
+            // Story 3.5: Attach triage_handoff when present (contextual signals analysis)
             return {
                 type: "label",
                 repo: ROUTING.PRIVATE_REPO,
                 issue_number: input.issue_number,
                 labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+                triage_handoff: input.triage_handoff,
             };
         }
         default: {
@@ -376,6 +465,10 @@ export async function executeRoute(action, dryRun) {
             console.log("[routing]   repo: " + action.repo);
             console.log("[routing]   issue_number: " + action.issue_number);
             console.log("[routing]   labels: [" + action.labels.join(", ") + "]");
+            if (action.triage_handoff) {
+                console.log("[routing]   triage_handoff.best_guess: " + action.triage_handoff.best_guess_classification);
+                console.log("[routing]   triage_handoff.signals_found: " + action.triage_handoff.signals_found.length);
+            }
         }
         else if (action.type === "label_and_state") {
             console.log("[routing]   repo: " + action.repo);

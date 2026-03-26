@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ROUTING, MODELS } from "../config.js";
 import { runTriage, type TriageResult } from "./bug-triage.js";
-import { decideRoute, executeRoute, type RoutingInput, type RoutingAction } from "../lib/routing.js";
+import { decideRoute, executeRoute, type RoutingInput, type RoutingAction, type TriageHandoff } from "../lib/routing.js";
 import { stripBase64Images, extractBase64Images } from "../lib/image-extract.js";
 import { logRoutingDecision, type RoutingDecisionLogEntry } from "../lib/routing-log.js";
 import { shouldSendEmail, sendActionNeededEmail } from "../lib/notification.js";
@@ -115,6 +115,70 @@ export function extractTriageSignals(body: string, title: string): {
   }
 
   return { found, missing, suggestedSteps };
+}
+
+/**
+ * Story 3.5: Guess relevant source files based on classification and context.
+ * Returns file paths that might be related to the bug type.
+ */
+function guessRelevantFiles(classification: string, context: Record<string, unknown>): string[] {
+  const files: string[] = [];
+
+  // Add category-specific file if category is known
+  const category = typeof context.category === "string" && context.category !== "unknown"
+    ? context.category
+    : null;
+  if (category) {
+    // Event JSON files use category name with spaces replaced
+    const categoryFile = category.replace(/\s+/g, "");
+    files.push("Data/Events/" + categoryFile + ".json");
+  }
+
+  // Classification-based file hints
+  switch (classification) {
+    case "content_error":
+    case "content_category_error":
+    case "content_duplicate":
+      files.push("Data/Events/");
+      break;
+    case "translation_error":
+      files.push("Data/Events/*_de.json", "Data/Events/*_nl.json", "Data/Events/*_pt.json", "Data/Events/*_es.json");
+      break;
+    case "ui_bug":
+      files.push("Views/");
+      break;
+    case "gameplay_bug":
+      files.push("ViewModels/GameManager.swift", "Models/");
+      break;
+    case "crash_bug":
+      files.push("Core/", "SortingHistoryApp.swift");
+      break;
+    case "performance_issue":
+      files.push("Core/Services/", "ViewModels/");
+      break;
+    case "code_bug":
+      files.push("Core/Services/", "Models/");
+      break;
+    case "purchase_error":
+      files.push("Core/Services/StoreKit/");
+      break;
+    case "data_corruption":
+      files.push("Core/Services/PersistenceService.swift");
+      break;
+    case "multiplayer_error":
+      files.push("Core/Services/MultipeerService.swift", "Views/Multiplayer/");
+      break;
+  }
+
+  // Add file_path from context if present
+  const filePath = typeof context.file_path === "string" && context.file_path !== "unknown"
+    ? context.file_path
+    : null;
+  if (filePath) {
+    files.push(filePath);
+  }
+
+  return files;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +462,19 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   console.log("");
   console.log("--- Routing issue #" + issueNumber + " ---");
 
+  // Story 3.5: Extract contextual signals early so they can be passed to routing
+  const signals = extractTriageSignals(issueData.body, issueData.title);
+
+  // Story 3.5: Build triage_handoff for needs_human_review and low-confidence routes
+  const triageHandoff: TriageHandoff = {
+    best_guess_classification: triageResult.classification,
+    reasoning: triageResult.reasoning,
+    signals_found: signals.found,
+    signals_missing: signals.missing,
+    suggested_steps: signals.suggestedSteps,
+    relevant_files: guessRelevantFiles(triageResult.classification, triageResult.extracted_context),
+  };
+
   const routingInput: RoutingInput = {
     classification: triageResult.classification,
     severity: triageResult.severity,
@@ -409,6 +486,8 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
     issue_title: issueData.title,
     issue_body: issueData.body,
     reasoning: triageResult.reasoning,
+    // Story 3.5: pass triage handoff for needs_human_review routing
+    triage_handoff: triageHandoff,
   };
 
   // Handle unknown/unextractable category for content_error (AC5)
@@ -494,6 +573,14 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
           severity: triageResult.severity,
           reasoning: triageResult.reasoning,
           description: issueData.body,
+          // Story 3.5: Include triage handoff signals in notification email
+          triageHandoff: {
+            best_guess_classification: triageHandoff.best_guess_classification,
+            signals_found: triageHandoff.signals_found,
+            signals_missing: triageHandoff.signals_missing,
+            suggested_steps: triageHandoff.suggested_steps,
+            relevant_files: triageHandoff.relevant_files,
+          },
         },
         routingAction,
       );
@@ -511,8 +598,7 @@ export async function runRealTriage(input: RealTriageInput): Promise<RealTriageR
   // --------------------------------------------------
   if (triageResult.classification === "needs_human_review") {
     try {
-      // Story 3.5: Extract contextual signals for enhanced handoff
-      const signals = extractTriageSignals(issueData.body, issueData.title);
+      // Story 3.5: Reuse signals already extracted above (avoid duplicate work)
       const handoffMarkdown = generateTriageHandoff({
         issueNumber,
         issueTitle: issueData.title,

@@ -17,6 +17,14 @@ export interface ActionNeededEmailInput {
     reasoning: string;
     /** Reporter's original bug description (from issue body) */
     description?: string;
+    /** Story 3.5: Triage handoff signals for needs_human_review notifications */
+    triageHandoff?: {
+        best_guess_classification: string;
+        signals_found: string[];
+        signals_missing: string[];
+        suggested_steps: string[];
+        relevant_files: string[];
+    };
 }
 /**
  * Determine whether a routing action should trigger an email.

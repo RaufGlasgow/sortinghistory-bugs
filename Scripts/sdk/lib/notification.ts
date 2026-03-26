@@ -23,6 +23,14 @@ export interface ActionNeededEmailInput {
   reasoning: string;
   /** Reporter's original bug description (from issue body) */
   description?: string;
+  /** Story 3.5: Triage handoff signals for needs_human_review notifications */
+  triageHandoff?: {
+    best_guess_classification: string;
+    signals_found: string[];
+    signals_missing: string[];
+    suggested_steps: string[];
+    relevant_files: string[];
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +199,56 @@ function extractSection(body: string, label: string): string {
   return match[1].trim();
 }
 
+/**
+ * Story 3.5: Build HTML for triage handoff signals section in email.
+ * Shows contextual signals found/missing and suggested next steps.
+ */
+function buildTriageHandoffHtml(handoff?: ActionNeededEmailInput["triageHandoff"]): string {
+  if (!handoff) return "";
+  if (handoff.signals_found.length === 0 && handoff.signals_missing.length === 0) return "";
+
+  const sections: string[] = [];
+
+  if (handoff.best_guess_classification) {
+    sections.push(`<p style="margin:0 0 8px 0;font-size:13px;color:#333333;"><strong>Best guess:</strong> <code style="background:#fef9f3;padding:2px 6px;border-radius:3px;">${escapeHtml(handoff.best_guess_classification)}</code></p>`);
+  }
+
+  if (handoff.signals_found.length > 0) {
+    const signalItems = handoff.signals_found
+      .map((s) => `<li style="margin:2px 0;font-size:13px;color:#166534;">${escapeHtml(s)}</li>`)
+      .join("");
+    sections.push(`<p style="margin:0 0 4px 0;font-size:12px;color:#166534;font-weight:600;">Signals Found</p><ul style="margin:0 0 8px 0;padding-left:20px;">${signalItems}</ul>`);
+  }
+
+  if (handoff.signals_missing.length > 0) {
+    const missingItems = handoff.signals_missing
+      .map((s) => `<li style="margin:2px 0;font-size:13px;color:#9a3412;">${escapeHtml(s)}</li>`)
+      .join("");
+    sections.push(`<p style="margin:0 0 4px 0;font-size:12px;color:#9a3412;font-weight:600;">Signals Missing</p><ul style="margin:0 0 8px 0;padding-left:20px;">${missingItems}</ul>`);
+  }
+
+  if (handoff.suggested_steps.length > 0) {
+    const stepItems = handoff.suggested_steps
+      .map((s) => `<li style="margin:2px 0;font-size:13px;color:#1e40af;">${escapeHtml(s)}</li>`)
+      .join("");
+    sections.push(`<p style="margin:0 0 4px 0;font-size:12px;color:#1e40af;font-weight:600;">Suggested Steps</p><ul style="margin:0 0 8px 0;padding-left:20px;">${stepItems}</ul>`);
+  }
+
+  if (handoff.relevant_files.length > 0) {
+    const fileItems = handoff.relevant_files
+      .map((f) => `<li style="margin:2px 0;font-size:13px;color:#333333;font-family:monospace;">${escapeHtml(f)}</li>`)
+      .join("");
+    sections.push(`<p style="margin:0 0 4px 0;font-size:12px;color:#4a5568;font-weight:600;">Relevant Files</p><ul style="margin:0 0 0 0;padding-left:20px;">${fileItems}</ul>`);
+  }
+
+  return `
+    <!-- Story 3.5: Triage handoff signals -->
+    <div style="margin:0 0 20px 0;padding:14px 16px;background:#fefce8;border-left:4px solid #ca8a04;border-radius:4px;">
+      <p style="margin:0 0 8px 0;font-size:12px;color:#ca8a04;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Triage Analysis</p>
+      ${sections.join("\n      ")}
+    </div>`;
+}
+
 function getActionMessage(action: RoutingAction): string {
   switch (action.type) {
     case "handoff_to_dev":
@@ -320,6 +378,8 @@ export function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAct
     <!-- AI Reasoning -->
     <p style="margin:0 0 6px 0;font-weight:600;font-size:13px;color:#8B6914;text-transform:uppercase;letter-spacing:0.5px;">AI Reasoning</p>
     <p style="margin:0 0 24px 0;font-size:14px;color:#444444;line-height:1.6;">${safeReasoning}</p>
+
+    ${buildTriageHandoffHtml(input.triageHandoff)}
 
     <!-- Action callout -->
     <div style="padding:14px 16px;background:#fef2f2;border:2px solid #fca5a5;border-radius:8px;margin-bottom:24px;">

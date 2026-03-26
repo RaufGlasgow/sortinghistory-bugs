@@ -451,4 +451,29 @@ export const ROUTING_FIXTURES = [
             labels: [ROUTING.LABEL_FEATURE_REQUEST, ROUTING.LABEL_ROUTED],
         },
     },
+    // --- Story 3.5: needs_human_review with triage_handoff → label with handoff data ---
+    {
+        id: "route-needs-review-with-handoff",
+        description: "needs_human_review with triage_handoff carries signals through",
+        input: {
+            classification: "needs_human_review",
+            severity: "P3",
+            confidence: 0.75,
+            extracted_context: {},
+            issue_number: 300,
+            triage_handoff: {
+                best_guess_classification: "content_category_error",
+                reasoning: "Mentions ancient history category in epic mode context",
+                signals_found: ["category_name: ancient history", "game_mode: epic"],
+                signals_missing: ["no specific event title"],
+                suggested_steps: ["Check Epic mode category filters"],
+                relevant_files: ["Data/Events/AncientHistory.json"],
+            },
+        },
+        expected: {
+            type: "label",
+            repo: ROUTING.PRIVATE_REPO,
+            labels: [ROUTING.LABEL_NEEDS_HUMAN_REVIEW, ROUTING.LABEL_ROUTED],
+        },
+    },
 ];
