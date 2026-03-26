@@ -75,6 +75,8 @@ export interface WorkflowState {
     qa_results: QAVerdictEntry[];
     /** Token/cost tracking per SDK call (PV2-2.4) */
     models_used: ModelUsageEntry[];
+    /** Stale translation detection results (FR43) */
+    stale_translations: unknown | null;
 }
 /** Create a new workflow state file */
 export declare function createWorkflowState(type: WorkflowType, trigger: "scheduled" | "dispatch" | "manual", category?: string, issueNumber?: number): Promise<WorkflowState>;

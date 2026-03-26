@@ -82,6 +82,8 @@ export interface WorkflowState {
   qa_results: QAVerdictEntry[];
   /** Token/cost tracking per SDK call (PV2-2.4) */
   models_used: ModelUsageEntry[];
+  /** Stale translation detection results (FR43) */
+  stale_translations: unknown | null;
 }
 
 /** Generate a workflow ID: {prefix}-{date}-{sequence} with true sequential numbering */
@@ -175,6 +177,7 @@ export async function createWorkflowState(
     attempt_log: [],
     qa_results: [],
     models_used: [],
+    stale_translations: null,
   };
 
   ensureDir(PATHS.STATE_DIR);
@@ -215,6 +218,9 @@ function applyStateDefaults(raw: Record<string, unknown>): WorkflowState {
   }
   if (!Array.isArray(raw.models_used)) {
     raw.models_used = [];
+  }
+  if (raw.stale_translations === undefined) {
+    raw.stale_translations = null;
   }
   return raw as unknown as WorkflowState;
 }

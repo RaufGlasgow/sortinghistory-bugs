@@ -45,7 +45,8 @@ import { createWorkflowState, updateWorkflowState, loadWorkflowState, } from "..
 import { saveSession, removeSession, } from "../lib/session.js";
 import { runContentVerify, } from "./content-verify.js";
 // content-fix.js: no longer importing ContentFinding/ContentFixOutput (unused after PV2-4.3 refactor)
-import { isKnownCategory } from "../lib/categories.js";
+import { isKnownCategory, categoryToFileName } from "../lib/categories.js";
+import { detectStaleTranslations } from "../lib/content-pipeline-utils.js";
 import { safeGitAdd } from "../lib/git-utils.js";
 import { handleWorkflowFailure } from "../lib/audit-trail.js";
 import { fetchIssueData, addHandoffLabel } from "../lib/github-utils.js";
@@ -512,6 +513,85 @@ export async function finalizeWorkflow(state, gameRepoPath, options) {
     }
 }
 // ------------------------------------------------------------------
+// FR43: Stale Translation Detection (wired into E2E after fix)
+// ------------------------------------------------------------------
+/**
+ * After a successful content fix, detect stale translations for each
+ * approved finding. Reads the fixed English source file to get current
+ * event versions, then calls detectStaleTranslations() per finding.
+ *
+ * Results are saved to workflow state so the digest can surface them.
+ */
+function runStaleTranslationDetection(approvedFindings, category, gameRepoPath) {
+    const categoryFileName = categoryToFileName(category);
+    if (!categoryFileName) {
+        console.log("[content-e2e] FR43: Cannot detect stale translations -- unknown category file for '" + category + "'");
+        return null;
+    }
+    const translationsDir = path.join(gameRepoPath, "Data", "translations");
+    if (!fs.existsSync(translationsDir)) {
+        console.log("[content-e2e] FR43: No translations directory found at " + translationsDir + " -- skipping stale detection");
+        return null;
+    }
+    // Read the fixed English source to get current event versions and indices
+    const enFilePath = path.join(gameRepoPath, "Data", "Events", categoryFileName);
+    let enEvents;
+    try {
+        const raw = fs.readFileSync(enFilePath, "utf-8");
+        const data = JSON.parse(raw);
+        enEvents = data.events ?? [];
+    }
+    catch {
+        console.log("[content-e2e] FR43: Could not read English source file -- skipping stale detection");
+        return null;
+    }
+    // Aggregate stale translation results across all approved findings
+    const aggregated = {
+        hasStale: false,
+        staleByLang: {},
+        totalStale: 0,
+        languagesChecked: [],
+    };
+    for (const finding of approvedFindings) {
+        // Find the event index and version by matching title
+        const eventIndex = enEvents.findIndex((e) => e.title === finding.event_title);
+        if (eventIndex < 0) {
+            console.log("[content-e2e] FR43: Event '" + finding.event_title + "' not found in English source -- skipping");
+            continue;
+        }
+        const newEnVersion = enEvents[eventIndex].version ?? 1;
+        const result = detectStaleTranslations(finding.event_title, newEnVersion, translationsDir, categoryFileName, { eventIndex });
+        // Merge into aggregated result
+        if (result.hasStale) {
+            aggregated.hasStale = true;
+            for (const lang of Object.keys(result.staleByLang)) {
+                if (!aggregated.staleByLang[lang]) {
+                    aggregated.staleByLang[lang] = [];
+                }
+                aggregated.staleByLang[lang].push(...result.staleByLang[lang]);
+            }
+            aggregated.totalStale += result.totalStale;
+        }
+        // Merge languagesChecked (deduplicate)
+        for (const lang of result.languagesChecked) {
+            if (!aggregated.languagesChecked.includes(lang)) {
+                aggregated.languagesChecked.push(lang);
+            }
+        }
+    }
+    if (aggregated.hasStale) {
+        console.log("[content-e2e] FR43: Found " + aggregated.totalStale + " stale translation(s) across " +
+            Object.keys(aggregated.staleByLang).length + " language(s)");
+        for (const lang of Object.keys(aggregated.staleByLang)) {
+            console.log("  " + lang.toUpperCase() + ": " + aggregated.staleByLang[lang].length + " stale event(s)");
+        }
+    }
+    else {
+        console.log("[content-e2e] FR43: No stale translations detected");
+    }
+    return aggregated;
+}
+// ------------------------------------------------------------------
 // Main E2E Orchestration (runContentE2E)
 // ------------------------------------------------------------------
 /**
@@ -775,6 +855,19 @@ export async function runContentE2E(input, simulatedApproval) {
         };
     }
     // ---------------------------------------------------
+    // Step 5b: Stale translation detection (FR43)
+    // ---------------------------------------------------
+    if (retryResult.success) {
+        console.log("");
+        console.log("--- Step 5b: Stale Translation Detection (FR43) ---");
+        const staleResult = runStaleTranslationDetection(approved, category, repoRoot);
+        if (staleResult) {
+            await updateWorkflowState(state.workflow_id, {
+                stale_translations: staleResult,
+            });
+        }
+    }
+    // ---------------------------------------------------
     // Step 6: PR creation or escalation (using shared helper)
     // ---------------------------------------------------
     const finalResult = await finalizeWorkflow(updatedState, repoRoot, {
@@ -1001,6 +1094,19 @@ export async function resumeContentE2E(workflowId, approval, options) {
             prUrl: null,
             error: "Content retry loop exception: " + errMsg,
         };
+    }
+    // ---------------------------------------------------
+    // Step 4b: Stale translation detection (FR43)
+    // ---------------------------------------------------
+    if (retryResult.success) {
+        console.log("");
+        console.log("--- Resume Step 2b: Stale Translation Detection (FR43) ---");
+        const staleResult = runStaleTranslationDetection(approved, category, gameRepoPath);
+        if (staleResult) {
+            await updateWorkflowState(workflowId, {
+                stale_translations: staleResult,
+            });
+        }
     }
     // ---------------------------------------------------
     // Step 5: Validate-fix gate (Story 2.0c AC1)

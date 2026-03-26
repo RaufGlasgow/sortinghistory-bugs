@@ -84,6 +84,7 @@ export async function createWorkflowState(type, trigger, category, issueNumber) 
         attempt_log: [],
         qa_results: [],
         models_used: [],
+        stale_translations: null,
     };
     ensureDir(PATHS.STATE_DIR);
     const filePath = path.join(PATHS.STATE_DIR, `${state.workflow_id}.json`);
@@ -116,6 +117,9 @@ function applyStateDefaults(raw) {
     }
     if (!Array.isArray(raw.models_used)) {
         raw.models_used = [];
+    }
+    if (raw.stale_translations === undefined) {
+        raw.stale_translations = null;
     }
     return raw;
 }

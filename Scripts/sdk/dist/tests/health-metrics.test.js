@@ -32,6 +32,7 @@ function makeState(overrides) {
         attempt_log: overrides.attempt_log ?? [],
         qa_results: overrides.qa_results ?? [],
         models_used: overrides.models_used ?? [],
+        stale_translations: overrides.stale_translations ?? null,
     };
 }
 function makeFinding(gatesFailed) {
