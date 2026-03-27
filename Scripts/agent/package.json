@@ -1,0 +1,18 @@
+{
+  "name": "agent-pipeline",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "triage": "npx tsx orchestrator.ts --mode triage",
+    "fix": "npx tsx orchestrator.ts --mode fix",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.84"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0"
+  }
+}
