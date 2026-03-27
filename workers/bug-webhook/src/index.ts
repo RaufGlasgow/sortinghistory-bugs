@@ -23,6 +23,7 @@ interface Env {
   PIPELINE_KV: KVNamespace;  // KV namespace for pipeline action idempotency (approve, reject, merge)
   RESEND_API_KEY: string;    // FR-160: Resend API key for thank-you emails
   OWNER_EMAIL: string;       // Story 5.2: Owner email for digest failure alerts
+  USE_AGENT_PIPELINE?: string; // PIPE-SDK-4: When truthy, dispatch agent-triage alongside old analyze. Default: "true"
 }
 
 interface BugReport {
@@ -74,43 +75,42 @@ interface WebhookPayload {
 
 // WORKER_LABEL_TO_SDK_CLASSIFICATION imported from ./utils (Story 3.14)
 
-// SYNC REQUIRED: Every entry in sortinghistory-bugs/Scripts/sdk/config.ts CLASSIFICATIONS
-// must have a corresponding entry here. See docs/architecture-automation-system.md Section 5.7a.
+// OLD: CLASSIFICATION_TO_WORKFLOW — will be removed in Phase 5 cutover
+// PIPE-SDK-4: Replaced by agent-triage / agent-fix two-dispatch model.
+// The Agent SDK orchestrator handles classification routing internally.
 //
-// Classification label → workflow dispatch mapping
-// Used by handleApprove(), handleReject(), and handlePipelineAction() to route to the correct pipeline
-// Dispatch target `null` = handoff-only (no automated fix workflow dispatched).
-const CLASSIFICATION_TO_WORKFLOW: Record<string, string | null> = {
-  'content-error': 'sdk-content-verify',
-  'content-category-error': 'sdk-content-verify',
-  'code-bug': 'sdk-bug-fix',
-  'translation-error': 'sdk-translation-fix',
-  'feature-request': null, // No pipeline dispatch — log to backlog
-  'crash-bug': null,             // Handoff-only — requires human investigation
-  'purchase-error': null,        // Handoff-only — monetization P0, requires human investigation
-  'data-corruption': null,       // Handoff-only — progress loss P1, requires human investigation
-  'multiplayer-error': null,     // Handoff-only — multiplayer/networking P2, requires human investigation
-  'performance-issue': null,     // Handoff-only — requires human investigation
-  'needs-human-review': null,    // Handoff-only — ambiguous, manual triage queue
-  'ux-bug': 'sdk-bug-fix',
-  // Legacy labels that also route to code fix
-  'ui-bug': 'sdk-bug-fix',
-  'gameplay-bug': 'sdk-bug-fix',
-  'content-duplication': 'sdk-bug-fix',
-};
+// const CLASSIFICATION_TO_WORKFLOW: Record<string, string | null> = {
+//   'content-error': 'sdk-content-verify',
+//   'content-category-error': 'sdk-content-verify',
+//   'code-bug': 'sdk-bug-fix',
+//   'translation-error': 'sdk-translation-fix',
+//   'feature-request': null,
+//   'crash-bug': null,
+//   'purchase-error': null,
+//   'data-corruption': null,
+//   'multiplayer-error': null,
+//   'performance-issue': null,
+//   'needs-human-review': null,
+//   'ux-bug': 'sdk-bug-fix',
+//   'ui-bug': 'sdk-bug-fix',
+//   'gameplay-bug': 'sdk-bug-fix',
+//   'content-duplication': 'sdk-bug-fix',
+// };
 
-// Approve dispatches the "resume" variant for pipelines that have a verify→pause→resume flow.
-// Pipelines without a resume variant (e.g. sdk-bug-fix) keep the same event type.
-const WORKFLOW_TO_RESUME: Record<string, string> = {
-  'sdk-content-verify': 'sdk-content-resume',
-  'sdk-translation-fix': 'sdk-translation-resume',
-};
+// OLD: WORKFLOW_TO_RESUME — will be removed in Phase 5 cutover
+// const WORKFLOW_TO_RESUME: Record<string, string> = {
+//   'sdk-content-verify': 'sdk-content-resume',
+//   'sdk-translation-fix': 'sdk-translation-resume',
+// };
 
-// Story 1.7: Dynamic valid labels for error page (excludes legacy aliases)
-const LEGACY_ALIASES = ['ux-bug'];
-const validLabels = Object.keys(CLASSIFICATION_TO_WORKFLOW)
-  .filter(k => !LEGACY_ALIASES.includes(k))
-  .join(', ');
+// Story 1.7: Valid labels for error page display
+// PIPE-SDK-4: Hardcoded since CLASSIFICATION_TO_WORKFLOW is commented out
+const validLabels = [
+  'content-error', 'content-category-error', 'code-bug', 'translation-error',
+  'feature-request', 'crash-bug', 'purchase-error', 'data-corruption',
+  'multiplayer-error', 'performance-issue', 'needs-human-review',
+  'ui-bug', 'gameplay-bug', 'content-duplication',
+].join(', ');
 
 // PIPE-008: Duplicate detection constants and types
 const DEDUP_WINDOW_SECONDS = 604800; // 7 days
@@ -580,12 +580,44 @@ async function createGitHubIssue(
 // Dispatch analysis to public bug automation repo
 // This bypasses private repo Actions entirely (minutes exhausted)
 // C3 fix: retry dispatch + label fallback on failure
+// PIPE-SDK-4: Also dispatches agent-triage when USE_AGENT_PIPELINE is enabled
 async function dispatchAnalysis(env: Env, issueNumber: number): Promise<void> {
   if (!env.BUGS_REPO_PAT || !env.BUGS_REPO) {
     console.error('BUGS_REPO_PAT or BUGS_REPO not configured - skipping dispatch');
     return;
   }
 
+  // PIPE-SDK-4: Dispatch agent-triage (new pipeline) in parallel with old analyze
+  // USE_AGENT_PIPELINE defaults to "true" when not set
+  const useAgentPipeline = (env.USE_AGENT_PIPELINE ?? 'true') !== 'false';
+  if (useAgentPipeline) {
+    try {
+      const agentResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.BUGS_REPO_PAT}`,
+          'Accept': 'application/vnd.github+json',
+          'User-Agent': 'SortingHistory-BugWebhook/1.0',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        body: JSON.stringify({
+          event_type: 'agent-triage',
+          client_payload: {
+            issue_number: issueNumber,
+          },
+        }),
+      });
+      if (agentResp.ok || agentResp.status === 204) {
+        console.log(`PIPE-SDK-4: Dispatched agent-triage for issue #${issueNumber}`);
+      } else {
+        console.error(`PIPE-SDK-4: agent-triage dispatch failed: ${agentResp.status}`);
+      }
+    } catch (agentErr) {
+      console.error('PIPE-SDK-4: agent-triage dispatch error:', agentErr);
+    }
+  }
+
+  // OLD: dispatched 'analyze' — will be removed in Phase 5 cutover
   const maxRetries = 3;
   const delays = [1000, 2000, 4000];
 
@@ -855,170 +887,172 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
       );
     }
 
+    // PIPE-SDK-4: Simplified two-gate approve/reject model
+    // Gate 1: No PR exists → approve dispatches agent-fix, reject closes issue
+    // Gate 2: PR exists (sdk-fix-N) → approve merges PR, reject closes PR + issue
+    const ghHeaders = {
+      'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'SortingHistory-BugWebhook/1.0',
+      'X-GitHub-Api-Version': '2022-11-28',
+    };
+
     try {
       if (action === 'approve') {
-        // PIPE-v2-1.1: Read issue labels and body, route to the correct pipeline
-        let labels: GitHubLabel[];
-        let issueBody: string;
-        try {
-          const issueData = await fetchIssueLabels(env, issueNumber);
-          labels = issueData.labels;
-          issueBody = issueData.body;
-        } catch (fetchErr) {
-          console.error(`Failed to fetch labels for issue #${issueNumber}:`, fetchErr);
-          return new Response(pipelinePageHtml('Error', `Could not read issue #${issueNumber} labels. Please try again.`, true), {
-            status: 502, headers: { 'Content-Type': 'text/html' },
+        // Check if a PR exists to distinguish Gate 1 vs Gate 2
+        const pr = await getPRForIssue(env, issueNum);
+
+        if (!pr) {
+          // ── Gate 1: No PR → dispatch agent-fix ──
+          console.log(`PIPE-SDK-4: Gate 1 approve for issue #${issueNumber} — dispatching agent-fix`);
+
+          const dispatchResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${env.BUGS_REPO_PAT}`,
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'SortingHistory-BugWebhook/1.0',
+              'X-GitHub-Api-Version': '2022-11-28',
+            },
+            body: JSON.stringify({
+              event_type: 'agent-fix',
+              client_payload: {
+                issue_number: issueNum,
+                action: 'approve',
+              },
+            }),
           });
-        }
 
-        const classification = getClassificationLabel(labels);
-
-        // Unknown classification — no recognized label found
-        if (!classification) {
-          console.error(`Issue #${issueNumber} has no recognized classification label. Labels: ${labels.map(l => l.name).join(', ')}`);
-          return new Response(pipelinePageHtml('Unknown Classification', `Issue #${issueNumber} does not have a recognized classification label. Valid labels: ${validLabels}. Please reclassify this issue on GitHub and try again.`, true), {
-            status: 400, headers: { 'Content-Type': 'text/html' },
-          });
-        }
-
-        const workflow = CLASSIFICATION_TO_WORKFLOW[classification];
-
-        // Null dispatch — either feature-request (backlog) or handoff-only (crash, performance, human-review)
-        if (workflow === null || workflow === undefined) {
-          const ghHeaders = {
-            'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'SortingHistory-BugWebhook/1.0',
-            'X-GitHub-Api-Version': '2022-11-28',
-          };
-
-          if (classification === 'feature-request') {
-            // Feature request — add backlog label
-            try {
-              await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
-                method: 'POST',
-                headers: ghHeaders,
-                body: JSON.stringify({ labels: ['backlog'] }),
-              });
-            } catch (labelErr) {
-              console.error(`Failed to add 'backlog' label to issue #${issueNumber}:`, labelErr);
-            }
-            return new Response(pipelinePageHtml('Feature Request Logged', `Issue #${issueNumber} has been logged as a feature request and added to the backlog. No fix pipeline was triggered.`, false, 'This issue will not appear in future digests.'), {
-              status: 200, headers: { 'Content-Type': 'text/html' },
+          if (!dispatchResp.ok && dispatchResp.status !== 204) {
+            const errText = await dispatchResp.text();
+            console.error(`PIPE-SDK-4: agent-fix dispatch failed: ${dispatchResp.status} ${errText}`);
+            return new Response(pipelinePageHtml('Dispatch Failed', `Could not trigger agent-fix pipeline: ${dispatchResp.status}`, true), {
+              status: 502, headers: { 'Content-Type': 'text/html' },
             });
           }
 
-          // Handoff-only classification (crash-bug, performance-issue, needs-human-review)
-          // No automated fix workflow — direct the owner to Fix Locally.
+          // Record in KV for idempotency (24h TTL)
+          await env.PIPELINE_KV.put(kvKey, JSON.stringify({
+            action: 'approve',
+            gate: 1,
+            workflow: 'agent-fix',
+            dispatched_at: new Date().toISOString(),
+          }), { expirationTtl: 86400 });
+
+          // Add 'approved' label and remove 'needs-triage'
           try {
             await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
               method: 'POST',
               headers: ghHeaders,
-              body: JSON.stringify({ labels: ['needs-dev-handoff'] }),
+              body: JSON.stringify({ labels: ['approved'] }),
             });
-          } catch (labelErr) {
-            console.error(`Failed to add 'needs-dev-handoff' label to issue #${issueNumber}:`, labelErr);
+          } catch (labelError) {
+            console.error(`Failed to add 'approved' label to issue #${issueNumber}:`, labelError);
           }
-          return new Response(pipelinePageHtml('Handoff Only — No Automated Fix', `Issue #${issueNumber} is classified as "${classification}" which is a handoff-only classification. No automated fix pipeline was dispatched. This bug type requires human investigation.`, false, 'Download the Fix Locally handoff from the issue page and resolve manually.'), {
+          try {
+            await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels/needs-triage`, {
+              method: 'DELETE',
+              headers: ghHeaders,
+            });
+          } catch (labelError) {
+            console.error(`Failed to remove 'needs-triage' label from issue #${issueNumber}:`, labelError);
+          }
+
+          // Story 1.6: Record training verdict (fire-and-forget)
+          dispatchTrainingVerdict(env, issueNumber, 'approved').catch(() => {});
+
+          return new Response(pipelinePageHtml('Fix Pipeline Triggered', `Issue #${issueNumber} has been approved. The agent-fix pipeline is now running.`, false, 'You will receive an email when the fix is ready for review.'), {
+            status: 200, headers: { 'Content-Type': 'text/html' },
+          });
+
+        } else {
+          // ── Gate 2: PR exists → merge it ──
+          console.log(`PIPE-SDK-4: Gate 2 approve for issue #${issueNumber} — merging PR #${pr.number}`);
+
+          // Merge the PR via GitHub API
+          const mergeResp = await fetch(
+            `https://api.github.com/repos/${env.GITHUB_REPO}/pulls/${pr.number}/merge`,
+            {
+              method: 'PUT',
+              headers: ghHeaders,
+              body: JSON.stringify({
+                merge_method: 'squash',
+                commit_title: `fix: #${issueNum} — ${pr.title}`,
+              }),
+            },
+          );
+
+          if (!mergeResp.ok) {
+            const errText = await mergeResp.text();
+            console.error(`PIPE-SDK-4: PR merge failed: ${mergeResp.status} ${errText}`);
+            return new Response(pipelinePageHtml('Merge Failed', `Could not merge PR #${pr.number}: ${mergeResp.status}. The PR may have merge conflicts or failing checks.`, true), {
+              status: 502, headers: { 'Content-Type': 'text/html' },
+            });
+          }
+
+          // Close the issue
+          await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}`, {
+            method: 'PATCH',
+            headers: ghHeaders,
+            body: JSON.stringify({ state: 'closed', state_reason: 'completed' }),
+          }).catch(err => console.error(`Failed to close issue #${issueNumber}:`, err));
+
+          // Delete the fix branch (best-effort)
+          await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/git/refs/heads/${pr.head.ref}`, {
+            method: 'DELETE',
+            headers: ghHeaders,
+          }).catch(err => console.error(`Failed to delete branch ${pr.head.ref}:`, err));
+
+          // Record in KV
+          await env.PIPELINE_KV.put(kvKey, JSON.stringify({
+            action: 'approve',
+            gate: 2,
+            pr_number: pr.number,
+            merged_at: new Date().toISOString(),
+          }), { expirationTtl: 86400 * 7 });
+
+          return new Response(pipelinePageHtml('Fix Merged', `PR #${pr.number} has been merged. Issue #${issueNumber} closed.`, false, 'The fix is now on main.'), {
             status: 200, headers: { 'Content-Type': 'text/html' },
           });
         }
 
-        // Build dispatch payload — content errors need category
-        // Story 3.14: Map Worker labels to SDK classifications in dispatch payload
-        // Use the resume event type for pipelines with a verify→pause→resume flow
-        const resumeEventType = WORKFLOW_TO_RESUME[workflow] || workflow;
-        const dispatchPayload: Record<string, unknown> = {
-          issue_number: parseInt(issueNumber, 10),
-          labels: labels.map(l => WORKER_LABEL_TO_SDK_CLASSIFICATION[l.name] || l.name),
-          action: 'approve',
-        };
-        if (classification === 'content-error' || classification === 'content-category-error') {
-          // ROBUST-B: Try structured extraction first, then fall back to text search
-          let extractedCategory = extractCategoryFromBody(issueBody);
-          if (!extractedCategory) {
-            extractedCategory = extractCategoryFromText(issueBody) ?? '';
-          }
-          // Send null (not empty string) when no category found — SDK handles gracefully
-          dispatchPayload.category = extractedCategory || null;
-        }
+      } else if (action === 'reject') {
+        // PIPE-SDK-4: Reject at either gate — close PR (if any), delete branch, close issue
+        const pr = await getPRForIssue(env, issueNum);
 
-        // Dispatch to the correct pipeline based on classification
-        const dispatchResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${env.BUGS_REPO_PAT}`,
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'SortingHistory-BugWebhook/1.0',
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
-          body: JSON.stringify({
-            event_type: resumeEventType,
-            client_payload: dispatchPayload,
-          }),
-        });
+        if (pr) {
+          // Close the PR with a comment
+          await fetch(
+            `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${pr.number}/comments`,
+            {
+              method: 'POST',
+              headers: ghHeaders,
+              body: JSON.stringify({ body: 'Owner rejected the fix.' }),
+            },
+          ).catch(() => {});
 
-        if (!dispatchResp.ok && dispatchResp.status !== 204) {
-          const errText = await dispatchResp.text();
-          console.error(`Pipeline approve dispatch failed (${resumeEventType}): ${dispatchResp.status} ${errText}`);
-          return new Response(pipelinePageHtml('Dispatch Failed', `Could not trigger ${resumeEventType} pipeline: ${dispatchResp.status}`, true), {
-            status: 502, headers: { 'Content-Type': 'text/html' },
-          });
-        }
+          await fetch(
+            `https://api.github.com/repos/${env.GITHUB_REPO}/pulls/${pr.number}`,
+            {
+              method: 'PATCH',
+              headers: ghHeaders,
+              body: JSON.stringify({ state: 'closed' }),
+            },
+          ).catch(err => console.error(`Failed to close PR #${pr.number}:`, err));
 
-        console.log(`Dispatched ${resumeEventType} for issue #${issueNumber} (classification: ${classification})`);
-
-        // Record in KV for idempotency (24h TTL)
-        await env.PIPELINE_KV.put(kvKey, JSON.stringify({
-          action: 'approve',
-          workflow: resumeEventType,
-          classification,
-          dispatched_at: new Date().toISOString(),
-        }), { expirationTtl: 86400 });
-
-        // Add 'approved' label and remove 'needs-triage'
-        const ghHeaders = {
-          'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'User-Agent': 'SortingHistory-BugWebhook/1.0',
-          'X-GitHub-Api-Version': '2022-11-28',
-        };
-        try {
-          await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
-            method: 'POST',
-            headers: ghHeaders,
-            body: JSON.stringify({ labels: ['approved'] }),
-          });
-        } catch (labelError) {
-          console.error(`Failed to add 'approved' label to issue #${issueNumber}:`, labelError);
-        }
-
-        try {
-          await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels/needs-triage`, {
+          // Delete the fix branch (best-effort)
+          await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/git/refs/heads/${pr.head.ref}`, {
             method: 'DELETE',
             headers: ghHeaders,
-          });
-        } catch (labelError) {
-          console.error(`Failed to remove 'needs-triage' label from issue #${issueNumber}:`, labelError);
+          }).catch(err => console.error(`Failed to delete branch ${pr.head.ref}:`, err));
+
+          console.log(`PIPE-SDK-4: Closed PR #${pr.number} and deleted branch ${pr.head.ref} for rejected issue #${issueNumber}`);
         }
 
-        // Story 1.6: Record training verdict (fire-and-forget)
-        dispatchTrainingVerdict(env, issueNumber, 'approved').catch(() => {});
-
-        return new Response(pipelinePageHtml('Fix Pipeline Triggered', `Issue #${issueNumber} has been approved. The ${resumeEventType} pipeline is now running (classification: ${classification}).`, false, 'Check your next digest email for the fix result.'), {
-          status: 200, headers: { 'Content-Type': 'text/html' },
-        });
-
-      } else if (action === 'reject') {
         // Close the issue as not_planned
         const closeResp = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}`, {
           method: 'PATCH',
-          headers: {
-            'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'SortingHistory-BugWebhook/1.0',
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
+          headers: ghHeaders,
           body: JSON.stringify({
             state: 'closed',
             state_reason: 'not_planned',
@@ -1033,81 +1067,18 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
           });
         }
 
-        // ROBUST-B AC2: Close any open PRs that reference this issue
-        let prsClosed = 0;
-        try {
-          const prSearchResp = await fetch(
-            `https://api.github.com/repos/${env.GITHUB_REPO}/pulls?state=open&per_page=50`,
-            {
-              headers: {
-                'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github+json',
-                'User-Agent': 'SortingHistory-BugWebhook/1.0',
-                'X-GitHub-Api-Version': '2022-11-28',
-              },
-            },
-          );
-          if (prSearchResp.ok) {
-            const prs = await prSearchResp.json() as Array<{ number: number; title: string; body: string | null; head: { ref: string } }>;
-            // Match PRs by branch name (fix/bug-N, fix/sdk-bug-N) or body/title containing #N or "Fixes #N"
-            const issuePattern = new RegExp(`(#${issueNumber}\\b|bug-${issueNumber}\\b)`, 'i');
-            for (const pr of prs) {
-              const matches = issuePattern.test(pr.title) ||
-                issuePattern.test(pr.body || '') ||
-                issuePattern.test(pr.head.ref);
-              if (matches) {
-                // Post comment then close
-                await fetch(
-                  `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${pr.number}/comments`,
-                  {
-                    method: 'POST',
-                    headers: {
-                      'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-                      'Accept': 'application/vnd.github+json',
-                      'User-Agent': 'SortingHistory-BugWebhook/1.0',
-                      'X-GitHub-Api-Version': '2022-11-28',
-                    },
-                    body: JSON.stringify({ body: 'Owner rejected the fix.' }),
-                  },
-                ).catch(() => {});
-                const prCloseResp = await fetch(
-                  `https://api.github.com/repos/${env.GITHUB_REPO}/pulls/${pr.number}`,
-                  {
-                    method: 'PATCH',
-                    headers: {
-                      'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
-                      'Accept': 'application/vnd.github+json',
-                      'User-Agent': 'SortingHistory-BugWebhook/1.0',
-                      'X-GitHub-Api-Version': '2022-11-28',
-                    },
-                    body: JSON.stringify({ state: 'closed' }),
-                  },
-                );
-                if (prCloseResp.ok) {
-                  prsClosed++;
-                  console.log(`Closed PR #${pr.number} (associated with rejected issue #${issueNumber})`);
-                } else {
-                  console.error(`Failed to close PR #${pr.number}: ${prCloseResp.status}`);
-                }
-              }
-            }
-          }
-        } catch (prError) {
-          console.error(`Error closing associated PRs for issue #${issueNumber}:`, prError);
-        }
-
         // Record in KV for idempotency (24h TTL)
         await env.PIPELINE_KV.put(kvKey, JSON.stringify({
           action: 'reject',
           closed_at: new Date().toISOString(),
-          prs_closed: prsClosed,
+          pr_closed: pr ? pr.number : null,
         }), { expirationTtl: 86400 });
 
         // Story 1.6: Record training verdict (fire-and-forget)
         dispatchTrainingVerdict(env, issueNumber, 'rejected').catch(() => {});
 
-        const prNote = prsClosed > 0 ? ` ${prsClosed} associated PR(s) also closed.` : '';
-        return new Response(pipelinePageHtml('Issue Rejected', `Issue #${issueNumber} has been closed as not planned.${prNote}`, false, 'This issue has been closed and will not appear in future digests.'), {
+        const prNote = pr ? ` PR #${pr.number} closed and branch deleted.` : '';
+        return new Response(pipelinePageHtml('Issue Rejected', `Issue #${issueNumber} has been rejected and closed.${prNote}`, false, 'This issue has been closed and will not appear in future digests.'), {
           status: 200, headers: { 'Content-Type': 'text/html' },
         });
       }
@@ -1215,7 +1186,31 @@ async function handlePipelineRedo(request: Request, env: Env): Promise<Response>
       console.error(`Failed to remove triage-failed label from issue #${issueNumber}:`, labelErr);
     }
 
-    // Dispatch analyze event to bugs repo
+    // PIPE-SDK-4: Dispatch agent-triage (new pipeline) for redo
+    // Also dispatch old 'analyze' for parallel testing — will be removed in Phase 5
+    const useAgentPipeline = (env.USE_AGENT_PIPELINE ?? 'true') !== 'false';
+    if (useAgentPipeline) {
+      try {
+        await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${env.BUGS_REPO_PAT}`,
+            'Accept': 'application/vnd.github+json',
+            'User-Agent': 'SortingHistory-BugWebhook/1.0',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          body: JSON.stringify({
+            event_type: 'agent-triage',
+            client_payload: { issue_number: issueNum },
+          }),
+        });
+        console.log(`PIPE-SDK-4: Dispatched agent-triage redo for issue #${issueNum}`);
+      } catch (agentErr) {
+        console.error('PIPE-SDK-4: agent-triage redo dispatch error:', agentErr);
+      }
+    }
+
+    // OLD: dispatched 'analyze' — will be removed in Phase 5 cutover
     const dispatchResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
       method: 'POST',
       headers: {
@@ -1630,23 +1625,25 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
           body: JSON.stringify({ labels: [newClassification] }),
         });
 
-        // 4. Route to the correct pipeline
-        const workflow = CLASSIFICATION_TO_WORKFLOW[newClassification];
+        // 4. PIPE-SDK-4: Route to agent-fix (simplified — agent handles classification internally)
+        // Feature requests and handoff-only classifications still get special handling
+        const HANDOFF_ONLY_LABELS = new Set([
+          'crash-bug', 'purchase-error', 'data-corruption',
+          'multiplayer-error', 'performance-issue', 'needs-human-review',
+        ]);
 
-        // Null dispatch — either feature-request (backlog) or handoff-only
-        if (workflow === null || workflow === undefined) {
-          if (newClassification === 'feature-request') {
-            await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
-              method: 'POST',
-              headers: githubHeaders,
-              body: JSON.stringify({ labels: ['backlog'] }),
-            }).catch(() => {});
-            return new Response(pipelinePageHtml('Feature Request Logged', `Issue #${issueNumber} reclassified as feature-request and added to the backlog. No fix pipeline was triggered.`, false, 'This issue will not appear in future digests.'), {
-              status: 200, headers: { 'Content-Type': 'text/html' },
-            });
-          }
+        if (newClassification === 'feature-request') {
+          await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
+            method: 'POST',
+            headers: githubHeaders,
+            body: JSON.stringify({ labels: ['backlog'] }),
+          }).catch(() => {});
+          return new Response(pipelinePageHtml('Feature Request Logged', `Issue #${issueNumber} reclassified as feature-request and added to the backlog. No fix pipeline was triggered.`, false, 'This issue will not appear in future digests.'), {
+            status: 200, headers: { 'Content-Type': 'text/html' },
+          });
+        }
 
-          // Handoff-only classification (crash-bug, performance-issue, needs-human-review)
+        if (HANDOFF_ONLY_LABELS.has(newClassification)) {
           await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
             method: 'POST',
             headers: githubHeaders,
@@ -1657,37 +1654,8 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
           });
         }
 
-        // Add needs-claude-code for dispatched workflows
-        await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
-          method: 'POST',
-          headers: githubHeaders,
-          body: JSON.stringify({ labels: ['needs-claude-code'] }),
-        }).catch(() => {});
-
-        // Dispatch to correct pipeline
+        // Dispatch agent-fix for all other classifications
         if (env.BUGS_REPO_PAT && env.BUGS_REPO) {
-          // Story 3.14: Use SDK-compatible classification (underscored) in dispatch payload
-          const sdkClassification = WORKER_LABEL_TO_SDK_CLASSIFICATION[newClassification] || newClassification;
-          const dispatchPayload: Record<string, unknown> = {
-            issue_number: parseInt(issueNumber, 10),
-            labels: [sdkClassification],
-          };
-          // content errors need category for sdk-content-verify
-          if (newClassification === 'content-error' || newClassification === 'content-category-error') {
-            try {
-              const issueData = await fetchIssueLabels(env, issueNumber);
-              // ROBUST-B: Try structured extraction first, then fall back to text search
-              let reworkCategory = extractCategoryFromBody(issueData.body);
-              if (!reworkCategory) {
-                reworkCategory = extractCategoryFromText(issueData.body) ?? '';
-              }
-              dispatchPayload.category = reworkCategory || null;
-            } catch (fetchErr) {
-              console.error(`Rework: failed to fetch issue body for category extraction on #${issueNumber}:`, fetchErr);
-              // Continue without category — SDK handles null gracefully
-              dispatchPayload.category = null;
-            }
-          }
           const dispatchResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
             method: 'POST',
             headers: {
@@ -1697,35 +1665,29 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
               'X-GitHub-Api-Version': '2022-11-28',
             },
             body: JSON.stringify({
-              event_type: workflow,
-              client_payload: dispatchPayload,
+              event_type: 'agent-fix',
+              client_payload: {
+                issue_number: parseInt(issueNumber, 10),
+                action: 'approve',
+              },
             }),
           });
 
-          const dispatchBody = await dispatchResp.text();
-          console.log(JSON.stringify({
-            action: 'reclassification_dispatch_result',
-            issue: issueNumber,
-            workflow: workflow,
-            status: dispatchResp.status,
-            body: dispatchBody.slice(0, 500),
-            timestamp: new Date().toISOString(),
-          }));
-
-          if (!dispatchResp.ok) {
-            console.error(`Rework dispatch FAILED: issue #${issueNumber}, workflow ${workflow}, status ${dispatchResp.status}`);
-            return new Response(pipelinePageHtml('Dispatch Failed', `Issue #${issueNumber} was reclassified as \`${newClassification}\`, but the dispatch to \`${workflow}\` failed (HTTP ${dispatchResp.status}): ${dispatchBody.slice(0, 200)}`, true), {
+          if (!dispatchResp.ok && dispatchResp.status !== 204) {
+            const dispatchBody = await dispatchResp.text();
+            console.error(`Rework dispatch FAILED: issue #${issueNumber}, agent-fix, status ${dispatchResp.status}`);
+            return new Response(pipelinePageHtml('Dispatch Failed', `Issue #${issueNumber} was reclassified as \`${newClassification}\`, but the dispatch to agent-fix failed (HTTP ${dispatchResp.status}): ${dispatchBody.slice(0, 200)}`, true), {
               status: 502, headers: { 'Content-Type': 'text/html' },
             });
           }
         }
 
-        console.log(`Rework: issue #${issueNumber} reclassified as ${newClassification}, dispatched ${workflow}`);
+        console.log(`Rework: issue #${issueNumber} reclassified as ${newClassification}, dispatched agent-fix`);
 
         // Story 1.6: Record training verdict (fire-and-forget)
         dispatchTrainingVerdict(env, issueNumber, 'reworked').catch(() => {});
 
-        return new Response(pipelinePageHtml('Reclassified & Dispatched', `Issue #${issueNumber} reclassified as \`${newClassification}\` and dispatched to the \`${workflow}\` pipeline.`, false, 'The issue has been re-submitted. Check your next digest for the new result.'), {
+        return new Response(pipelinePageHtml('Reclassified & Dispatched', `Issue #${issueNumber} reclassified as \`${newClassification}\` and dispatched to the agent-fix pipeline.`, false, 'The issue has been re-submitted. Check your next digest for the new result.'), {
           status: 200, headers: { 'Content-Type': 'text/html' },
         });
       }
@@ -1770,8 +1732,26 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
         body: JSON.stringify({ labels: ['needs-triage'] }),
       });
 
-      // 3. Re-dispatch analyze, passing correction notes in payload
+      // 3. PIPE-SDK-4: Dispatch agent-triage (new) + old analyze (parallel testing)
       if (env.BUGS_REPO_PAT && env.BUGS_REPO) {
+        const useAgentPipeline = (env.USE_AGENT_PIPELINE ?? 'true') !== 'false';
+        if (useAgentPipeline) {
+          await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${env.BUGS_REPO_PAT}`,
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'SortingHistory-BugWebhook/1.0',
+              'X-GitHub-Api-Version': '2022-11-28',
+            },
+            body: JSON.stringify({
+              event_type: 'agent-triage',
+              client_payload: { issue_number: parseInt(issueNumber, 10) },
+            }),
+          }).catch(err => console.error('PIPE-SDK-4: agent-triage rework dispatch error:', err));
+        }
+
+        // OLD: dispatched 'analyze' — will be removed in Phase 5 cutover
         await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
           method: 'POST',
           headers: {
