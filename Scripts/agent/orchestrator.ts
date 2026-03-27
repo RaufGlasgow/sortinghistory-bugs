@@ -613,22 +613,16 @@ async function runFix(args: Args): Promise<void> {
   console.log(`[orchestrator] Title: ${issue.title}`);
   console.log(`[orchestrator] Comments: ${issue.comments.length}`);
 
-  // 2. Find triage comment
+  // 2. Find triage comment (optional — fix works with or without it)
   const triageComment = findTriageComment(issue.comments);
-  if (!triageComment) {
-    const msg = "No triage comment found on this issue. Run triage first.";
-    console.error(`[orchestrator] ${msg}`);
-    if (!args.dryRun) {
-      postFixFailureComment(args.issue, msg);
-      addLabels(args.issue, ["needs-dev-handoff"]);
-    }
-    writeFixOutputJson(args.issue, null, null, null, null, "failure", msg);
-    process.exit(1);
+  if (triageComment) {
+    console.log("[orchestrator] Found triage comment — using it for context.");
+  } else {
+    console.log("[orchestrator] No triage comment found — using issue body only.");
   }
-  console.log("[orchestrator] Found triage comment.");
 
-  // 3. Build fix prompt
-  const prompt = buildFixPrompt(issue.title, issue.body, triageComment);
+  // 3. Build fix prompt (works with or without triage comment)
+  const prompt = buildFixPrompt(issue.title, issue.body, triageComment || "No prior triage available. Read the issue body carefully and investigate the problem yourself by searching the game files.");
 
   // 4. Run Agent SDK sub-agent (Sonnet, read+write)
   console.log("[orchestrator] Starting Agent SDK fix sub-agent (Sonnet)...");
