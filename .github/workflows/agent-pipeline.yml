@@ -100,7 +100,7 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
-          WEBHOOK_AUTH_TOKEN: ${{ secrets.WEBHOOK_AUTH_TOKEN }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           ISSUE="$ISSUE_NUMBER"
           OUTPUT_FILE="Scripts/agent/agent-output.json"
@@ -133,9 +133,9 @@ jobs:
 
           # Build Gate 1 button URLs
           BASE_URL="https://sortinghistory.com/api/pipeline"
-          APPROVE_URL="${BASE_URL}/approve-fix?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
-          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
-          REJECT_URL="${BASE_URL}/reject?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          APPROVE_URL="${BASE_URL}/approve-fix?issue=${ISSUE}&token=${AUTH_TOKEN}"
+          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${AUTH_TOKEN}"
+          REJECT_URL="${BASE_URL}/reject?issue=${ISSUE}&token=${AUTH_TOKEN}"
 
           cat > /tmp/agent-triage-email.html << EMAILEOF
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
@@ -201,7 +201,7 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
-          WEBHOOK_AUTH_TOKEN: ${{ secrets.WEBHOOK_AUTH_TOKEN }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           ISSUE="$ISSUE_NUMBER"
           OUTPUT_FILE="Scripts/agent/agent-output.json"
@@ -239,9 +239,9 @@ jobs:
 
           # Build Gate 2 button URLs
           BASE_URL="https://sortinghistory.com/api/pipeline"
-          APPROVE_URL="${BASE_URL}/approve-merge?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
-          REJECT_URL="${BASE_URL}/reject-fix?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
-          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          APPROVE_URL="${BASE_URL}/approve-merge?issue=${ISSUE}&token=${AUTH_TOKEN}"
+          REJECT_URL="${BASE_URL}/reject-fix?issue=${ISSUE}&token=${AUTH_TOKEN}"
+          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${AUTH_TOKEN}"
 
           cat > /tmp/agent-fix-email.html << EMAILEOF
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
@@ -329,7 +329,7 @@ jobs:
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
-          WEBHOOK_AUTH_TOKEN: ${{ secrets.WEBHOOK_AUTH_TOKEN }}
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           ISSUE="$ISSUE_NUMBER"
           if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
@@ -347,8 +347,8 @@ jobs:
 
           # Build failure button URLs
           BASE_URL="https://sortinghistory.com/api/pipeline"
-          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
-          CANCEL_URL="${BASE_URL}/cancel?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${AUTH_TOKEN}"
+          CANCEL_URL="${BASE_URL}/cancel?issue=${ISSUE}&token=${AUTH_TOKEN}"
 
           cat > /tmp/agent-failure-email.html << EMAILEOF
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
