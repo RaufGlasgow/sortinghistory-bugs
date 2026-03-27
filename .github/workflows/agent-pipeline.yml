@@ -1,0 +1,486 @@
+name: Agent Pipeline
+run-name: "Agent ${{ github.event.action || inputs.mode }} #${{ github.event.client_payload.issue_number || inputs.issue_number }}"
+
+on:
+  repository_dispatch:
+    types: [agent-triage, agent-fix]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Agent mode"
+        required: true
+        type: choice
+        options:
+          - triage
+          - fix
+      issue_number:
+        description: "Issue number in the private repo"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: agent-pipeline
+  cancel-in-progress: false
+
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+jobs:
+  agent-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── Setup ──────────────────────────────────────────────────────────
+      - name: Checkout public repo (automation scripts + agent)
+        uses: actions/checkout@v4
+
+      - name: Checkout private repo (game source)
+        uses: actions/checkout@v4
+        with:
+          repository: RaufGlasgow/Sorting-History
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          path: game-repo
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install agent dependencies
+        working-directory: Scripts/agent
+        run: npm ci
+
+      # ── Extract payload ────────────────────────────────────────────────
+      - name: Extract and validate payload
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            ISSUE="${{ github.event.client_payload.issue_number }}"
+            ACTION="${{ github.event.action }}"
+            if [ "$ACTION" = "agent-triage" ]; then
+              MODE="triage"
+            else
+              MODE="fix"
+            fi
+          else
+            ISSUE="${{ inputs.issue_number }}"
+            MODE="${{ inputs.mode }}"
+          fi
+
+          # Validate issue number is numeric
+          if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid issue_number: '$ISSUE'. Must be a positive integer."
+            exit 1
+          fi
+
+          echo "ISSUE_NUMBER=$ISSUE" >> "$GITHUB_ENV"
+          echo "AGENT_MODE=$MODE" >> "$GITHUB_ENV"
+          echo "Running agent in $MODE mode for issue #$ISSUE"
+
+      # ── Run agent ──────────────────────────────────────────────────────
+      - name: "Run agent (${{ env.AGENT_MODE }} mode)"
+        working-directory: Scripts/agent
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          npx tsx orchestrator.ts \
+            --mode "$AGENT_MODE" \
+            --issue "$ISSUE_NUMBER" \
+            --game-repo "${{ github.workspace }}/game-repo"
+        timeout-minutes: 20
+
+      # ── Post-triage email (Gate 1) ─────────────────────────────────────
+      - name: "Send triage email (Gate 1)"
+        if: success() && env.AGENT_MODE == 'triage'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          WEBHOOK_AUTH_TOKEN: ${{ secrets.WEBHOOK_AUTH_TOKEN }}
+        run: |
+          ISSUE="$ISSUE_NUMBER"
+          OUTPUT_FILE="Scripts/agent/agent-output.json"
+          ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE}"
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
+            echo "WARNING: Email secrets not configured — skipping triage email"
+            exit 0
+          fi
+
+          # Read agent output
+          if [ ! -f "$OUTPUT_FILE" ]; then
+            echo "WARNING: agent-output.json not found — skipping triage email"
+            exit 0
+          fi
+
+          CLASSIFICATION=$(jq -r '.classification // "unknown"' "$OUTPUT_FILE")
+          SEVERITY=$(jq -r '.severity // "unknown"' "$OUTPUT_FILE")
+          CONFIDENCE=$(jq -r '.confidence // 0' "$OUTPUT_FILE")
+          DESCRIPTION=$(jq -r '.description // "No description"' "$OUTPUT_FILE")
+          STATUS=$(jq -r '.status // "unknown"' "$OUTPUT_FILE")
+
+          if [ "$STATUS" != "success" ]; then
+            echo "Agent status is not success ($STATUS) — skipping triage email"
+            exit 0
+          fi
+
+          # Build affected files list
+          AFFECTED_FILES=$(jq -r '.affected_files | if length > 0 then map("&bull; <code>" + . + "</code>") | join("<br/>") else "None identified" end' "$OUTPUT_FILE")
+
+          # Build Gate 1 button URLs
+          BASE_URL="https://sortinghistory.com/api/pipeline"
+          APPROVE_URL="${BASE_URL}/approve-fix?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          REJECT_URL="${BASE_URL}/reject?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+
+          cat > /tmp/agent-triage-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#8B6914;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#6b5010;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Bug Triaged</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Issue #${ISSUE} Triaged</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0f7ff;border-left:4px solid #3b82f6;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#1e40af;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Classification</p>
+                <p style="margin:0;font-size:16px;color:#333333;font-weight:700;">${CLASSIFICATION}</p>
+              </div>
+              <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+                <tr>
+                  <td style="padding:8px 0;font-size:13px;color:#666;">Severity</td>
+                  <td style="padding:8px 0;font-size:13px;color:#333;font-weight:600;text-align:right;">${SEVERITY}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-size:13px;color:#666;border-top:1px solid #eee;">Confidence</td>
+                  <td style="padding:8px 0;font-size:13px;color:#333;font-weight:600;text-align:right;border-top:1px solid #eee;">${CONFIDENCE}%</td>
+                </tr>
+              </table>
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fafaf8;border:1px solid #e5e1d8;border-radius:8px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Summary</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">${DESCRIPTION}</p>
+              </div>
+              <div style="margin:0 0 24px 0;padding:14px 16px;background:#fafaf8;border:1px solid #e5e1d8;border-radius:8px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Affected Files</p>
+                <p style="margin:0;font-size:13px;color:#333333;line-height:1.8;">${AFFECTED_FILES}</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${APPROVE_URL}" style="display:inline-block;padding:14px 24px;background:#16a34a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
+                <a href="${LOCAL_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>
+                <a href="${REJECT_URL}" style="display:inline-block;padding:14px 24px;background:#b91c1c;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>
+              </div>
+              <p style="text-align:center;margin-top:12px;"><a href="${ISSUE_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;">View issue on GitHub &rarr;</a></p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Agent triage notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Bug #${ISSUE} triaged: ${CLASSIFICATION} — Action needed" \
+            --rawfile html /tmp/agent-triage-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
+
+      # ── Post-fix email (Gate 2) ────────────────────────────────────────
+      - name: "Send fix email (Gate 2)"
+        if: success() && env.AGENT_MODE == 'fix'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          WEBHOOK_AUTH_TOKEN: ${{ secrets.WEBHOOK_AUTH_TOKEN }}
+        run: |
+          ISSUE="$ISSUE_NUMBER"
+          OUTPUT_FILE="Scripts/agent/agent-output.json"
+          ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE}"
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
+            echo "WARNING: Email secrets not configured — skipping fix email"
+            exit 0
+          fi
+
+          if [ ! -f "$OUTPUT_FILE" ]; then
+            echo "WARNING: agent-output.json not found — skipping fix email"
+            exit 0
+          fi
+
+          STATUS=$(jq -r '.status // "unknown"' "$OUTPUT_FILE")
+          SUMMARY=$(jq -r '.summary // "No summary"' "$OUTPUT_FILE")
+          PR_URL=$(jq -r '.pr_url // ""' "$OUTPUT_FILE")
+          PR_NUMBER=$(jq -r '.pr_number // ""' "$OUTPUT_FILE")
+          BRANCH=$(jq -r '.branch // ""' "$OUTPUT_FILE")
+
+          if [ "$STATUS" != "success" ]; then
+            echo "Agent status is not success ($STATUS) — skipping fix email"
+            exit 0
+          fi
+
+          if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ]; then
+            echo "No PR was created — skipping fix email"
+            exit 0
+          fi
+
+          # Build files changed list
+          FILES_CHANGED=$(jq -r '.files_changed | if length > 0 then map("&bull; <code>" + . + "</code>") | join("<br/>") else "None" end' "$OUTPUT_FILE")
+          EVENTS_MODIFIED=$(jq -r '.events_modified // 0' "$OUTPUT_FILE")
+
+          # Build Gate 2 button URLs
+          BASE_URL="https://sortinghistory.com/api/pipeline"
+          APPROVE_URL="${BASE_URL}/approve-merge?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          REJECT_URL="${BASE_URL}/reject-fix?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+
+          cat > /tmp/agent-fix-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#16a34a;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#15803d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Fix Ready</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Fix Ready for #${ISSUE}</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#f0fdf4;border-left:4px solid #16a34a;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#16a34a;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Summary</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">${SUMMARY}</p>
+              </div>
+              <table style="width:100%;border-collapse:collapse;margin:0 0 20px 0;">
+                <tr>
+                  <td style="padding:8px 0;font-size:13px;color:#666;">PR</td>
+                  <td style="padding:8px 0;font-size:13px;color:#333;font-weight:600;text-align:right;">#${PR_NUMBER}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-size:13px;color:#666;border-top:1px solid #eee;">Branch</td>
+                  <td style="padding:8px 0;font-size:13px;color:#333;font-weight:600;text-align:right;">${BRANCH}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-size:13px;color:#666;border-top:1px solid #eee;">Events Modified</td>
+                  <td style="padding:8px 0;font-size:13px;color:#333;font-weight:600;text-align:right;">${EVENTS_MODIFIED}</td>
+                </tr>
+              </table>
+              <div style="margin:0 0 24px 0;padding:14px 16px;background:#fafaf8;border:1px solid #e5e1d8;border-radius:8px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Files Changed</p>
+                <p style="margin:0;font-size:13px;color:#333333;line-height:1.8;">${FILES_CHANGED}</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${APPROVE_URL}" style="display:inline-block;padding:14px 24px;background:#16a34a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve</a>
+                <a href="${REJECT_URL}" style="display:inline-block;padding:14px 24px;background:#b91c1c;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>
+                <a href="${LOCAL_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>
+              </div>
+              <p style="text-align:center;margin-top:12px;"><a href="${PR_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;">View PR on GitHub &rarr;</a></p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Agent fix notification</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Fix ready for #${ISSUE} — Review needed" \
+            --rawfile html /tmp/agent-fix-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
+
+      # ── Failure handling ───────────────────────────────────────────────
+      - name: "Label issue on failure"
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          ISSUE="$ISSUE_NUMBER"
+          if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "No valid issue number — skipping failure label"
+            exit 0
+          fi
+
+          PRIVATE_REPO="RaufGlasgow/Sorting-History"
+
+          gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
+            --add-label "needs-dev-handoff" 2>/dev/null || true
+
+          # Remove approved so digest skip filter does not hide this issue
+          gh issue edit "$ISSUE" --repo "$PRIVATE_REPO" \
+            --remove-label "approved" 2>/dev/null || true
+
+          echo "Issue #$ISSUE labeled as needs-dev-handoff, approved removed"
+
+      - name: "Send failure email"
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          WEBHOOK_AUTH_TOKEN: ${{ secrets.WEBHOOK_AUTH_TOKEN }}
+        run: |
+          ISSUE="$ISSUE_NUMBER"
+          if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "No valid issue number — skipping failure email"
+            exit 0
+          fi
+
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          ISSUE_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${ISSUE}"
+
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$OWNER_EMAIL" ]; then
+            echo "WARNING: Email secrets not configured — skipping failure email"
+            exit 0
+          fi
+
+          # Build failure button URLs
+          BASE_URL="https://sortinghistory.com/api/pipeline"
+          LOCAL_URL="${BASE_URL}/fix-locally?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+          CANCEL_URL="${BASE_URL}/cancel?issue=${ISSUE}&token=${WEBHOOK_AUTH_TOKEN}"
+
+          cat > /tmp/agent-failure-email.html << EMAILEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:0 auto;padding:0;background:#fffdf8;">
+            <div style="background:#b91c1c;padding:32px 24px;text-align:center;border-radius:12px 12px 0 0;">
+              <img src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History" style="width:80px;height:80px;border-radius:18px;margin-bottom:12px;" />
+              <div style="display:inline-block;padding:4px 14px;background:#7f1d1d;border-radius:20px;margin-bottom:8px;">
+                <span style="color:#ffffff;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Pipeline Error</span>
+              </div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700;">Agent Pipeline Failed</h1>
+            </div>
+            <div style="padding:28px 24px;background:#ffffff;border-left:1px solid #e5e1d8;border-right:1px solid #e5e1d8;">
+              <div style="margin:0 0 20px 0;padding:14px 16px;background:#fef2f2;border-left:4px solid #b91c1c;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-size:12px;color:#b91c1c;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">What Happened</p>
+                <p style="margin:0;font-size:14px;color:#333333;line-height:1.5;">Agent pipeline (${AGENT_MODE} mode) for <strong>issue #${ISSUE}</strong> crashed. The issue has been labeled <code>needs-dev-handoff</code> and will appear in your next digest.</p>
+              </div>
+              <div style="padding:14px 16px;background:#f0f7ff;border:2px solid #93c5fd;border-radius:8px;margin-bottom:24px;">
+                <p style="margin:0;font-weight:700;color:#1e40af;font-size:14px;">Check the workflow log to see what went wrong.</p>
+              </div>
+              <div style="text-align:center;">
+                <a href="${LOCAL_URL}" style="display:inline-block;padding:14px 24px;background:#8B6914;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>
+                <a href="${CANCEL_URL}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Cancel</a>
+              </div>
+              <p style="text-align:center;margin-top:12px;">
+                <a href="${ISSUE_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;margin-right:16px;">View issue &rarr;</a>
+                <a href="${RUN_URL}" style="color:#8B6914;font-size:13px;text-decoration:none;">View workflow log &rarr;</a>
+              </p>
+            </div>
+            <div style="padding:16px 24px;background:#f5f0e8;border:1px solid #e5e1d8;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
+              <p style="margin:0 0 4px 0;font-size:12px;color:#8B6914;font-weight:600;">Sorting History &mdash; Learn history by playing it</p>
+              <p style="margin:0;font-size:10px;color:#aaaaaa;">SortingHistory Pipeline &bull; Agent failure alert</p>
+            </div>
+          </div>
+          EMAILEOF
+
+          PAYLOAD=$(jq -n \
+            --arg from "SortingHistory Pipeline <bugs@sortinghistory.com>" \
+            --arg to "$OWNER_EMAIL" \
+            --arg subject "Pipeline failed for #${ISSUE} (${AGENT_MODE})" \
+            --rawfile html /tmp/agent-failure-email.html \
+            '{from: $from, to: [$to], subject: $subject, html: $html}')
+
+          curl -sf -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer $RESEND_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
+
+      # ── Outcome logging ────────────────────────────────────────────────
+      - name: Log pipeline outcome
+        if: always()
+        run: |
+          ISSUE="$ISSUE_NUMBER"
+          if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+            echo "No valid issue number — skipping outcome log"
+            exit 0
+          fi
+
+          # Read agent-output.json if it exists for richer logging
+          OUTPUT_FILE="Scripts/agent/agent-output.json"
+          if [ -f "$OUTPUT_FILE" ]; then
+            CLASSIFICATION=$(jq -r '.classification // "unknown"' "$OUTPUT_FILE")
+            CONFIDENCE=$(jq -r '.confidence // null' "$OUTPUT_FILE")
+            AGENT_STATUS=$(jq -r '.status // "unknown"' "$OUTPUT_FILE")
+          else
+            CLASSIFICATION="unknown"
+            CONFIDENCE="null"
+            AGENT_STATUS="unknown"
+          fi
+
+          # Determine outcome from job status
+          JOB_STATUS="${{ job.status }}"
+          if [ "$JOB_STATUS" = "success" ]; then
+            OUTCOME="success"
+            ERROR_DETAIL="null"
+          elif [ "$JOB_STATUS" = "cancelled" ]; then
+            OUTCOME="runner_crash"
+            ERROR_DETAIL="\"Job was cancelled\""
+          else
+            OUTCOME="model_crash"
+            ERROR_DETAIL="\"Agent pipeline failed — check workflow log\""
+          fi
+
+          # Determine stage
+          MODE="${AGENT_MODE:-unknown}"
+
+          TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Build JSON with jq for safe escaping
+          JSON_LINE=$(jq -n -c \
+            --argjson issue_number "$ISSUE" \
+            --arg timestamp "$TIMESTAMP" \
+            --arg stage "$MODE" \
+            --arg classification "$CLASSIFICATION" \
+            --argjson severity null \
+            --argjson confidence "$CONFIDENCE" \
+            --argjson model null \
+            --argjson turns_used null \
+            --argjson max_turns null \
+            --argjson cost_usd null \
+            --arg outcome "$OUTCOME" \
+            --argjson attempt_number 1 \
+            --argjson error_detail "$ERROR_DETAIL" \
+            '{
+              issue_number: $issue_number,
+              timestamp: $timestamp,
+              stage: $stage,
+              classification: $classification,
+              severity: $severity,
+              confidence: $confidence,
+              model: $model,
+              turns_used: $turns_used,
+              max_turns: $max_turns,
+              cost_usd: $cost_usd,
+              outcome: $outcome,
+              attempt_number: $attempt_number,
+              error_detail: $error_detail
+            }')
+
+          echo "Logging outcome: $JSON_LINE"
+          echo "$JSON_LINE" >> pipeline-outcomes.jsonl
+
+          git config user.name "sdk-bot"
+          git config user.email "sdk-bot@users.noreply.github.com"
+          git add pipeline-outcomes.jsonl
+          git diff --cached --quiet && echo "No outcome changes to commit" || \
+            git commit -m "log: agent outcome for #$ISSUE ($MODE)"
+
+          # Retry push with rebase for concurrent append handling
+          for i in 1 2 3; do
+            if git push; then
+              echo "Push succeeded on attempt $i"
+              break
+            fi
+            echo "Push failed, retrying with rebase (attempt $i)..."
+            git pull --rebase origin main || true
+          done
