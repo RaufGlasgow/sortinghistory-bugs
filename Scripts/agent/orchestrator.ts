@@ -652,32 +652,51 @@ async function runFix(args: Args): Promise<void> {
 
   console.log("\n[orchestrator] Agent finished. Output length:", agentOutput.length);
 
-  // 5. Parse fix result
+  // 5. Detect what changed using git (reliable) — don't depend on agent text output
+  let changedFiles: string[] = [];
+  try {
+    const diffOutput = execSync(`git diff --name-only && git diff --cached --name-only`, {
+      cwd: args.gameRepo, encoding: "utf-8",
+    });
+    changedFiles = [...new Set(diffOutput.trim().split("\n").filter(f => f.length > 0))];
+  } catch {
+    changedFiles = [];
+  }
+
+  // Also try to parse the agent's structured output (bonus context, not required)
   const fixResult = parseFixResult(agentOutput);
 
-  if (!fixResult) {
-    const msg = "Agent did not produce a parseable fix result";
-    console.error(`[orchestrator] ${msg}`);
-    console.error("[orchestrator] Raw agent output (last 2000 chars):");
-    console.error(agentOutput.slice(-2000));
+  if (fixResult) {
+    console.log("\n[orchestrator] Agent provided structured result:");
+    console.log(`  Status: ${fixResult.status}`);
+    console.log(`  Summary: ${fixResult.summary}`);
+  } else {
+    console.log("[orchestrator] Agent did not produce structured output — using git diff instead.");
+  }
 
+  // Use git diff as the source of truth for changed files
+  if (changedFiles.length === 0 && (!fixResult || fixResult.filesChanged.length === 0)) {
+    const msg = "Agent ran but made no file changes.";
+    console.error(`[orchestrator] ${msg}`);
     if (!args.dryRun) {
-      postFixFailureComment(args.issue, msg);
+      postFixFailureComment(args.issue, msg + "\n\nAgent output:\n" + agentOutput.slice(-500));
       addLabels(args.issue, ["needs-dev-handoff"]);
     }
-    writeFixOutputJson(args.issue, null, null, null, null, "failure", msg);
+    writeFixOutputJson(args.issue, fixResult, null, null, null, "failure", msg);
     process.exit(1);
   }
 
-  console.log("\n[orchestrator] Fix result:");
-  console.log(`  Status: ${fixResult.status}`);
-  console.log(`  Files changed: ${fixResult.filesChanged.join(", ") || "none"}`);
-  console.log(`  Summary: ${fixResult.summary}`);
-  console.log(`  Events modified: ${fixResult.eventsModified}`);
+  // Merge file lists (git diff is authoritative, agent output is supplementary)
+  const allChangedFiles = changedFiles.length > 0 ? changedFiles : (fixResult?.filesChanged || []);
+  const summary = fixResult?.summary || `Agent modified ${allChangedFiles.length} file(s): ${allChangedFiles.join(", ")}`;
+  const eventsModified = fixResult?.eventsModified || allChangedFiles.length;
 
-  // 6. Handle cannot_fix
-  if (fixResult.status === "cannot_fix") {
-    console.log("[orchestrator] Agent could not fix this issue.");
+  console.log(`\n[orchestrator] Files changed (from git): ${allChangedFiles.join(", ")}`);
+  console.log(`[orchestrator] Summary: ${summary}`);
+
+  // 6. Handle cannot_fix (only if agent explicitly said so)
+  if (fixResult?.status === "cannot_fix") {
+    console.log("[orchestrator] Agent explicitly reported it could not fix this issue.");
     if (!args.dryRun) {
       postFixFailureComment(args.issue, fixResult.summary);
       addLabels(args.issue, ["needs-dev-handoff"]);
@@ -713,8 +732,8 @@ async function runFix(args: Args): Promise<void> {
 
     // Revert only the files the agent changed (preserve pre-existing uncommitted changes)
     console.log("[orchestrator] DRY RUN: Reverting agent changes...");
-    if (fixResult.filesChanged.length > 0) {
-      for (const file of fixResult.filesChanged) {
+    if (allChangedFiles.length > 0) {
+      for (const file of allChangedFiles) {
         try {
           execSync(`git checkout -- "${file}"`, { cwd: args.gameRepo, encoding: "utf-8" });
           console.log(`[orchestrator] DRY RUN: Reverted ${file}`);
@@ -728,14 +747,14 @@ async function runFix(args: Args): Promise<void> {
 
     writeFixOutputJson(
       args.issue,
-      fixResult,
+      fixResult || { status: "fixed", filesChanged: allChangedFiles, summary, eventsModified },
       null,
       null,
       `sdk-fix-${args.issue}`,
       "success",
     );
   } else {
-    const pr = createBranchAndPR(args, fixResult.filesChanged, fixResult.summary);
+    const pr = createBranchAndPR(args, allChangedFiles, summary);
 
     if (!pr) {
       const msg = "No changes were actually made to any files.";
@@ -753,8 +772,8 @@ async function runFix(args: Args): Promise<void> {
       args.issue,
       pr.prNumber,
       pr.prUrl,
-      fixResult.filesChanged,
-      fixResult.summary,
+      allChangedFiles,
+      summary,
     );
 
     // Label the issue
@@ -763,7 +782,7 @@ async function runFix(args: Args): Promise<void> {
     // Write output JSON
     writeFixOutputJson(
       args.issue,
-      fixResult,
+      fixResult || { status: "fixed", filesChanged: allChangedFiles, summary, eventsModified },
       pr.prNumber,
       pr.prUrl,
       pr.branch,
