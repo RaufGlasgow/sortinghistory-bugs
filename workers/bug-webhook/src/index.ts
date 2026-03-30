@@ -3311,6 +3311,42 @@ async function handleHandoffFileDownload(request: Request, env: Env, _ctx: Execu
     c.body.includes('## AI Bug Analysis') || c.body.includes('## Triage Classification')
   );
 
+  // PIPE-010: Fetch closed PRs for this issue to include previous fix attempt context
+  const prsResp = await fetch(
+    `https://api.github.com/repos/${env.GITHUB_REPO}/pulls?state=closed&per_page=50`,
+    { headers: githubHeaders }
+  );
+  const allPRs = prsResp.ok ? await prsResp.json() as Array<{
+    number: number; title: string; state: string; body: string;
+    html_url: string; head: { ref: string }; merged_at: string | null;
+    created_at: string; closed_at: string;
+  }> : [];
+
+  // Filter to PRs for this issue (branch ends with bug-{N})
+  const issuePRs = allPRs
+    .filter(pr => new RegExp(`bug-${issueNum}$`).test(pr.head.ref))
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+  // For each closed (not merged) PR, fetch rejection comments
+  const prRejections: Map<number, string> = new Map();
+  for (const pr of issuePRs) {
+    if (!pr.merged_at) {
+      try {
+        const prCommentsResp = await fetch(
+          `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${pr.number}/comments?per_page=50`,
+          { headers: githubHeaders }
+        );
+        if (prCommentsResp.ok) {
+          const prComments = await prCommentsResp.json() as Array<{ body: string }>;
+          const rejectionComment = prComments.find(c => c.body.includes('## Fix Rejected'));
+          if (rejectionComment) {
+            prRejections.set(pr.number, rejectionComment.body);
+          }
+        }
+      } catch { /* non-fatal — PR still shows, just without rejection details */ }
+    }
+  }
+
   // Build the handoff markdown
   let md = `# Bug #${issueNumber} — Handoff for Claude Code\n\n`;
   md += `## Original Bug Report\n\n${issue.body}\n\n`;
@@ -3325,7 +3361,26 @@ async function handleHandoffFileDownload(request: Request, env: Env, _ctx: Execu
     md += `---\n\n${handoffComment.body}\n\n`;
   }
 
-  if (!handoffComment && !analysisComment) {
+  // PIPE-010: Include previous fix attempts from closed PRs
+  if (issuePRs.length > 0) {
+    md += `---\n\n## Previous Fix Attempts\n\n`;
+    for (let i = 0; i < issuePRs.length; i++) {
+      const pr = issuePRs[i];
+      const status = pr.merged_at ? 'Merged' : 'Closed (rejected/failed)';
+      md += `### Attempt ${i + 1}: PR #${pr.number} — ${status}\n\n`;
+      md += `**Branch:** \`${pr.head.ref}\`\n`;
+      md += `**Link:** ${pr.html_url}\n\n`;
+      if (pr.body) {
+        md += `${pr.body}\n\n`;
+      }
+      const rejection = prRejections.get(pr.number);
+      if (rejection) {
+        md += `**Rejection Details:**\n\n${rejection}\n\n`;
+      }
+    }
+  }
+
+  if (!handoffComment && !analysisComment && issuePRs.length === 0) {
     md += `---\n\nNo pipeline analysis or handoff found for this issue.\n`;
   }
 
@@ -3879,6 +3934,11 @@ export default {
     if (url.pathname === '/api/pipeline/handoff' || url.pathname === '/api/pipeline/fix-locally') return handleHandoffDownload(request, env, ctx);
     if (url.pathname === '/api/pipeline/handoff-file') return handleHandoffFileDownload(request, env, ctx);
 
+    // PIPE-013: Handle HEAD for all pipeline endpoints (mobile email client prefetch)
+    if (request.method === 'HEAD' && url.pathname.startsWith('/api/pipeline/')) {
+      return new Response(null, { status: 200, headers: { 'Content-Type': 'text/html' } });
+    }
+
     // Pipeline action endpoints (GET + POST, must be before POST-only guard)
     if (url.pathname === '/api/pipeline/redo' || url.pathname === '/api/pipeline/retry-triage') return handlePipelineRedo(request, env);
     if (url.pathname === '/api/pipeline/approve') return handlePipelineAction(request, env, 'approve');
@@ -3896,6 +3956,7 @@ export default {
 
     // Only accept POST requests for remaining routes
     if (request.method !== 'POST') {
+      console.error(`405: method=${request.method} path=${url.pathname} ua=${request.headers.get('user-agent') || 'none'}`);
       return new Response(
         JSON.stringify({ error: 'Method not allowed. Use POST.' }),
         {
@@ -3975,8 +4036,14 @@ export default {
         ctx.waitUntil(addDuplicateLabel(env, dedup.originalIssueNumber));
 
         // AC-7: Send thank-you email even for duplicate reporters
+        // PIPE-011: Skip if reporter is the pipeline owner
         if (report.email) {
-          ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, dedup.originalIssueNumber));
+          const isOwner = env.OWNER_EMAIL && report.email.toLowerCase() === env.OWNER_EMAIL.toLowerCase();
+          if (isOwner) {
+            console.log(`FR-160: Skipping thank-you for owner-submitted duplicate report #${dedup.originalIssueNumber}`);
+          } else {
+            ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, dedup.originalIssueNumber));
+          }
         }
 
         // AC-14: Do NOT dispatch triage for duplicates
@@ -4024,8 +4091,14 @@ export default {
       ctx.waitUntil(dispatchAnalysis(env, result.issueNumber));
 
       // FR-160: Send thank-you email in background (non-blocking)
+      // PIPE-011: Skip if reporter is the pipeline owner
       if (report.email) {
-        ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, result.issueNumber));
+        const isOwner = env.OWNER_EMAIL && report.email.toLowerCase() === env.OWNER_EMAIL.toLowerCase();
+        if (isOwner) {
+          console.log(`FR-160: Skipping thank-you for owner-submitted report #${result.issueNumber}`);
+        } else {
+          ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, result.issueNumber));
+        }
       }
 
       return new Response(
