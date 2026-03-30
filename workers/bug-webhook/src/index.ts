@@ -3407,12 +3407,62 @@ async function handleHandoffFileDownload(request: Request, env: Env, _ctx: Execu
   }
 
   const filename = `bug-${issueNumber}-handoff.md`;
-  return new Response(md, {
+
+  // Encode the markdown as a data URI for auto-download
+  const base64Md = btoa(unescape(encodeURIComponent(md)));
+  const dataUri = `data:text/markdown;charset=utf-8;base64,${base64Md}`;
+
+  // Build summary for confirmation page
+  const prSummary = issuePRs.length > 0
+    ? issuePRs.map((pr, i) => `<li>Attempt ${i + 1}: <a href="${pr.html_url}" style="color:#8B6914">PR #${pr.number}</a> — ${pr.merged_at ? 'Merged' : 'Closed'}</li>`).join('')
+    : '';
+
+  const color = '#8B6914';
+  const confirmHtml = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Issue #${issueNumber} Closed - Sorting History</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0}
+  .card{background:#16213e;border-radius:16px;padding:40px;max-width:520px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+  .icon{font-size:48px;margin-bottom:16px}
+  h1{color:#27ae60;margin:0 0 16px;font-size:24px}
+  h2{color:${color};margin:20px 0 12px;font-size:18px}
+  p{line-height:1.6;color:#b0b0b0;font-size:16px}
+  .status-item{background:#1a1a2e;border-radius:8px;padding:12px 16px;margin:8px 0;text-align:left;font-size:14px;color:#b0b0b0}
+  .status-item .label{color:#999;display:inline-block;width:100px}
+  .status-item .value{color:#e0e0e0}
+  .check{color:#27ae60;margin-right:6px}
+  ul{text-align:left;margin:8px 0;padding-left:20px;color:#b0b0b0;font-size:14px}
+  li{margin:4px 0}
+  a{color:${color}}
+  .badge{display:inline-block;background:${color};color:#fff;padding:6px 16px;border-radius:20px;font-weight:600;margin-top:16px}
+</style></head><body>
+<div class="card">
+  <div class="icon">&#9989;</div>
+  <h1>Handoff Complete</h1>
+  <p>Issue #${issueNumber} has been closed and the handoff file has been downloaded.</p>
+
+  <div class="status-item"><span class="check">&#10003;</span> Issue #${issueNumber} closed on GitHub</div>
+  <div class="status-item"><span class="check">&#10003;</span> Handoff file downloaded: <strong>${filename}</strong></div>
+  ${prSummary ? `<h2>Previous Fix Attempts</h2><ul>${prSummary}</ul>` : ''}
+
+  <p style="font-size:14px;color:#999;margin-top:16px;">Open the downloaded file in Claude Code to start fixing this issue.</p>
+  <div class="badge">Sorting History Pipeline</div>
+</div>
+<script>
+// Auto-download the handoff file
+const a = document.createElement('a');
+a.href = "${dataUri}";
+a.download = "${filename}";
+document.body.appendChild(a);
+a.click();
+document.body.removeChild(a);
+</script>
+</body></html>`;
+
+  return new Response(confirmHtml, {
     status: 200,
-    headers: {
-      'Content-Type': 'text/markdown; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${filename}"`,
-    },
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });
 }
 
