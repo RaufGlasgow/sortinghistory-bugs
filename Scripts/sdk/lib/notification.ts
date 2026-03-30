@@ -285,7 +285,7 @@ export function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAct
     let truncationNote = "";
     if (prepared.wasTruncated) {
       const fixLocallyLink = authToken
-        ? `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`
+        ? `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&token=${encodeURIComponent(authToken)}`
         : issueUrl;
       truncationNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${fixLocallyLink}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
     }
@@ -329,11 +329,11 @@ export function buildEmailHtml(input: ActionNeededEmailInput, action: RoutingAct
   let githubLinkHtml: string;
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
-    const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
-    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const approveUrl = `https://sortinghistory.com/api/pipeline/approve?issue=${input.issueNumber}&token=${encodedToken}`;
+    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&token=${encodedToken}`;
+    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&token=${encodedToken}`;
+    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&token=${encodedToken}`;
+    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&token=${encodedToken}`;
     actionButtonsHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve Fix</a>
       <a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>
       <a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>
@@ -755,16 +755,16 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
     // PIPE-011 AC-7/AC-8: Review button — builds app, uploads to TestFlight (Empty Cup only)
-    const reviewUrl = `https://sortinghistory.com/api/pipeline/review-build?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const reviewUrl = `https://sortinghistory.com/api/pipeline/review-build?issue=${input.issueNumber}&token=${encodedToken}`;
     reviewButtonHtml = `<a href="${reviewUrl}" style="display:inline-block;padding:14px 24px;background:#22863a;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Review</a>`;
     // PIPE-011 AC-15: Approve button — merges PR to main after device testing
-    const approveUrl = `https://sortinghistory.com/api/pipeline/approve-merge?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const approveUrl = `https://sortinghistory.com/api/pipeline/approve-merge?issue=${input.issueNumber}&token=${encodedToken}`;
     approveButtonHtml = `<a href="${approveUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Approve</a>`;
-    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const reworkUrl = `https://sortinghistory.com/api/pipeline/rework?issue=${input.issueNumber}&token=${encodedToken}`;
     reworkButtonHtml = `<a href="${reworkUrl}" style="display:inline-block;padding:14px 24px;background:#d97706;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Rework</a>`;
-    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const rejectUrl = `https://sortinghistory.com/api/pipeline/reject?issue=${input.issueNumber}&token=${encodedToken}`;
     rejectButtonHtml = `<a href="${rejectUrl}" style="display:inline-block;padding:14px 24px;background:#cb2431;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Reject</a>`;
-    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&token=${encodedToken}`;
     fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
   }
 
@@ -785,7 +785,7 @@ export function buildPRCreatedEmailHtml(input: PRCreatedEmailInput): string {
     const safeDesc = escapeHtml(prepared.bodyText);
     let truncNote = "";
     if (prepared.wasTruncated && authToken) {
-      const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authToken)}`;
+      const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&token=${encodeURIComponent(authToken)}`;
       truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
     }
     bugDescHtml = `<!-- Bug description -->
@@ -995,7 +995,7 @@ export function buildHandoffEmailHtml(input: HandoffEmailInput): string {
     if (prepared.wasTruncated) {
       const authTk = process.env.AUTH_TOKEN;
       if (authTk) {
-        const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodeURIComponent(authTk)}`;
+        const flUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&token=${encodeURIComponent(authTk)}`;
         truncNote = `<p style="margin:8px 0 0;font-size:12px;color:#6b7280;"><a href="${flUrl}" style="color:#2563eb;">Full details available via Fix Locally</a></p>`;
       }
     }
@@ -1016,9 +1016,9 @@ export function buildHandoffEmailHtml(input: HandoffEmailInput): string {
   let fixLocallyButtonHtml = "";
   if (authToken) {
     const encodedToken = encodeURIComponent(authToken);
-    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const commentUrl = `https://sortinghistory.com/api/pipeline/comment?issue=${input.issueNumber}&token=${encodedToken}`;
     commentButtonHtml = `<a href="${commentUrl}" style="display:inline-block;padding:14px 24px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Provide Guidance</a>`;
-    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&amp;token=${encodedToken}`;
+    const fixLocallyUrl = `https://sortinghistory.com/api/pipeline/fix-locally?issue=${input.issueNumber}&token=${encodedToken}`;
     fixLocallyButtonHtml = `<a href="${fixLocallyUrl}" style="display:inline-block;padding:14px 24px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;margin:0 6px 8px;">Fix Locally</a>`;
   }
 

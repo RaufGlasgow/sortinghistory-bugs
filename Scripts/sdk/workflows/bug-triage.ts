@@ -87,8 +87,13 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   const reportId = input.report_id ?? "unknown";
   const imageCount = input.images?.length ?? 0;
   console.log("=== Story 4.1: Bug Triage — Report " + reportId + " ===");
-  const effectiveModel = input.model ?? MODELS.VERIFIER;
-  console.log("Model: " + effectiveModel + (input.model ? " (escalated for re-triage)" : ""));
+  // PIPE-012: Use Sonnet for reports with screenshots, Haiku for text-only
+  const triageModel = input.model
+    ?? (imageCount > 0 ? MODELS.ORCHESTRATOR : MODELS.VERIFIER);
+  const modelReason = input.model ? " (escalated for re-triage)"
+    : imageCount > 0 ? " (Sonnet — screenshots present)"
+    : "";
+  console.log("Model: " + triageModel + modelReason);
   console.log("Tools: [" + TRIAGE_TOOLS.join(", ") + "]");
   console.log("Screenshots: " + imageCount + " image(s) attached");
   console.log("Report text: \"" + input.report_text + "\"");
@@ -131,8 +136,6 @@ export async function runTriage(input: TriageInput): Promise<TriageResult> {
   ].join("\n");
 
   // Spawn subagent with read-only triage tools
-  // Story 3.11: Use caller-specified model (Sonnet for re-triage) or default to Haiku
-  const triageModel = input.model ?? MODELS.VERIFIER;
   // Pass screenshots as multimodal image blocks so the model can analyze visual bugs
   const result: SubagentResult = await spawnSubagent({
     model: triageModel,

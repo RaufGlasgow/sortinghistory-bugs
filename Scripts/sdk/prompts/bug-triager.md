@@ -272,6 +272,17 @@ Bug reports may include screenshots as attached images. When screenshots are pre
 
 Screenshots are critical for `ui_bug` classification -- a report with a screenshot showing layout problems is almost certainly a UI bug even if the text description is vague.
 
+**CRITICAL: Screenshot-first analysis**
+
+When screenshots are present, you MUST follow this order:
+1. **FIRST:** Describe what you see in each screenshot — read all visible text, identify the screen/view, note the specific event or data shown
+2. **SECOND:** State what the screenshot tells you about the bug (e.g., "The screenshot shows the event 'Battle of Waterloo, 1815' appearing in a sorting game round")
+3. **THIRD:** Only then classify the bug using BOTH the text description AND your screenshot observations
+
+If the screenshot shows a specific event but the text description is vague, PRIORITIZE what you can see in the screenshot. The user attached it because it contains information their text didn't fully convey.
+
+If you cannot read the text in the screenshot (blurry, too small, obscured), explicitly say so in your reasoning and set confidence below 0.7.
+
 ## Context Extraction
 
 Fill the `extracted_context` fields from the bug report text (and screenshots) alone. Do NOT search any files. If a field cannot be determined from the report text, use the string `"unknown"` as the value.
