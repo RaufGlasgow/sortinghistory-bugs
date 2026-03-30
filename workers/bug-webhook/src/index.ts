@@ -3248,10 +3248,32 @@ async function handleHandoffDownload(request: Request, env: Env, ctx: ExecutionC
   <img class="icon" src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History">
   <h1>Handoff Ready</h1>
   <p>Issue #${issueNumber} has been closed. The handoff file is ready for download.</p>
-  <a class="download-btn" href="${downloadUrl}">Download Handoff</a>
-  <div class="next-steps"><strong>Next steps:</strong> Open the downloaded file in Claude Code to start fixing this issue.</div>
+  <a class="download-btn" href="${downloadUrl}" download="bug-${issueNumber}-handoff.md">Download Handoff</a>
+  <div class="copy-section" style="margin-top:16px;">
+    <button onclick="copyUrl()" style="background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:8px;font-size:14px;cursor:pointer;">Copy Download Link</button>
+    <span id="copy-status" style="display:none;color:#27ae60;margin-left:8px;font-size:14px;">Copied!</span>
+  </div>
+  <div class="next-steps"><strong>Next steps:</strong> Open the downloaded file in Claude Code to start fixing this issue. If the download button doesn't work on mobile, use "Copy Download Link" and paste it in a desktop browser.</div>
   <div class="badge">Sorting History Pipeline</div>
 </div>
+<script>
+function copyUrl() {
+  const url = "${downloadUrl}";
+  navigator.clipboard.writeText(url).then(() => {
+    document.getElementById('copy-status').style.display = 'inline';
+    setTimeout(() => document.getElementById('copy-status').style.display = 'none', 2000);
+  }).catch(() => {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    document.getElementById('copy-status').style.display = 'inline';
+  });
+}
+</script>
 </body></html>`;
 
   return new Response(html, {
