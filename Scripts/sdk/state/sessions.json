@@ -17,6 +17,12 @@
       "status": "paused",
       "paused_at": "2026-02-15T18:12:48.391Z",
       "resume_step": "fix_approved_findings"
+    },
+    "cv-2026-04-01-001": {
+      "session_id": "sim-cv-2026-04-01-001",
+      "status": "paused",
+      "paused_at": "2026-04-01T20:13:41.859Z",
+      "resume_step": "fix_approved_findings"
     }
   }
 }
