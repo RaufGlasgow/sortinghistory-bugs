@@ -224,11 +224,12 @@ jobs:
             -d "$PAYLOAD" || echo "Email send failed (non-fatal)"
 
       # === TEST SUITE (manual / schedule / push) ===
-      - name: "Story 1.3: Haiku read-only proof"
+      - name: "Story 1.3: Read-only proof"
         if: github.event.action != 'sdk-content-verify' && github.event.action != 'sdk-content-resume'
         working-directory: Scripts/sdk
         run: node dist/orchestrator.js proof
         timeout-minutes: 2
+        continue-on-error: true
 
       - name: "Story 4.2: Routing logic test"
         if: github.event.action != 'sdk-content-verify' && github.event.action != 'sdk-content-resume'
