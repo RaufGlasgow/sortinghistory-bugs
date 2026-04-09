@@ -194,11 +194,18 @@ purchase_error: The user reports a problem with purchasing, subscribing, or acce
 This includes: subscription purchase failing, paid features not unlocking, entitlement mismatch
 (paid but see ads, paid but categories locked), StoreKit errors, App Store payment issues,
 "restore purchases" not working, wrong subscription tier applied.
-Examples: "I paid for Historian but still see ads", "Purchase failed, charged but no access",
-"Restore purchases does nothing", "Upgraded but locked categories didn't unlock"
 SEVERITY: Always P0 or P1. Monetization bugs are existential threats.
-DO NOT classify as purchase_error: General feedback about pricing, feature requests about new tiers,
-or reports that mention purchases incidentally but describe a different bug.
+
+**This IS purchase_error:**
+- "I paid for Historian but still see ads" (entitlement mismatch)
+- "Purchase failed, charged but no access" (StoreKit transaction failure)
+- "Restore purchases does nothing" (restore flow broken)
+- "Upgraded but locked categories didn't unlock" (tier not applied)
+
+**This is NOT purchase_error:**
+- "The subscription is too expensive" -- use `feature_request` (pricing feedback, not a bug)
+- "I wish there was a family plan" -- use `feature_request` (new tier request)
+- "App crashes when I tap Subscribe" -- use `crash_bug` (app termination, not purchase logic)
 
 ### data_corruption
 data_corruption: The user reports lost, reset, or corrupted game data.
@@ -208,9 +215,18 @@ DISTINGUISH FROM gameplay_bug: data_corruption is about STORED DATA being wrong/
 gameplay_bug is about GAME LOGIC behaving incorrectly during active play.
 If the user says data "disappeared," "was lost," "reset to zero" -> data_corruption.
 If the user says the game "did the wrong thing" during play -> gameplay_bug.
-Examples: "My 30-day streak is gone", "All categories show 0 games played",
-"After updating the app, my progress was wiped", "My Historian Path tiers all reset"
 SEVERITY: Always P1. Progress loss = uninstall.
+
+**This IS data_corruption:**
+- "My 30-day streak is gone" (stored streak data lost)
+- "All categories show 0 games played" (stats zeroed out)
+- "After updating the app, my progress was wiped" (data lost on update)
+- "My Historian Path tiers all reset" (progression data corrupted)
+
+**This is NOT data_corruption:**
+- "Score doesn't update after placing an event correctly" -- use `gameplay_bug` (game logic during play)
+- "The leaderboard shows wrong scores" -- use `gameplay_bug` (active game state, not stored data)
+- "App crashes and I lost my progress" -- use `crash_bug` (the crash is the primary issue)
 
 ### multiplayer_error
 multiplayer_error: The user reports a problem with multiplayer features (BOTH network play AND Pass & Play).
@@ -221,9 +237,18 @@ IMPORTANT: Pass & Play bugs ARE multiplayer_error even though they don't use net
 Any bug involving two players interacting (whether via network or passing the device) is multiplayer_error.
 Distinguish from gameplay_bug: multiplayer_error involves MULTI-PLAYER interaction issues.
 gameplay_bug involves SINGLE-PLAYER game rules/logic being wrong.
-Examples: "Network game stuck on loading screen", "Got disconnected and game ended",
-"Other player's timeline doesn't update", "Pass & Play won't switch to next player"
 SEVERITY: P2 default. P1 if data loss involved (e.g., "disconnected and lost my progress").
+
+**This IS multiplayer_error:**
+- "Network game stuck on loading screen" (multiplayer connection failure)
+- "Got disconnected and game ended" (network session lost)
+- "Other player's timeline doesn't update" (sync failure)
+- "Pass & Play won't switch to next player" (handoff broken)
+
+**This is NOT multiplayer_error:**
+- "Score doesn't calculate correctly in single player" -- use `gameplay_bug` (single-player logic)
+- "The game is laggy" -- use `performance_issue` (general performance, not multiplayer-specific)
+- "I wish there was online matchmaking" -- use `feature_request` (new feature request)
 
 ### feature_request
 User asking for something that does not exist in the current app. Not a bug -- a wish.

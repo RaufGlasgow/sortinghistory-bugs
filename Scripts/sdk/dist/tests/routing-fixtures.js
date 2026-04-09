@@ -451,6 +451,86 @@ export const ROUTING_FIXTURES = [
             labels: [ROUTING.LABEL_FEATURE_REQUEST, ROUTING.LABEL_ROUTED],
         },
     },
+    // --- route-code-bug: code_bug → label + severity (Story 3.14) ---
+    {
+        id: "route-code-bug",
+        description: "code_bug routes to label with severity (wait for /approve)",
+        input: {
+            classification: "code_bug",
+            severity: "P2",
+            confidence: 0.85,
+            extracted_context: { area: "notification-system" },
+            issue_number: 70,
+        },
+        expected: {
+            type: "label",
+            repo: ROUTING.PRIVATE_REPO,
+            labels: [ROUTING.LABEL_CODE_BUG, "severity/P2", ROUTING.LABEL_ROUTED],
+        },
+    },
+    // --- route-purchase-error: purchase_error → handoff_to_dev (Story 4.1) ---
+    {
+        id: "route-purchase-error",
+        description: "purchase_error routes to handoff_to_dev with enforced P0 severity",
+        input: {
+            classification: "purchase_error",
+            severity: "P2",
+            confidence: 0.90,
+            extracted_context: { area: "storekit" },
+            issue_number: 71,
+            issue_title: "Paid for Historian but still see ads",
+            issue_body: "I purchased the Historian tier but ads are still showing everywhere.",
+            reasoning: "Entitlement mismatch after purchase",
+        },
+        expected: {
+            type: "handoff_to_dev",
+            repo: ROUTING.PRIVATE_REPO,
+            labels: [ROUTING.LABEL_PURCHASE_ERROR, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P0", ROUTING.LABEL_ROUTED],
+            classification: "purchase_error",
+        },
+    },
+    // --- route-data-corruption: data_corruption → handoff_to_dev (Story 4.2) ---
+    {
+        id: "route-data-corruption",
+        description: "data_corruption routes to handoff_to_dev with enforced P1 severity",
+        input: {
+            classification: "data_corruption",
+            severity: "P3",
+            confidence: 0.85,
+            extracted_context: { area: "streak-data" },
+            issue_number: 72,
+            issue_title: "My 30-day streak disappeared",
+            issue_body: "After updating the app, my streak counter shows 0 days.",
+            reasoning: "User reports stored data lost after update",
+        },
+        expected: {
+            type: "handoff_to_dev",
+            repo: ROUTING.PRIVATE_REPO,
+            labels: [ROUTING.LABEL_DATA_CORRUPTION, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P1", ROUTING.LABEL_ROUTED],
+            classification: "data_corruption",
+        },
+    },
+    // --- route-multiplayer-error: multiplayer_error → handoff_to_dev (Story 4.3) ---
+    {
+        id: "route-multiplayer-error",
+        description: "multiplayer_error routes to handoff_to_dev with enforced P2 severity",
+        input: {
+            classification: "multiplayer_error",
+            severity: "P3",
+            confidence: 0.80,
+            extracted_context: { area: "network-game" },
+            issue_number: 73,
+            issue_title: "Network game stuck on loading screen",
+            issue_body: "When I try to start a network game, it gets stuck on loading historical events.",
+            reasoning: "Multiplayer connection/loading failure",
+        },
+        expected: {
+            type: "handoff_to_dev",
+            repo: ROUTING.PRIVATE_REPO,
+            labels: [ROUTING.LABEL_MULTIPLAYER_ERROR, ROUTING.LABEL_NEEDS_DEV_HANDOFF, "severity/P2", ROUTING.LABEL_ROUTED],
+            classification: "multiplayer_error",
+        },
+    },
     // --- Story 3.5: needs_human_review with triage_handoff → label with handoff data ---
     {
         id: "route-needs-review-with-handoff",
