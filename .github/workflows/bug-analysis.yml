@@ -260,10 +260,11 @@ jobs:
 
       # ── Story 3.6a: Pipeline Outcome Logging ──
       - name: Log pipeline outcome
-        if: always()
+        if: always() && steps.check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
+          cd "$GITHUB_WORKSPACE"
           ISSUE="${{ github.event.client_payload.issue_number || github.event.inputs.issue_number }}"
           if [ -z "$ISSUE" ] || ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
             echo "No valid issue number — skipping outcome log"
