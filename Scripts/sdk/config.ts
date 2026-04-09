@@ -2,8 +2,8 @@
 export const MODELS = {
   /** Sonnet 4.5 — orchestration, coordination, fix generation */
   ORCHESTRATOR: "claude-sonnet-4-5-20250929",
-  /** Haiku 4.5 — read-only verification, pattern matching, triage */
-  VERIFIER: "claude-haiku-4-5-20251001",
+  /** Opus 4.6 — read-only verification, pattern matching, triage */
+  VERIFIER: "claude-opus-4-6",
   /** Sonnet 4.5 — content/translation fixes (needs write capability) */
   FIXER: "claude-sonnet-4-5-20250929",
 } as const;
