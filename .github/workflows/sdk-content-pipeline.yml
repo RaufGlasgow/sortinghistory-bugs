@@ -4,8 +4,10 @@ run-name: "Content #${{ github.event.client_payload.issue_number || 'scheduled' 
 on:
   repository_dispatch:
     types: [sdk-content-verify, sdk-content-resume]
-  schedule:
-    - cron: '0 6 * * *'
+  # schedule disabled — daily cron was calling Anthropic API with no value
+  # re-enable only after pipeline migration (PIPE-R6)
+  # schedule:
+  #   - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
