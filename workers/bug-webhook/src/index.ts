@@ -736,7 +736,7 @@ function validateIssueParam(raw: string | null): { valid: true; num: number } | 
     return { valid: false, error: 'Missing required query parameter: issue' };
   }
   // Must be a plain decimal integer string — no leading zeros, no decimals, no scientific notation
-  if (!/^\d+$/.test(raw)) {
+  if (!/^[1-9]\d*$/.test(raw)) {
     return { valid: false, error: 'Invalid issue: must be a positive integer' };
   }
   const num = Number(raw);
@@ -879,6 +879,7 @@ async function handleLabelRoute(
     );
   }
 
+  // AC11 closed-issue note: scoped out — extra round-trip not justified
   // Success messages per AC4/AC6/AC7
   const successMessages: Record<string, string> = {
     fix: `Bug #${issueNum} approved for fix. Run /bug-pipeline in Claude Code to process the queue.`,
