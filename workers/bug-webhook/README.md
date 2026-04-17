@@ -110,9 +110,37 @@ Submit a bug report.
 }
 ```
 
+## Label Mutation Routes (BUG-PIPE-007)
+
+Three GET-only routes that mutate GitHub issue labels. Intended to be linked from
+digest emails so Ra'uf can approve/flag/ignore bugs with a single click.
+
+All three routes require `?issue=N&token=AUTH_TOKEN` query parameters.
+
+| Route | Label added | Extra action | Success message |
+|-------|-------------|--------------|-----------------|
+| `GET /label/fix` | `approved-for-fix` | — | "Bug #N approved for fix. Run /bug-pipeline in Claude Code to process the queue." |
+| `GET /label/needs-info` | `needs-info` | — | "Bug #N flagged for more info." |
+| `GET /label/ignore` | `wontfix` | Closes issue as `not_planned` | "Bug #N closed as wontfix." |
+
+**Validation:**
+- `token` must match `AUTH_TOKEN` env var — mismatch returns 401 HTML
+- `issue` must be a plain positive integer (`/^\d+$/`, `Number.isSafeInteger`, `> 0`) — invalid returns 400 HTML
+- Non-GET methods return 405 HTML
+
+**Security headers on every response:** `Referrer-Policy: no-referrer`, `Cache-Control: no-store`
+
+**PAT / AUTH_TOKEN:** never echoed in response body or log lines.
+
+**Smoke test:**
+```bash
+SMOKE_ISSUE=<issue-number> AUTH_TOKEN=<token> bash workers/bug-webhook/scripts/smoke.sh
+```
+
 ## Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `GITHUB_TOKEN` | Fine-grained PAT with `issues:write` | Yes (secret) |
 | `GITHUB_REPO` | Repository in `owner/repo` format | Yes (wrangler.toml) |
+| `AUTH_TOKEN` | Token for pipeline email action links | Yes (secret) |

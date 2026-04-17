@@ -10,6 +10,7 @@
  */
 
 import { truncateDescription, WORKER_LABEL_TO_SDK_CLASSIFICATION } from './utils';
+import { addLabel, closeIssue } from './github-api';
 
 interface Env {
   GITHUB_TOKEN: string;      // PAT for private repo issues (Sorting-History)
@@ -713,6 +714,189 @@ function pipelinePageHtml(title: string, message: string, isError: boolean = fal
 </div>
 </body></html>`;
 }
+
+// ─── BUG-PIPE-007: Label mutation helpers ────────────────────────────────────
+
+/**
+ * Security headers required on every label-route response (TEA NFR).
+ * Prevents token leakage via Referer header and browser cache.
+ */
+const LABEL_SECURITY_HEADERS: Record<string, string> = {
+  'Content-Type': 'text/html; charset=utf-8',
+  'Referrer-Policy': 'no-referrer',
+  'Cache-Control': 'no-store',
+};
+
+/**
+ * Validate an issue-number query param.
+ * Returns { valid: true, num } or { valid: false, error }.
+ */
+function validateIssueParam(raw: string | null): { valid: true; num: number } | { valid: false; error: string } {
+  if (!raw) {
+    return { valid: false, error: 'Missing required query parameter: issue' };
+  }
+  // Must be a plain decimal integer string — no leading zeros, no decimals, no scientific notation
+  if (!/^\d+$/.test(raw)) {
+    return { valid: false, error: 'Invalid issue: must be a positive integer' };
+  }
+  const num = Number(raw);
+  if (!Number.isSafeInteger(num)) {
+    return { valid: false, error: 'Invalid issue: number out of safe integer range' };
+  }
+  if (num <= 0) {
+    return { valid: false, error: 'Invalid issue: must be greater than zero' };
+  }
+  return { valid: true, num };
+}
+
+/**
+ * Validate AUTH_TOKEN from query param vs env binding.
+ * Returns true if valid.
+ */
+function validateAuthToken(provided: string | null, expected: string): boolean {
+  return !!provided && !!expected && provided === expected;
+}
+
+/**
+ * HTML confirmation page for label mutation success — matches pipelinePageHtml style.
+ */
+function labelConfirmHtml(issueNum: number, message: string, nextSteps?: string): string {
+  const nextStepsHtml = nextSteps
+    ? `<div class="next-steps"><strong>Next steps:</strong> ${nextSteps}</div>`
+    : '';
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Issue #${issueNum} Updated - Sorting History</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0}
+  .card{background:#16213e;border-radius:16px;padding:40px;max-width:480px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+  .icon{width:80px;height:80px;border-radius:18px;margin:0 auto 20px}
+  h1{color:#8B6914;margin:0 0 16px;font-size:24px}
+  p{line-height:1.6;color:#b0b0b0;font-size:16px}
+  .next-steps{background:#1a1a2e;border-radius:8px;padding:14px 18px;margin-top:16px;font-size:14px;color:#999;line-height:1.5;text-align:left}
+  .next-steps strong{color:#b0b0b0}
+  .badge{display:inline-block;background:#8B6914;color:#fff;padding:6px 16px;border-radius:20px;font-weight:600;margin-top:12px}
+</style></head><body>
+<div class="card">
+  <img class="icon" src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History">
+  <h1>Issue #${issueNum}</h1>
+  <p>${escapeHtmlSafe(message)}</p>
+  ${nextStepsHtml}
+  <div class="badge">Sorting History Pipeline</div>
+</div>
+</body></html>`;
+}
+
+/**
+ * HTML error page for label mutation failures — matches pipelinePageHtml error style.
+ */
+function labelErrorHtml(title: string, detail: string): string {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtmlSafe(title)} - Sorting History</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#1a1a2e;color:#e0e0e0}
+  .card{background:#16213e;border-radius:16px;padding:40px;max-width:480px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+  .icon{width:80px;height:80px;border-radius:18px;margin:0 auto 20px}
+  h1{color:#c0392b;margin:0 0 16px;font-size:24px}
+  p{line-height:1.6;color:#b0b0b0;font-size:16px}
+  .badge{display:inline-block;background:#c0392b;color:#fff;padding:6px 16px;border-radius:20px;font-weight:600;margin-top:12px}
+</style></head><body>
+<div class="card">
+  <img class="icon" src="https://sortinghistory.com/images/app-icon.png" alt="Sorting History">
+  <h1>${escapeHtmlSafe(title)}</h1>
+  <p>${escapeHtmlSafe(detail)}</p>
+  <div class="badge">Sorting History Pipeline</div>
+</div>
+</body></html>`;
+}
+
+/**
+ * Core handler for GET /label/* routes.
+ * route: 'fix' | 'needs-info' | 'ignore'
+ */
+async function handleLabelRoute(
+  request: Request,
+  env: Env,
+  route: 'fix' | 'needs-info' | 'ignore',
+): Promise<Response> {
+  // AC9: Non-GET → 405
+  if (request.method !== 'GET') {
+    return new Response(
+      labelErrorHtml('Method Not Allowed', 'Only GET requests are supported on this endpoint.'),
+      { status: 405, headers: { ...LABEL_SECURITY_HEADERS, Allow: 'GET' } },
+    );
+  }
+
+  const url = new URL(request.url);
+
+  // AC4/AC1: Auth token validation
+  const providedToken = url.searchParams.get('token');
+  if (!validateAuthToken(providedToken, env.AUTH_TOKEN)) {
+    console.log(JSON.stringify({ route: `/label/${route}`, issue: null, outcome: 'auth-fail', ghStatus: null }));
+    return new Response(
+      labelErrorHtml('Unauthorized', 'Invalid or missing token. This link may have expired.'),
+      { status: 401, headers: LABEL_SECURITY_HEADERS },
+    );
+  }
+
+  // AC2: Issue number validation
+  const rawIssue = url.searchParams.get('issue');
+  const validation = validateIssueParam(rawIssue);
+  if (!validation.valid) {
+    console.log(JSON.stringify({ route: `/label/${route}`, issue: null, outcome: 'bad-issue', ghStatus: null }));
+    return new Response(
+      labelErrorHtml('Invalid Request', validation.error),
+      { status: 400, headers: LABEL_SECURITY_HEADERS },
+    );
+  }
+  const issueNum = validation.num;
+
+  // Determine label and action
+  const labelMap: Record<string, string> = {
+    fix: 'approved-for-fix',
+    'needs-info': 'needs-info',
+    ignore: 'wontfix',
+  };
+  const label = labelMap[route];
+
+  // AC3/AC5/AC6/AC7: Call GitHub API
+  try {
+    // AC7: addLabel ALWAYS runs first; closeIssue only if addLabel succeeds
+    await addLabel(env, issueNum, label);
+
+    if (route === 'ignore') {
+      // AC7: close AFTER successful label add
+      await closeIssue(env, issueNum, 'not_planned');
+    }
+  } catch (err) {
+    const safeMsg = (err as Error).message;
+    // AC5/AC8: Never log token or PAT
+    console.log(JSON.stringify({ route: `/label/${route}`, issue: issueNum, outcome: 'gh-error', ghStatus: safeMsg }));
+    return new Response(
+      labelErrorHtml('GitHub API Error', safeMsg),
+      { status: 502, headers: LABEL_SECURITY_HEADERS },
+    );
+  }
+
+  // Success messages per AC4/AC6/AC7
+  const successMessages: Record<string, string> = {
+    fix: `Bug #${issueNum} approved for fix. Run /bug-pipeline in Claude Code to process the queue.`,
+    'needs-info': `Bug #${issueNum} flagged for more info.`,
+    ignore: `Bug #${issueNum} closed as wontfix.`,
+  };
+  const message = successMessages[route];
+
+  // AC10: Structured log — no PAT, no AUTH_TOKEN
+  console.log(JSON.stringify({ route: `/label/${route}`, issue: issueNum, outcome: 'success', ghStatus: 200 }));
+
+  return new Response(
+    labelConfirmHtml(issueNum, message),
+    { status: 200, headers: LABEL_SECURITY_HEADERS },
+  );
+}
+
+// ─── End BUG-PIPE-007 ─────────────────────────────────────────────────────────
 
 function pipelineConfirmHtml(action: string, issueNumber: string, token: string, actionUrl: string): string {
   const isApprove = action === 'approve';
@@ -3987,6 +4171,11 @@ export default {
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    // BUG-PIPE-007: Label mutation routes (GET-only, auth-gated)
+    if (url.pathname === '/label/fix') return handleLabelRoute(request, env, 'fix');
+    if (url.pathname === '/label/needs-info') return handleLabelRoute(request, env, 'needs-info');
+    if (url.pathname === '/label/ignore') return handleLabelRoute(request, env, 'ignore');
 
     // Serve screenshots from R2
     if (request.method === 'GET' && url.pathname.startsWith('/screenshots/')) {
