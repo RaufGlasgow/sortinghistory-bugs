@@ -227,6 +227,22 @@ jobs:
           echo "estimated_cost=${ESTIMATED_COST}" >> "$GITHUB_OUTPUT"
           echo "Month cost estimate: ${FIX_RUNS_MONTH} fix x \$7 + ${TRANSLATION_RUNS_MONTH} translation x \$5 = \$${ESTIMATED_COST} (budget: \$30)"
 
+      - name: Query approved-for-fix queue
+        id: query_approved
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          APPROVED_NUMS=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=approved-for-fix&state=open&per_page=100" \
+            --jq '.[].number' 2>/dev/null || echo "")
+          if [ -z "$APPROVED_NUMS" ]; then
+            APPROVED_COUNT=0
+          else
+            APPROVED_COUNT=$(echo "$APPROVED_NUMS" | wc -l | tr -d ' ')
+          fi
+          echo "approved_count=${APPROVED_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "approved_list=$(echo "$APPROVED_NUMS" | tr '\n' ' ' | sed 's/ *$//')" >> "$GITHUB_OUTPUT"
+          echo "Found ${APPROVED_COUNT} approved-for-fix issues"
+
       - name: Generate health metrics HTML (Story 3.6 AC1)
         id: health
         working-directory: Scripts/sdk
@@ -245,8 +261,30 @@ jobs:
             echo "No health metrics data available"
           fi
 
+      - name: Exit early if queue is empty
+        id: empty_check
+        # NOTE: API outage will suppress send (counts default to 0). Digest health is monitored via CF Worker KV health:digest.
+        env:
+          ISSUE_COUNT: ${{ steps.query.outputs.issue_count }}
+          PR_COUNT: ${{ steps.query_prs.outputs.pr_count }}
+          STUCK_COUNT: ${{ steps.pipeline_health.outputs.stuck_count }}
+          APPROVED_COUNT: ${{ steps.query_approved.outputs.approved_count }}
+        run: |
+          ISSUE_COUNT="${ISSUE_COUNT:-0}"
+          PR_COUNT="${PR_COUNT:-0}"
+          STUCK_COUNT="${STUCK_COUNT:-0}"
+          APPROVED_COUNT="${APPROVED_COUNT:-0}"
+          if [ "$ISSUE_COUNT" = "0" ] && [ "$PR_COUNT" = "0" ] && [ "$STUCK_COUNT" = "0" ] && [ "$APPROVED_COUNT" = "0" ]; then
+            echo "Queue empty — skipping digest send"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Queue non-empty — proceeding to build digest (issues=${ISSUE_COUNT}, prs=${PR_COUNT}, stuck=${STUCK_COUNT}, approved=${APPROVED_COUNT})"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
       - name: Build digest email
         id: build
+        if: steps.empty_check.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
           AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
@@ -266,6 +304,8 @@ jobs:
           FIX_RUNS_MONTH: ${{ steps.pipeline_health.outputs.fix_runs_month }}
           TRANSLATION_RUNS_MONTH: ${{ steps.pipeline_health.outputs.translation_runs_month }}
           ESTIMATED_COST: ${{ steps.pipeline_health.outputs.estimated_cost }}
+          APPROVED_COUNT: ${{ steps.query_approved.outputs.approved_count }}
+          APPROVED_LIST: ${{ steps.query_approved.outputs.approved_list }}
         run: |
           # Function to escape HTML entities
           html_escape() {
@@ -416,6 +456,13 @@ jobs:
               echo "  IS_FIX_FAILED=${IS_FIX_FAILED}"
               echo "  SEVERITY=${SEVERITY} | TYPE=${TYPE}"
 
+              # BUG-PIPE-008 AC7: Skip approved-for-fix issues from Section 1 — they appear in "Ready for Claude Code" section
+              IS_APPROVED=$(echo "$ISSUE_JSON" | jq -r '[.labels[].name] | if index("approved-for-fix") then "yes" else "no" end')
+              if [ "$IS_APPROVED" = "yes" ]; then
+                echo "  Issue #${NUM} is approved-for-fix — skipped from Section 1, shown in queue section"
+                continue
+              fi
+
               # BA-011 Story 3.3: Overlay confidence from routing log
               CONF_DISPLAY=$(get_confidence_display "$NUM")
               if [ -n "$CONF_DISPLAY" ]; then
@@ -508,7 +555,7 @@ jobs:
                 fi
 
                 # Action buttons — always show View + Fix Locally + Reject, show Retry if triage-failed
-                REJECT_URL="https://sortinghistory.com/api/pipeline/reject?issue=${NUM}&token=${AUTH_TOKEN}"
+                REJECT_URL="https://sortinghistory.com/label/ignore?issue=${NUM}&token=${AUTH_TOKEN}"
                 CARD="${CARD}<div style=\"display:flex;gap:8px;flex-wrap:wrap;\">"
                 if [ "$HAS_TRIAGE_FAILED" = "yes" ]; then
                   CARD="${CARD}<a href=\"${RETRY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#22863a;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Retry Triage</a>"
@@ -613,10 +660,11 @@ jobs:
               SAFE_WHAT_TRIED=$(html_escape "$HANDOFF_WHAT_TRIED")
 
               # Build action URLs
-              APPROVE_URL="https://sortinghistory.com/api/pipeline/approve?issue=${NUM}&token=${AUTH_TOKEN}"
-              REJECT_URL="https://sortinghistory.com/api/pipeline/reject?issue=${NUM}&token=${AUTH_TOKEN}"
+              APPROVE_URL="https://sortinghistory.com/label/fix?issue=${NUM}&token=${AUTH_TOKEN}"
+              REJECT_URL="https://sortinghistory.com/label/ignore?issue=${NUM}&token=${AUTH_TOKEN}"
               REWORK_URL="https://sortinghistory.com/api/pipeline/rework?issue=${NUM}&token=${AUTH_TOKEN}"
-              INFO_URL="https://sortinghistory.com/api/pipeline/comment?issue=${NUM}&token=${AUTH_TOKEN}"
+              # TODO BUG-PIPE-009: reporter email step when needs-info label is applied. Current: label only, no email.
+              INFO_URL="https://sortinghistory.com/label/needs-info?issue=${NUM}&token=${AUTH_TOKEN}"
 
               # Build card HTML — different layout for fix-failed vs normal
               echo "  Final: SEVERITY=${SEVERITY} | TYPE=${TYPE} | IS_FIX_FAILED=${IS_FIX_FAILED}"
@@ -707,7 +755,7 @@ jobs:
                 else
                   CARD="${CARD}<a href=\"${REJECT_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#cb2431;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Reject</a>"
                   CARD="${CARD}<a href=\"${REWORK_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#d97706;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Rework</a>"
-                  CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Need More Info</a>"
+                  CARD="${CARD}<a href=\"${INFO_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#0366d6;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Flag: Needs Info</a>"
                   CARD="${CARD}<a href=\"${FIX_LOCALLY_URL}\" style=\"display:inline-block;padding:12px 24px;min-height:44px;min-width:44px;background:#6b7280;color:#fff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:bold;text-align:center;line-height:20px;\">Fix Locally</a>"
                 fi
                 CARD="${CARD}</div></div>"
@@ -780,7 +828,7 @@ jobs:
 
               # Build action buttons (shared across all formats)
               if [ -n "$ISSUE_NUM" ]; then
-                PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/reject?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
+                PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/label/ignore?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Reject</a> <a href=\"https://sortinghistory.com/api/pipeline/redo?issue=${ISSUE_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Redo Fix</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a>"
               else
                 PR_ACTIONS="<a href=\"https://sortinghistory.com/api/pipeline/merge?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#16a34a;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Merge PR</a> <a href=\"https://sortinghistory.com/api/pipeline/comment?pr=${PR_NUM}&amp;token=${AUTH_TOKEN}\" style=\"display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">Ask Question</a> <a href=\"${PR_URL}\" style=\"display:inline-block;background:#6b7280;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:bold;font-size:14px;min-width:44px;min-height:44px;text-align:center;margin:4px;\">View on GitHub</a>"
               fi
@@ -881,6 +929,31 @@ jobs:
             ATTENTION_SECTION=$(cat /tmp/attention_section.html)
           fi
 
+          # =============================================
+          # BUG-PIPE-008 AC7: Build "Ready for Claude Code" section
+          # =============================================
+          APPROVED_SECTION_HTML=""
+          APPROVED_COUNT="${APPROVED_COUNT:-0}"
+          if [ "$APPROVED_COUNT" -gt 0 ]; then
+            if [ "$APPROVED_COUNT" -eq 1 ]; then
+              APPROVED_HEADING="1 Issue Ready for Claude Code"
+            else
+              APPROVED_HEADING="${APPROVED_COUNT} Issues Ready for Claude Code"
+            fi
+            APPROVED_SECTION_HTML="<div style=\"margin-bottom:20px;padding:16px;background:#eef2ff;border:2px solid #4f46e5;border-radius:8px;\">"
+            APPROVED_SECTION_HTML="${APPROVED_SECTION_HTML}<h3 style=\"margin:0 0 8px 0;font-size:16px;color:#312e81;\">${APPROVED_HEADING}</h3>"
+            APPROVED_SECTION_HTML="${APPROVED_SECTION_HTML}<p style=\"margin:0 0 12px 0;font-size:13px;color:#312e81;\">These bugs have been approved. Run /bug-pipeline in Claude Code to process the queue.</p>"
+            for APPROVED_NUM in $APPROVED_LIST; do
+              [ -z "$APPROVED_NUM" ] && continue
+              APPROVED_ISSUE_JSON=$(gh api "repos/RaufGlasgow/Sorting-History/issues/${APPROVED_NUM}" 2>/dev/null || echo "{}")
+              APPROVED_TITLE=$(echo "$APPROVED_ISSUE_JSON" | jq -r '.title // "Unknown"')
+              APPROVED_URL="https://github.com/RaufGlasgow/Sorting-History/issues/${APPROVED_NUM}"
+              SAFE_APPROVED_TITLE=$(html_escape "$APPROVED_TITLE")
+              APPROVED_SECTION_HTML="${APPROVED_SECTION_HTML}<div style=\"padding:6px 0;\"><a href=\"${APPROVED_URL}\" style=\"color:#4f46e5;font-weight:bold;text-decoration:none;\">#${APPROVED_NUM}</a> &mdash; ${SAFE_APPROVED_TITLE}</div>"
+            done
+            APPROVED_SECTION_HTML="${APPROVED_SECTION_HTML}</div>"
+          fi
+
           # Subject line — include stuck issues in the count
           TOTAL_ITEMS=$((ANALYZED_COUNT + ACTUAL_PR_COUNT))
           TOTAL_WITH_STUCK=$((TOTAL_ITEMS + ${STUCK_COUNT:-0}))
@@ -932,6 +1005,10 @@ jobs:
           else
             EMAIL_HTML="${EMAIL_HTML}${ATTENTION_SECTION}"
             EMAIL_HTML="${EMAIL_HTML}${PENDING_NOTICE}"
+
+            if [ -n "$APPROVED_SECTION_HTML" ]; then
+              EMAIL_HTML="${EMAIL_HTML}${APPROVED_SECTION_HTML}"
+            fi
 
             if [ "$ANALYZED_COUNT" -gt 0 ]; then
               EMAIL_HTML="${EMAIL_HTML}<h3 style=\"margin:20px 0 12px 0;font-size:17px;color:#8B6914;border-bottom:2px solid #DAA520;padding-bottom:6px;\">Bugs Awaiting Review</h3>"
@@ -1019,6 +1096,7 @@ jobs:
           echo "Email built: ${ANALYZED_COUNT} bugs, ${ACTUAL_PR_COUNT} PRs, ${PENDING_COUNT} pending."
 
       - name: Send via Resend
+        if: steps.empty_check.outputs.skip != 'true'
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
