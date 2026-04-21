@@ -848,9 +848,15 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
     const existing = await env.PIPELINE_KV.get(kvKey);
     if (existing && action === 'approve') {
       // Check if pipeline failed — if so, clear KV and allow retry
-      const issueLabelsResp = await fetchIssueLabels(issueNumber, env);
-      const failedLabels = ['needs-dev-handoff', 'fix-failed', 'content-fix-failed', 'translation-fix-failed'];
-      const hasFailed = issueLabelsResp.some((l: string) => failedLabels.includes(l));
+      let hasFailed = false;
+      try {
+        const { labels } = await fetchIssueLabels(env, issueNumber);
+        const failedLabels = ['needs-dev-handoff', 'fix-failed', 'content-fix-failed', 'translation-fix-failed'];
+        hasFailed = labels.some((l) => failedLabels.includes(l.name));
+      } catch (err) {
+        // Non-fatal: if label lookup fails, treat as not-failed and fall through to "already processed"
+        console.error(`Idempotency label check failed for #${issueNumber}:`, err);
+      }
       if (hasFailed) {
         // Pipeline already failed — don't re-dispatch, show Download or Cancel
         const fixLocallyUrl = `${url.origin}/api/pipeline/fix-locally?issue=${issueNum}&token=${token}`;
@@ -944,7 +950,7 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
             await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`, {
               method: 'POST',
               headers: ghHeaders,
-              body: JSON.stringify({ labels: ['approved'] }),
+              body: JSON.stringify({ labels: ['approved-for-fix'] }),
             });
           } catch (labelError) {
             console.error(`Failed to add 'approved' label to issue #${issueNumber}:`, labelError);
