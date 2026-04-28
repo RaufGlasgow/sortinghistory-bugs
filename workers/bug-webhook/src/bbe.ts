@@ -275,8 +275,13 @@ export async function claimCode(
                     reserved_at = ?,
                     recipient_email = ?,
                     bug_report_id = ?
-                WHERE code = ? AND status = 'available'`)
-      .bind(now, recipientEmail, bugReportId, candidate.code)
+                WHERE code = ?
+                  AND status = 'available'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM bug_bounty_codes
+                    WHERE bug_report_id = ? AND status IN ('reserved', 'used')
+                  )`)
+      .bind(now, recipientEmail, bugReportId, candidate.code, bugReportId)
       .run();
 
     const changes = res?.meta?.changes ?? 0;
@@ -289,7 +294,18 @@ export async function claimCode(
       });
       return candidate.code;
     }
-    // Race lost — another writer claimed this code. Try again.
+    // Race lost. If the same bug claimed a different code concurrently, stop
+    // so the caller can treat this as a duplicate instead of burning another.
+    const duplicate = await env.BBE_DB
+      .prepare(`SELECT code FROM bug_bounty_codes
+                WHERE bug_report_id = ? AND status IN ('reserved', 'used')
+                LIMIT 1`)
+      .bind(bugReportId)
+      .first<{ code: string }>();
+    if (duplicate && duplicate.code) {
+      return null;
+    }
+    // Otherwise another writer claimed this candidate. Try again.
   }
   return null;
 }
@@ -689,6 +705,22 @@ export async function dispatchReward(
 
   const code = await claimCode(env, bugReportId, email);
   if (!code) {
+    const duplicate = await env.BBE_DB
+      .prepare(`SELECT code FROM bug_bounty_codes
+                WHERE bug_report_id = ? AND status IN ('reserved','used')
+                LIMIT 1`)
+      .bind(bugReportId)
+      .first<{ code: string }>();
+    if (duplicate && duplicate.code) {
+      await writeAudit(env, {
+        event: 'reward_duplicate',
+        code: duplicate.code,
+        bug_report_id: bugReportId,
+        recipient_email: email,
+      });
+      return { status: 'duplicate', code: duplicate.code };
+    }
+
     await writeAudit(env, {
       event: 'reward_inventory_empty',
       bug_report_id: bugReportId,
@@ -990,11 +1022,18 @@ export async function fetchReporterEmailFromIssue(
   const data = (await res.json()) as { body?: string };
   const body = data.body || '';
   const emailMatch = body.match(/\*\*Contact Email:\*\*\s*(\S+@\S+)/);
-  const langMatch = body.match(/\*\*Game Language:\*\*\s*(\S+)/);
-  const localeMatch = body.match(/\*\*Locale:\*\*\s*(\S+)/);
   return {
     email: emailMatch ? emailMatch[1] : null,
-    gameLanguage: langMatch ? langMatch[1] : null,
-    locale: localeMatch ? localeMatch[1] : null,
+    gameLanguage: extractIssueField(body, 'Game Language'),
+    locale: extractIssueField(body, 'Locale'),
   };
+}
+
+function extractIssueField(body: string, field: string): string | null {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const boldMatch = body.match(new RegExp(`\\*\\*${escaped}:\\*\\*\\s*([^\\s|]+)`));
+  if (boldMatch) return boldMatch[1].trim();
+
+  const tableMatch = body.match(new RegExp(`^\\|\\s*${escaped}\\s*\\|\\s*([^|\\n]+?)\\s*\\|\\s*$`, 'im'));
+  return tableMatch ? tableMatch[1].trim() : null;
 }

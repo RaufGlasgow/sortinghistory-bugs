@@ -81,6 +81,7 @@ interface BugReport {
     appVersion?: string;
     buildNumber?: string;
     currentScreen?: string;
+    gameLanguage?: string;
     locale?: string;
     networkStatus?: string;
     availableMemoryMB?: number;
@@ -359,6 +360,7 @@ function normalizeDeviceInfo(raw: Record<string, unknown> | undefined): BugRepor
     appVersion: (raw.appVersion ?? raw.app_version) as string | undefined,
     buildNumber: (raw.buildNumber ?? raw.build_number) as string | undefined,
     currentScreen: (raw.currentScreen ?? raw.current_screen) as string | undefined,
+    gameLanguage: (raw.gameLanguage ?? raw.game_language) as string | undefined,
     locale: raw.locale as string | undefined,
     networkStatus: (raw.networkStatus ?? raw.network_status) as string | undefined,
     availableMemoryMB: (raw.availableMemoryMB ?? raw.available_memory_mb ?? raw.available_memory_MB) as number | undefined,
@@ -523,6 +525,7 @@ function formatIssueBody(report: BugReport, confirmationId: string, screenshotUr
     if (deviceInfo.appVersion) body += `| App Version | ${deviceInfo.appVersion} |\n`;
     if (deviceInfo.buildNumber) body += `| Build | ${deviceInfo.buildNumber} |\n`;
     if (deviceInfo.currentScreen) body += `| Screen | ${deviceInfo.currentScreen} |\n`;
+    if (deviceInfo.gameLanguage) body += `| Game Language | ${deviceInfo.gameLanguage} |\n`;
     if (deviceInfo.locale) body += `| Locale | ${deviceInfo.locale} |\n`;
     if (deviceInfo.networkStatus) body += `| Network | ${deviceInfo.networkStatus} |\n`;
     if (deviceInfo.availableMemoryMB) body += `| Memory | ${deviceInfo.availableMemoryMB} MB |\n`;
