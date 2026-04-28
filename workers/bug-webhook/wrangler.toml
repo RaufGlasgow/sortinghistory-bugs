@@ -51,7 +51,7 @@ id = "a542f150d87f46259a4ff31de7d8dc94"
 [[d1_databases]]
 binding = "BBE_DB"
 database_name = "bbe-rewards"
-database_id = "REPLACE_ME_AFTER_WRANGLER_D1_CREATE"
+database_id = "729eb80d-cff0-4a1a-bd02-8e44ae62663f"
 migrations_dir = "migrations"
 
 # Cron triggers - replaces unreliable GitHub Actions cron scheduler
