@@ -10,6 +10,18 @@
  */
 
 import { truncateDescription, WORKER_LABEL_TO_SDK_CLASSIFICATION } from './utils';
+import {
+  initSchemaAndImport as bbeInitSchemaAndImport,
+  dispatchReward as bbeDispatchReward,
+  fetchReporterEmailFromIssue as bbeFetchReporterEmail,
+  handleManualSend as bbeHandleManualSend,
+  invalidateAvailableCodes as bbeInvalidateAvailableCodes,
+  runInventoryAlertCheck as bbeRunInventoryAlertCheck,
+  runWeeklyDigest as bbeRunWeeklyDigest,
+  getInventoryStatus as bbeGetInventoryStatus,
+  type BBEEnv,
+  type D1DatabaseLike,
+} from './bbe';
 
 interface Env {
   GITHUB_TOKEN: string;      // PAT for private repo issues (Sorting-History)
@@ -24,6 +36,38 @@ interface Env {
   RESEND_API_KEY: string;    // FR-160: Resend API key for thank-you emails
   OWNER_EMAIL: string;       // Story 5.2: Owner email for digest failure alerts
   USE_AGENT_PIPELINE?: string; // PIPE-SDK-4: When truthy, dispatch agent-triage alongside old analyze. Default: "true"
+
+  // BBE-002: Bug bounty reward email automation (ported from private repo)
+  BBE_DB?: D1Database;                     // Cloudflare D1 binding for bug_bounty_codes
+  BBE_CSV?: string;                        // One-shot CSV payload (set via `wrangler secret put BBE_CSV`)
+  BBE_ADMIN_TOKEN?: string;                // Bearer token for /api/bbe/* admin endpoints
+  BBE_ALERT_EMAIL?: string;                // Ra'uf's email for alerts + digest
+  BBE_BATCH_ID?: string;                   // e.g. "bug-bounty-batch-NNNNNN"
+  BBE_BATCH_EXPIRATION?: string;           // ISO date, e.g. "2026-10-24"
+  BBE_REDEEM_BASE?: string;                // Apple redeem URL prefix
+  BBE_LOW_INVENTORY_THRESHOLD?: string;    // Default "100"
+  BBE_EXPIRATION_WARN_DAYS?: string;       // Default "30"
+}
+
+// BBE-002: Adapter from Worker Env to BBE module's minimal D1 interface.
+// Returns null when BBE_DB is not yet bound (pre-deploy state) so callers
+// can short-circuit gracefully instead of crashing the worker.
+function bbeEnv(env: Env): BBEEnv | null {
+  if (!env.BBE_DB) return null;
+  return {
+    BBE_DB: env.BBE_DB as unknown as D1DatabaseLike,
+    BBE_CSV: env.BBE_CSV,
+    BBE_ADMIN_TOKEN: env.BBE_ADMIN_TOKEN,
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    GITHUB_TOKEN: env.GITHUB_TOKEN,
+    GITHUB_REPO: env.GITHUB_REPO,
+    BBE_ALERT_EMAIL: env.BBE_ALERT_EMAIL,
+    BBE_BATCH_ID: env.BBE_BATCH_ID,
+    BBE_BATCH_EXPIRATION: env.BBE_BATCH_EXPIRATION,
+    BBE_REDEEM_BASE: env.BBE_REDEEM_BASE,
+    BBE_LOW_INVENTORY_THRESHOLD: env.BBE_LOW_INVENTORY_THRESHOLD,
+    BBE_EXPIRATION_WARN_DAYS: env.BBE_EXPIRATION_WARN_DAYS,
+  };
 }
 
 interface BugReport {
@@ -2457,6 +2501,92 @@ async function verifyWebhookSignature(
 }
 
 // ============================================================================
+// BBE-002: /api/bbe/* admin endpoints + /api/reward-code/status public read
+// ============================================================================
+
+async function handleBBEAdmin(request: Request, env: Env, path: string): Promise<Response> {
+  // Bearer token auth (BBE_ADMIN_TOKEN). All BBE admin endpoints require it.
+  const auth = request.headers.get('Authorization') || '';
+  const match = /^Bearer\s+(.+)$/.exec(auth.trim());
+  if (!env.BBE_ADMIN_TOKEN || !match || match[1] !== env.BBE_ADMIN_TOKEN) {
+    return jsonResponse({ error: 'Unauthorized' }, 401);
+  }
+  const env2 = bbeEnv(env);
+  if (!env2) {
+    return jsonResponse({ error: 'BBE_DB not bound on worker' }, 500);
+  }
+  // Ensure schema is present. Cheap when already initialized.
+  await bbeInitSchemaAndImport(env2);
+
+  if (path === '/api/bbe/status' && request.method === 'GET') {
+    const inv = await bbeGetInventoryStatus(env2);
+    return jsonResponse({ ok: true, inventory: inv });
+  }
+  if (path === '/api/bbe/manual-send' && request.method === 'POST') {
+    let body: { recipient_email?: string; reason?: string; locale?: string };
+    try { body = await request.json(); }
+    catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
+    const email = (body.recipient_email || '').trim();
+    if (!email.includes('@')) return jsonResponse({ error: 'recipient_email required' }, 400);
+    const res = await bbeHandleManualSend(env2, {
+      recipient_email: email,
+      reason: body.reason,
+      locale: body.locale,
+    });
+    return jsonResponse(res, res.ok ? 200 : 409);
+  }
+  if (path === '/api/bbe/invalidate-batch' && request.method === 'POST') {
+    let body: { reason?: string };
+    try { body = await request.json(); } catch { body = {}; }
+    const n = await bbeInvalidateAvailableCodes(env2, body.reason || 'manual-invalidate');
+    return jsonResponse({ ok: true, invalidated: n });
+  }
+  if (path === '/api/bbe/import-csv' && request.method === 'POST') {
+    const n = await bbeInitSchemaAndImport(env2);
+    return jsonResponse({ ok: true, imported: n });
+  }
+  if (path === '/api/bbe/run-alerts' && request.method === 'POST') {
+    await bbeRunInventoryAlertCheck(env2);
+    return jsonResponse({ ok: true });
+  }
+  if (path === '/api/bbe/run-digest' && request.method === 'POST') {
+    const res = await bbeRunWeeklyDigest(env2);
+    return jsonResponse({ ok: true, ...res });
+  }
+  return jsonResponse({ error: `Unknown BBE route: ${path}` }, 404);
+}
+
+// BBE-002: Public read-only inventory status. Consumed by
+// .github/workflows/daily-analysis-digest.yml so the digest banner can
+// report accurate pool size instead of falling back to "EMPTY". No auth:
+// the response contains only aggregate counts, no codes, no PII.
+async function handleRewardCodeStatus(env: Env): Promise<Response> {
+  const env2 = bbeEnv(env);
+  if (!env2) {
+    return jsonResponse({ remaining: 0, total: 0, low: false, empty: true, configured: false });
+  }
+  try {
+    await bbeInitSchemaAndImport(env2);
+    const inv = await bbeGetInventoryStatus(env2);
+    const lowThreshold = parseInt(env.BBE_LOW_INVENTORY_THRESHOLD || '100', 10);
+    return jsonResponse({
+      remaining: inv.available,
+      total: inv.total,
+      reserved: inv.reserved,
+      used: inv.used,
+      invalidated: inv.invalidated,
+      days_to_expiration: inv.daysToExpiration,
+      low: inv.available < lowThreshold,
+      empty: inv.available === 0,
+      configured: true,
+    });
+  } catch (err) {
+    console.error('BBE: reward-code/status failed', err);
+    return jsonResponse({ remaining: 0, total: 0, low: false, empty: true, configured: false, error: 'lookup-failed' });
+  }
+}
+
+// ============================================================================
 // /api/commands - GitHub Webhook Handler for /approve and /reject
 // ============================================================================
 
@@ -2493,8 +2623,44 @@ async function handleCommandsWebhook(
     return jsonResponse({ error: 'Invalid JSON payload' }, 400);
   }
 
-  // Only handle issue_comment events with action "created"
   const eventType = request.headers.get('X-GitHub-Event');
+
+  // BBE-002: Reward-code dispatch on `issues.labeled` events.
+  // Fires when GitHub adds the trigger label (`approved-for-fix` or the
+  // legacy `approved` label) to an issue. Runs in background so GitHub
+  // does not retry on Resend latency.
+  if (eventType === 'issues' && payload.action === 'labeled') {
+    const labelName = ((payload as { label?: { name?: string } }).label?.name || '').toLowerCase();
+    if (labelName === 'approved-for-fix' || labelName === 'approved') {
+      const env2 = bbeEnv(env);
+      const issueNumber = (payload as { issue?: { number?: number } }).issue?.number;
+      if (!env2 || !issueNumber) {
+        return jsonResponse({ ignored: true, reason: 'BBE not configured or no issue number' });
+      }
+      ctx.waitUntil((async () => {
+        try {
+          await bbeInitSchemaAndImport(env2);
+          const { email, gameLanguage, locale } = await bbeFetchReporterEmail(env2, issueNumber);
+          const issueLabels = ((payload as { issue?: { labels?: { name?: string }[] } }).issue?.labels || [])
+            .map((l) => l?.name || '');
+          const result = await bbeDispatchReward(env2, {
+            issueNumber,
+            labels: issueLabels,
+            recipientEmail: email,
+            gameLanguage,
+            locale,
+          });
+          console.log(`BBE dispatchReward for #${issueNumber}: ${result.status}${result.code ? ` (${result.code})` : ''}`);
+        } catch (err) {
+          console.error('BBE dispatchReward error:', err);
+        }
+      })());
+      return jsonResponse({ accepted: true, issue_number: issueNumber, bbe: 'queued' });
+    }
+    return jsonResponse({ ignored: true, reason: `Label '${labelName}' is not a BBE trigger` });
+  }
+
+  // Only handle issue_comment events with action "created"
   if (eventType !== 'issue_comment') {
     return jsonResponse({ ignored: true, reason: `Event type '${eventType}' not handled` });
   }
@@ -3790,6 +3956,42 @@ async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: s
 
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // BBE-002: route the weekly-digest cron (0 9 * * 1) to the BBE digest
+    // runner instead of the pipeline digest dispatch. Other crons fall
+    // through to the pipeline digest dispatch below.
+    const cronExpr = (event as { cron?: string }).cron || '';
+    if (cronExpr === '0 9 * * 1') {
+      const env2 = bbeEnv(env);
+      if (env2) {
+        try {
+          await bbeInitSchemaAndImport(env2);
+          await bbeRunWeeklyDigest(env2);
+          console.log('BBE weekly digest dispatched');
+        } catch (err) {
+          console.error('BBE weekly digest failed:', err);
+        }
+      } else {
+        console.log('BBE weekly digest skipped: BBE_DB not bound');
+      }
+      return;
+    }
+
+    // BBE-002: piggy-back BBE inventory + expiration alert on the morning
+    // pipeline-digest cron. Best-effort; never blocks the main dispatch.
+    if (cronExpr === '0 10 * * *') {
+      const env2 = bbeEnv(env);
+      if (env2) {
+        ctx.waitUntil((async () => {
+          try {
+            await bbeInitSchemaAndImport(env2);
+            await bbeRunInventoryAlertCheck(env2);
+          } catch (err) {
+            console.error('BBE inventory alert check failed:', err);
+          }
+        })());
+      }
+    }
+
     // Dispatch the Pipeline Digest via repository_dispatch (not workflow_dispatch)
     // BUGS_REPO_PAT has contents:write which covers repository_dispatch
     // but NOT actions:write which workflow_dispatch requires
@@ -4026,6 +4228,14 @@ export default {
     if (url.pathname === '/api/pipeline/merge') return handleMerge(request, env);
     if (url.pathname === '/api/pipeline/review-build') return handleReviewBuild(request, env);
     if (url.pathname === '/api/pipeline/approve-merge') return handleApproveMerge(request, env);
+
+    // BBE-002: reward-code automation routes.
+    if (request.method === 'GET' && url.pathname === '/api/reward-code/status') {
+      return handleRewardCodeStatus(env);
+    }
+    if (url.pathname.startsWith('/api/bbe/')) {
+      return handleBBEAdmin(request, env, url.pathname);
+    }
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
