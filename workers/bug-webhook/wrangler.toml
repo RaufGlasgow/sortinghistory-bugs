@@ -21,7 +21,7 @@ AUTHORIZED_USERS = "RaufGlasgow"  # Comma-separated GitHub usernames allowed to 
 
 # BBE-002 vars (non-secret config). These do NOT contain code values -
 # the codes themselves live only in the BBE_CSV secret and the D1 database.
-BBE_BATCH_ID = "bug-bounty-batch-TBD"
+BBE_BATCH_ID = "bug-bounty-batch-496572"
 BBE_BATCH_EXPIRATION = "2026-10-24"
 BBE_REDEEM_BASE = "https://apps.apple.com/redeem?ctx=offercodes&id=6760428599&code="
 BBE_LOW_INVENTORY_THRESHOLD = "100"
