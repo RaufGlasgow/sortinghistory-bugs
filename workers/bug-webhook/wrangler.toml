@@ -9,6 +9,8 @@ routes = [
   { pattern = "sortinghistory.com/api/bug/*", zone_name = "sortinghistory.com" },
   { pattern = "sortinghistory.com/api/commands", zone_name = "sortinghistory.com" },
   { pattern = "sortinghistory.com/api/pipeline/*", zone_name = "sortinghistory.com" },
+  { pattern = "sortinghistory.com/api/bbe/*", zone_name = "sortinghistory.com" },
+  { pattern = "sortinghistory.com/api/reward-code/*", zone_name = "sortinghistory.com" },
   { pattern = "sortinghistory.com/screenshots/*", zone_name = "sortinghistory.com" }
 ]
 
@@ -16,6 +18,15 @@ routes = [
 GITHUB_REPO = "RaufGlasgow/Sorting-History"
 BUGS_REPO = "RaufGlasgow/sortinghistory-bugs"
 AUTHORIZED_USERS = "RaufGlasgow"  # Comma-separated GitHub usernames allowed to /approve and /reject
+
+# BBE-002 vars (non-secret config). These do NOT contain code values -
+# the codes themselves live only in the BBE_CSV secret and the D1 database.
+BBE_BATCH_ID = "bug-bounty-batch-TBD"
+BBE_BATCH_EXPIRATION = "2026-10-24"
+BBE_REDEEM_BASE = "https://apps.apple.com/redeem?ctx=offercodes&id=6760428599&code="
+BBE_LOW_INVENTORY_THRESHOLD = "100"
+BBE_EXPIRATION_WARN_DAYS = "30"
+BBE_ALERT_EMAIL = "raufglasgow@gmail.com"
 
 # R2 bucket for screenshot storage (worker serves images via /screenshots/ route)
 [[r2_buckets]]
@@ -29,13 +40,28 @@ bucket_name = "sorting-history-bugs"
 binding = "PIPELINE_KV"
 id = "a542f150d87f46259a4ff31de7d8dc94"
 
-# Cron triggers — replaces unreliable GitHub Actions cron scheduler
+# BBE-002: Cloudflare D1 database for bug-bounty reward-code inventory
+# and audit log. Migrations live in ./migrations.
+#
+# IMPORTANT: `database_id` below is a placeholder. Before the first
+# `wrangler deploy` Ra'uf MUST run `wrangler d1 create bbe-rewards`
+# and paste the returned UUID into the `database_id` field below.
+# Full step-by-step lives in the private repo at
+# docs/runbooks/BBE-002-Ra-uf-deploy-runbook.md
+[[d1_databases]]
+binding = "BBE_DB"
+database_name = "bbe-rewards"
+database_id = "REPLACE_ME_AFTER_WRANGLER_D1_CREATE"
+migrations_dir = "migrations"
+
+# Cron triggers - replaces unreliable GitHub Actions cron scheduler
 # Times are UTC (Lisbon winter = UTC+0)
 [triggers]
 crons = [
-  "0 10 * * *",   # 10:00 AM Lisbon — morning digest
-  "0 14 * * *",   # 2:00 PM Lisbon — afternoon digest
-  "0 18 * * *",   # 6:00 PM Lisbon — evening digest
+  "0 9 * * 1",    # BBE-002: Mon 09:00 Lisbon (winter) - weekly BBE digest to Ra'uf
+  "0 10 * * *",   # 10:00 AM Lisbon - morning pipeline digest + BBE inventory alert check
+  "0 14 * * *",   # 2:00 PM Lisbon - afternoon pipeline digest
+  "0 18 * * *",   # 6:00 PM Lisbon - evening pipeline digest
 ]
 
 # Secrets (set via `wrangler secret put <NAME>`):
@@ -43,3 +69,10 @@ crons = [
 # - BUGS_REPO_PAT: Fine-grained PAT with contents:write on public bugs repo (for repository_dispatch)
 # - WEBHOOK_SECRET: HMAC secret for GitHub webhook signature validation (BA-007.14)
 # - AUTH_TOKEN: Token for pipeline action endpoints (approve/reject/comment/rework)
+# - RESEND_API_KEY: Resend API key for outbound email (intake thank-you AND BBE reward emails)
+# BBE-002 secrets:
+# - BBE_CSV: Raw CSV of the bug-bounty offer-code batch (one CODE,URL per line).
+#   Source: .private/offer-codes/bug-bounty-batch-<id>.csv (NEVER committed).
+#   Imported on first run only; safe to leave set.
+# - BBE_ADMIN_TOKEN: Bearer token for /api/bbe/* admin endpoints
+#   (manual-send, invalidate-batch, import-csv, run-alerts, run-digest, status).
