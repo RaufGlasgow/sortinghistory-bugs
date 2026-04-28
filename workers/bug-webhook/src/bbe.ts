@@ -167,8 +167,6 @@ export function parseCsvCodes(csv: string): string[] {
  * Returns the number of rows imported (0 if table already populated).
  */
 export async function initSchemaAndImport(env: BBEEnv): Promise<number> {
-  await execMulti(env.BBE_DB, BBE_SCHEMA_SQL);
-
   const count = await env.BBE_DB
     .prepare('SELECT COUNT(*) AS n FROM bug_bounty_codes')
     .first<{ n: number }>();
