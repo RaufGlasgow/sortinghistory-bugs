@@ -34,6 +34,27 @@ jobs:
           echo "ISSUE_NUMBER=$ISSUE" >> "$GITHUB_ENV"
           echo "Validated issue_number: $ISSUE"
 
+      # PIPE-A1 (2026-05-01): Audit trail comment so duplicate dispatches
+      # are visible in the issue history, not just in workflow logs.
+      - name: Audit trail (collapsible)
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BODY=$(cat <<EOF
+          <details><summary>[triage] workflow=${WORKFLOW_NAME} run=${RUN_ID}</summary>
+
+          - Run URL: ${RUN_URL}
+          - Event: ${{ github.event_name }}
+          - Repo: ${{ github.repository }}
+          </details>
+          EOF
+          )
+          echo "$BODY" | gh issue comment "$ISSUE_NUMBER" --repo RaufGlasgow/Sorting-History --body-file - || true
+
       - name: Check if already triaged
         id: check
         env:
@@ -42,20 +63,46 @@ jobs:
           # Allow re-triage when correction notes are provided
           CORRECTION_NOTES="${{ github.event.client_payload.correction_notes || github.event.inputs.correction_notes }}"
           if [ -n "$CORRECTION_NOTES" ]; then
-            echo "Correction notes provided — allowing re-triage despite sdk-routed label"
+            echo "Correction notes provided — allowing re-triage despite sdk-routed/sdk-triage-in-progress labels"
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Check if issue already has sdk-routed label (triage already ran)
+          # PIPE-A1: skip if EITHER sdk-routed (already done) OR
+          # sdk-triage-in-progress (claim held by an active run) is present.
+          # The concurrency group prevents stale `sdk-triage-in-progress`
+          # from blocking legitimate retries — concurrent dispatches wait
+          # until the holding run finishes; the failure handler removes
+          # the in-progress label so retry-stuck.yml can re-dispatch cleanly.
           LABELS=$(gh issue view "$ISSUE_NUMBER" --repo RaufGlasgow/Sorting-History --json labels --jq '.labels[].name' 2>/dev/null || echo "")
           if echo "$LABELS" | grep -q "^sdk-routed$"; then
             echo "Issue #$ISSUE_NUMBER already has sdk-routed label, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS" | grep -q "^sdk-triage-in-progress$"; then
+            echo "Issue #$ISSUE_NUMBER already has sdk-triage-in-progress label, skipping (claim held)"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "Issue #$ISSUE_NUMBER needs triage, proceeding"
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # PIPE-A1: claim-then-work. Add `sdk-triage-in-progress` BEFORE the
+      # SDK call so concurrent dispatches see the claim and skip. On
+      # success, the post-success step removes it (sdk-routed is added
+      # by the orchestrator). On failure, the if: failure() handler at
+      # the bottom of the job removes it and adds triage-failed.
+      - name: Claim triage (add sdk-triage-in-progress label)
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          gh label create "sdk-triage-in-progress" \
+            --repo "RaufGlasgow/Sorting-History" \
+            --color "fbca04" \
+            --description "Triage claim held by an active SDK run" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUMBER" --repo "RaufGlasgow/Sorting-History" \
+            --add-label "sdk-triage-in-progress"
+          echo "Claimed triage for issue #$ISSUE_NUMBER"
 
       # Clean stale triage labels on startup (moved here from auto-retry per architect review)
       - name: Clean stale labels on startup
@@ -137,6 +184,17 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --repo RaufGlasgow/Sorting-History \
             --remove-label "needs-triage" 2>/dev/null || true
           echo "Removed needs-triage label from issue #$ISSUE_NUMBER"
+
+      # PIPE-A1: release the in-progress claim on success. The orchestrator
+      # adds `sdk-routed` itself; this step just cleans up the claim label.
+      - name: Release triage claim on success
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --repo RaufGlasgow/Sorting-History \
+            --remove-label "sdk-triage-in-progress" 2>/dev/null || true
+          echo "Released sdk-triage-in-progress claim on issue #$ISSUE_NUMBER"
 
       # Story 3.9: Flag issues with no contact email after triage
       - name: Flag no-email issues
@@ -250,12 +308,17 @@ jobs:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           if [ -n "$ISSUE_NUMBER" ]; then
+            # PIPE-A1: release the in-progress claim so retry-stuck can
+            # re-dispatch this issue cleanly.
+            gh issue edit "$ISSUE_NUMBER" --repo "RaufGlasgow/Sorting-History" \
+              --remove-label "sdk-triage-in-progress" 2>/dev/null || true
+
             # Create the label if it doesn't exist (idempotent), then apply it
             gh label create "triage-failed" --repo "RaufGlasgow/Sorting-History" \
               --color "dc2626" --description "Triage pipeline failed" 2>/dev/null || true
             gh issue edit "$ISSUE_NUMBER" --repo "RaufGlasgow/Sorting-History" \
               --add-label "triage-failed"
-            echo "Added triage-failed label to issue #$ISSUE_NUMBER"
+            echo "Released sdk-triage-in-progress and added triage-failed for issue #$ISSUE_NUMBER"
           fi
 
       # ── Story 3.6a: Pipeline Outcome Logging ──
