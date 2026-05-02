@@ -19,7 +19,6 @@ jobs:
           python-version: '3.12'
       - name: Run custom hook tests
         env:
-          # Automation repo: bug-pipeline scope includes workers/bug-webhook/
           IN_SCOPE_TS: workers/bug-webhook/fixture.ts
           IN_SCOPE_TS_BAD: workers/bug-webhook/bad-fixture.ts
           IN_SCOPE_WF: .github/workflows/bug-fixture.yml
@@ -59,8 +58,13 @@ jobs:
             printf '%s\n' "$files"
             echo "EOF"
           } >>"$GITHUB_OUTPUT"
+      - name: Install zizmor
+        if: steps.changed-wf.outputs.files != ''
+        run: pipx install zizmor==1.17.0
       - name: zizmor (changed workflows only)
         if: steps.changed-wf.outputs.files != ''
-        uses: docker://ghcr.io/zizmorcore/zizmor:v1.17.0
-        with:
-          args: ${{ steps.changed-wf.outputs.files }}
+        env:
+          FILES: ${{ steps.changed-wf.outputs.files }}
+        run: |
+          # shellcheck disable=SC2086
+          zizmor --persona=regular --no-online-audits $FILES
