@@ -1,9 +1,11 @@
+# RETIRED 2026-05-02 - bug pipeline replacement plan v2 (PIPE-FREEZE).
+# Paused (manual-dispatch only) pending OpenRouter rebuild.
+# See docs/plans/bug-pipeline-replacement-plan-v2-20260502.md.
+# Code kept for reversibility; deletion happens in PIPE-KILL after 1 week of green stack.
 name: Bug Analysis
 run-name: "Triage #${{ github.event.client_payload.issue_number || inputs.issue_number }}"
 
 on:
-  repository_dispatch:
-    types: [analyze]
   workflow_dispatch:
     inputs:
       issue_number:
