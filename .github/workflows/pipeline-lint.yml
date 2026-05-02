@@ -1,0 +1,66 @@
+name: pipeline-lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run custom hook tests
+        env:
+          # Automation repo: bug-pipeline scope includes workers/bug-webhook/
+          IN_SCOPE_TS: workers/bug-webhook/fixture.ts
+          IN_SCOPE_TS_BAD: workers/bug-webhook/bad-fixture.ts
+          IN_SCOPE_WF: .github/workflows/bug-fixture.yml
+          IN_SCOPE_MD: .github/workflows/bug-fixture.md
+        run: bash Scripts/lint/tests/run-tests.sh
+      # PIPE-LINT v1: scope to changed files only. Existing codebase is dirty
+      # by design (see story "Out of scope": no retro cleanup). New diffs must
+      # be clean. A separate cleanup story will lift this to --all-files.
+      - name: Compute base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=${{ github.event.pull_request.base.sha }}" >>"$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Install pre-commit
+        run: pip install pre-commit==4.6.0
+      - name: Run pre-commit on changed files
+        run: |
+          base="${{ steps.base.outputs.ref }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base ref; skipping (initial push)."
+            exit 0
+          fi
+          pre-commit run --from-ref "$base" --to-ref HEAD --show-diff-on-failure
+
+      # zizmor runs separately because the pre-commit hook audits the whole
+      # repo regardless of file filters. We scope it to changed workflow files.
+      - name: Compute changed workflow files
+        id: changed-wf
+        run: |
+          base="${{ steps.base.outputs.ref }}"
+          files=$(git diff --name-only --diff-filter=AM "$base"...HEAD -- '.github/workflows/*.yml' '.github/workflows/*.yaml' || true)
+          {
+            echo "files<<EOF"
+            printf '%s\n' "$files"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+      - name: zizmor (changed workflows only)
+        if: steps.changed-wf.outputs.files != ''
+        uses: docker://ghcr.io/zizmorcore/zizmor:v1.17.0
+        with:
+          args: ${{ steps.changed-wf.outputs.files }}
