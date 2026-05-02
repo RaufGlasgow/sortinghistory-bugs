@@ -4196,6 +4196,102 @@ export default {
     }
   },
 
+  // PIPE-NOTIFY: Send per-bug owner notification email via Resend.
+  // Fires immediately after a GitHub issue is created, BEFORE any LLM
+  // (triage / fix) workflow runs. Independent of Claude SDK lifecycle.
+  // No retry, no throw: GitHub issue is the durable record; failures log only.
+  async sendOwnerNotifyEmail(
+    env: Env,
+    report: BugReport,
+    issueNumber: number,
+    screenshotUrl: string | undefined
+  ): Promise<void> {
+    if (!env.RESEND_API_KEY) {
+      console.error(`BUG_${issueNumber}_NOTIFY_FAILED: RESEND_API_KEY not configured`);
+      return;
+    }
+    if (!env.OWNER_EMAIL) {
+      console.error(`BUG_${issueNumber}_NOTIFY_FAILED: OWNER_EMAIL not configured`);
+      return;
+    }
+
+    // AC3: ASCII-only subject, title truncated to 80 chars.
+    const rawTitle = (report.description || '').replace(/[\r\n]+/g, ' ').trim();
+    const asciiTitle = rawTitle.replace(/[^\x20-\x7E]/g, '?');
+    const truncatedTitle = asciiTitle.length > 80
+      ? asciiTitle.substring(0, 77) + '...'
+      : asciiTitle;
+    const subject = `[Sorting History bug #${issueNumber}] ${truncatedTitle || '(no title)'}`;
+
+    // AC4: Body fields.
+    const di = report.deviceInfo;
+    const device = di?.model || 'unknown';
+    const ios = di?.osVersion || 'unknown';
+    const appVersion = di?.appVersion || 'unknown';
+    const buildNumber = di?.buildNumber || 'unknown';
+    const issueUrl = `https://github.com/RaufGlasgow/Sorting-History/issues/${issueNumber}`;
+
+    // Reporter Actual behavior, truncated to 500 chars.
+    const fullBehavior = report.description || '';
+    const behavior = fullBehavior.length > 500
+      ? fullBehavior.substring(0, 500) + '...'
+      : fullBehavior;
+
+    // Minimal HTML escape for body fields rendered as text.
+    const esc = (s: string): string => s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+    const screenshotBlock = screenshotUrl
+      ? `<p><strong>Screenshot:</strong> <a href="${esc(screenshotUrl)}">${esc(screenshotUrl)}</a></p>`
+      : '';
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 640px; margin: 0 auto; padding: 20px; color: #222; line-height: 1.5;">
+  <h2 style="margin: 0 0 12px 0;">New bug reported: #${issueNumber}</h2>
+  <p style="margin: 0 0 16px 0;"><a href="${issueUrl}">${issueUrl}</a></p>
+  <table style="border-collapse: collapse; margin-bottom: 16px;">
+    <tr><td style="padding: 4px 12px 4px 0;"><strong>Device</strong></td><td style="padding: 4px 0;">${esc(device)}</td></tr>
+    <tr><td style="padding: 4px 12px 4px 0;"><strong>iOS</strong></td><td style="padding: 4px 0;">${esc(ios)}</td></tr>
+    <tr><td style="padding: 4px 12px 4px 0;"><strong>App version</strong></td><td style="padding: 4px 0;">${esc(appVersion)}</td></tr>
+    <tr><td style="padding: 4px 12px 4px 0;"><strong>Build</strong></td><td style="padding: 4px 0;">${esc(buildNumber)}</td></tr>
+  </table>
+  <p style="margin: 0 0 6px 0;"><strong>Actual behavior:</strong></p>
+  <pre style="white-space: pre-wrap; background: #f5f5f5; padding: 12px; border-radius: 4px; margin: 0 0 16px 0; font-family: inherit;">${esc(behavior)}</pre>
+  ${screenshotBlock}
+  <hr style="border: none; border-top: 1px solid #ddd; margin: 24px 0 16px 0;">
+  <p style="color: #666; font-size: 13px; margin: 0;">Approve/Reject buttons return when PIPE-FIX ships. During interim: read the issue, dispatch dev sub-agent, or fix locally.</p>
+</body></html>`;
+
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'Sorting History <hello@sortinghistory.com>',
+          to: [env.OWNER_EMAIL],
+          subject,
+          html,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.error(`BUG_${issueNumber}_NOTIFY_FAILED: ${res.status} ${errText}`);
+        return;
+      }
+      console.log(`PIPE-NOTIFY: owner notify email sent for #${issueNumber}`);
+    } catch (err) {
+      console.error(`BUG_${issueNumber}_NOTIFY_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
@@ -4377,6 +4473,12 @@ export default {
     if (result.success) {
       // PIPE-008: Store dedup entry for this new issue
       ctx.waitUntil(storeDedupEntry(env, report, result.issueNumber, result.issueUrl));
+
+      // PIPE-NOTIFY: per-bug owner email fires BEFORE any LLM-bound dispatch.
+      // No Anthropic / Claude SDK in this path. Single Resend send + log on
+      // failure. AC6: fires regardless of triage status. AC7: failures do not
+      // block the rest of the webhook flow; GitHub issue is the durable record.
+      ctx.waitUntil(this.sendOwnerNotifyEmail(env, report, result.issueNumber, screenshotUrl));
 
       // Dispatch analysis to public repo in background (don't block user response)
       ctx.waitUntil(dispatchAnalysis(env, result.issueNumber));
