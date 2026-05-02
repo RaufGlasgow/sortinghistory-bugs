@@ -1,13 +1,11 @@
+# RETIRED 2026-05-02 - bug pipeline replacement plan v2 (PIPE-FREEZE).
+# Paused (manual-dispatch only) pending OpenRouter rebuild.
+# See docs/plans/bug-pipeline-replacement-plan-v2-20260502.md.
+# Code kept for reversibility; deletion happens in PIPE-KILL after 1 week of green stack.
 name: SDK Content Pipeline
 run-name: "Content #${{ github.event.client_payload.issue_number || 'scheduled' }} (${{ github.event.action || 'manual' }})"
 
 on:
-  repository_dispatch:
-    types: [sdk-content-verify, sdk-content-resume]
-  # schedule disabled — daily cron was calling Anthropic API with no value
-  # re-enable only after pipeline migration (PIPE-R6)
-  # schedule:
-  #   - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:

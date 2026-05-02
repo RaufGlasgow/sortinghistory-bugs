@@ -1,10 +1,11 @@
+# RETIRED 2026-05-02 - bug pipeline replacement plan v2 (PIPE-FREEZE).
+# Paused (manual-dispatch only) pending OpenRouter rebuild.
+# See docs/plans/bug-pipeline-replacement-plan-v2-20260502.md.
+# Code kept for reversibility; deletion happens in PIPE-KILL after 1 week of green stack.
 name: SDK Bug Fix
 run-name: "Fix #${{ github.event.client_payload.issue_number || inputs.issue_number }} (${{ github.event.client_payload.mode || inputs.mode || 'full' }})"
 
 on:
-  repository_dispatch:
-    types: [sdk-bug-fix, approve]
-
   # PV2-4.4: Browser-friendly trigger for full pipeline or QA-only re-runs
   workflow_dispatch:
     inputs:
