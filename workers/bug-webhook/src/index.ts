@@ -19,6 +19,10 @@ import {
   runInventoryAlertCheck as bbeRunInventoryAlertCheck,
   runWeeklyDigest as bbeRunWeeklyDigest,
   getInventoryStatus as bbeGetInventoryStatus,
+  reserveIntakeCode as bbeReserveIntakeCode,
+  markUsed as bbeMarkUsed,
+  releaseCode as bbeReleaseCode,
+  writeAudit as bbeWriteAudit,
   type BBEEnv,
   type D1DatabaseLike,
 } from './bbe';
@@ -4067,68 +4071,21 @@ export default {
     }
   },
 
-  // FR-160: Send thank-you email to bug reporters via Resend
+  // FR-160 + BBE-003: Send intake acknowledgement email with embedded reward code.
+  //
+  // BBE-003 (PM/Ra'uf decision Option B, 2026-05-02): collapse the previous
+  // two-email flow (intake ack + later approval reward) into a single email
+  // sent at intake. The code is reserved from the bug-bounty pool and
+  // embedded directly. Burns a code on every submission (including spam /
+  // dupes). If abuse shows up later we change the design.
+  //
+  // Copy is "two months" of Historian access in all 5 locales (en/de/nl/pt/es-419)
+  // and matches the BBE-001 v3/v4 reward email copy intent. Regression test
+  // pinning this copy lives in `intake-thankyou.test.ts`.
   async sendThankYouEmail(env: Env, email: string, gameLanguage: string | undefined, locale: string | undefined, issueNumber: number): Promise<void> {
     if (!env.RESEND_API_KEY || !email) return;
 
-    // Prefer in-game language over device locale for email language
-    const lang = (gameLanguage || locale || 'en').toLowerCase();
-    const isDE = lang.startsWith('de');
-    const isPT = lang.startsWith('pt');
-    const isNL = lang.startsWith('nl');
-    const isES = lang.startsWith('es');
-
-    const subject = isDE ? 'Danke f\u00FCr dein Feedback \u2014 Sorting History'
-      : isPT ? 'Obrigado pelo teu feedback \u2014 Sorting History'
-      : isNL ? 'Bedankt voor je feedback \u2014 Sorting History'
-      : isES ? 'Gracias por tu feedback \u2014 Sorting History'
-      : 'Thank you for your feedback \u2014 Sorting History';
-
-    const heading = isDE ? 'Vielen Dank!'
-      : isPT ? 'Muito obrigado!'
-      : isNL ? 'Heel erg bedankt!'
-      : isES ? '\u00A1Muchas gracias!'
-      : 'Thank you!';
-
-    const bodyText = isDE ? 'Wir haben deinen Fehlerbericht erhalten und sch\u00E4tzen es sehr, dass du dir die Zeit genommen hast. Dein Feedback hilft uns, Sorting History f\u00FCr alle zu verbessern.'
-      : isPT ? 'Recebemos o teu relat\u00F3rio e agradecemos por teres dedicado o teu tempo. O teu feedback ajuda-nos a melhorar o Sorting History para todos.'
-      : isNL ? 'We hebben je bugrapport ontvangen en waarderen het enorm dat je de tijd hebt genomen. Je feedback helpt ons Sorting History voor iedereen te verbeteren.'
-      : isES ? 'Recibimos tu reporte y agradecemos que te hayas tomado el tiempo. Tu feedback nos ayuda a mejorar Sorting History para todos.'
-      : 'We received your bug report and truly appreciate you taking the time. Your feedback helps us make Sorting History better for everyone.';
-
-    const rewardText = isDE ? 'Als Dankesch\u00F6n m\u00F6chten wir dir einen Monat Historian-Zugang schenken \u2014 alle Epic-Kategorien und den exklusiven History Pinpoint Spielmodus.'
-      : isPT ? 'Como agradecimento, gostar\u00EDamos de te oferecer um m\u00EAs de acesso Historian \u2014 todas as categorias Epic e o modo de jogo exclusivo History Pinpoint.'
-      : isNL ? 'Als bedankje willen we je een maand Historian-toegang aanbieden \u2014 alle Epic-categorie\u00EBn en de exclusieve History Pinpoint-spelmodus.'
-      : isES ? 'Como agradecimiento, nos gustar\u00EDa ofrecerte un mes de acceso Historian \u2014 todas las categor\u00EDas Epic y el modo de juego exclusivo History Pinpoint.'
-      : 'As a thank you, we\u2019d like to offer you one month of Historian access \u2014 all Epic categories and the exclusive History Pinpoint game mode.';
-
-    const closing = isDE ? 'Das Sorting History Team'
-      : isPT ? 'A equipa do Sorting History'
-      : isNL ? 'Het Sorting History team'
-      : isES ? 'El equipo de Sorting History'
-      : 'The Sorting History Team';
-
-    const html = `
-<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
-  <div style="text-align: center; padding: 20px 0; border-bottom: 2px solid #1a3a4a;">
-    <h1 style="color: #1a3a4a; margin: 0; font-size: 24px;">Sorting History</h1>
-  </div>
-  <div style="padding: 30px 0;">
-    <h2 style="color: #1a3a4a;">${heading}</h2>
-    <p style="line-height: 1.6;">${bodyText}</p>
-    <div style="background: #f0f7fa; border-left: 4px solid #1a3a4a; padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0;">
-      <p style="margin: 0; line-height: 1.6;">${rewardText}</p>
-    </div>
-    <p style="color: #666; font-size: 14px;">Bug #${issueNumber}</p>
-  </div>
-  <div style="border-top: 1px solid #e0e0e0; padding-top: 16px; text-align: center; color: #999; font-size: 13px;">
-    <p>\u2014 ${closing}</p>
-  </div>
-</body></html>`;
-
-    // AC6: Check for duplicate — skip if email-sent label already on issue
+    // AC6 dedup: skip if email-sent label already on issue (retry guard)
     try {
       const labelsRes = await fetch(
         `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`,
@@ -4143,6 +4100,155 @@ export default {
       }
     } catch { /* proceed if label check fails */ }
 
+    // BBE-003: reserve a reward code from the pool. If BBE not configured
+    // or pool empty, fall back to a code-less email (do not block intake ack).
+    let reservation: { code: string; redeemUrl: string; expirationISO: string } | null = null;
+    const env2 = bbeEnv(env);
+    if (env2) {
+      try {
+        await bbeInitSchemaAndImport(env2);
+        reservation = await bbeReserveIntakeCode(env2, String(issueNumber), email);
+        if (!reservation) {
+          await bbeWriteAudit(env2, {
+            event: 'intake_no_code',
+            bug_report_id: String(issueNumber),
+            recipient_email: email,
+            detail: 'reserveIntakeCode returned null (duplicate or inventory empty)',
+          });
+        }
+      } catch (err) {
+        console.error(`BBE-003: reserveIntakeCode failed for #${issueNumber}:`, err);
+      }
+    } else {
+      console.warn(`BBE-003: BBE_DB not bound; intake email for #${issueNumber} will not include a code`);
+    }
+
+    // Locale selection
+    const lang = (gameLanguage || locale || 'en').toLowerCase();
+    const loc: 'en' | 'de' | 'pt' | 'nl' | 'es' =
+      lang.startsWith('de') ? 'de'
+      : lang.startsWith('pt') ? 'pt'
+      : lang.startsWith('nl') ? 'nl'
+      : lang.startsWith('es') ? 'es'
+      : 'en';
+
+    // Tier name per locale (matches LocalizationHelper.swift)
+    const tierName = ({ en: 'Historian', de: 'Historiker', pt: 'Historiador', nl: 'Historicus', es: 'Historiador' } as const)[loc];
+
+    const subject = ({
+      en: 'Thank you for your bug report \u2014 2 months of Historian on us',
+      de: 'Danke f\u00FCr deinen Fehlerbericht \u2014 2 Monate Historiker gehen auf uns',
+      pt: 'Obrigado pelo teu relato de bug \u2014 2 meses de Historiador por conta da casa',
+      nl: 'Bedankt voor je bugrapport \u2014 2 maanden Historicus van ons',
+      es: 'Gracias por tu reporte de bug \u2014 2 meses de Historiador de regalo',
+    } as const)[loc];
+
+    const heading = ({
+      en: 'Thank you for making Sorting History better',
+      de: 'Danke, dass du Sorting History besser machst',
+      pt: 'Obrigado por tornares o Sorting History melhor',
+      nl: 'Bedankt dat je Sorting History beter maakt',
+      es: 'Gracias por hacer mejor Sorting History',
+    } as const)[loc];
+
+    const bodyText = ({
+      en: 'We received your bug report and truly appreciate you taking the time. Every bug report makes Sorting History better for everyone.',
+      de: 'Wir haben deinen Fehlerbericht erhalten und sind dir wirklich dankbar, dass du dir die Zeit genommen hast. Jeder Fehlerbericht macht Sorting History f\u00FCr alle besser.',
+      pt: 'Recebemos o teu relato de bug e agradecemos sinceramente o tempo que dedicaste. Cada relato de bug torna o Sorting History melhor para todos.',
+      nl: 'We hebben je bugrapport ontvangen en we waarderen het echt dat je de tijd hebt genomen. Elk bugrapport maakt Sorting History voor iedereen beter.',
+      es: 'Recibimos tu reporte de bug y de verdad apreciamos que te hayas tomado el tiempo. Cada reporte de bug mejora Sorting History para todos.',
+    } as const)[loc];
+
+    // BBE-003 reward copy: two months Historian, code embedded inline.
+    // Hardcoded "two months" / "2 Monate" / "2 meses" / "2 maanden" / "2 meses"
+    // strings are pinned by the regression test in intake-thankyou.test.ts
+    // so the BBE-001 v3 copy can never silently regress again.
+    const rewardText = ({
+      en: `As a thank you, here are two months free Historian access \u2014 all Epic categories and the exclusive History Pinpoint game mode. Your code is below; redeem it on your iPhone or iPad.`,
+      de: `Als Dankesch\u00F6n schenken wir dir 2 Monate kostenlosen ${tierName}-Zugang \u2014 alle Epic-Kategorien und den exklusiven Spielmodus History Pinpoint. Dein Code steht unten; l\u00F6se ihn auf deinem iPhone oder iPad ein.`,
+      pt: `Como agradecimento, aqui ficam 2 meses gr\u00E1tis de acesso ${tierName} \u2014 todas as categorias \u00C9picas e o modo de jogo exclusivo History Pinpoint. O teu c\u00F3digo est\u00E1 em baixo; resgata-o no teu iPhone ou iPad.`,
+      nl: `Als bedankje krijg je 2 maanden gratis ${tierName}-toegang \u2014 alle Epic-categorie\u00EBn en de exclusieve spelmodus History Pinpoint. Je code staat hieronder; wissel hem in op je iPhone of iPad.`,
+      es: `Como agradecimiento, aqu\u00ED tienes 2 meses gratis de acceso ${tierName} \u2014 todas las categor\u00EDas \u00C9picas y el modo de juego exclusivo History Pinpoint. Tu c\u00F3digo est\u00E1 abajo; c\u00E1njealo en tu iPhone o iPad.`,
+    } as const)[loc];
+
+    const codeLabel = ({ en: 'Your code', de: 'Dein Code', pt: 'O teu c\u00F3digo', nl: 'Jouw code', es: 'Tu c\u00F3digo' } as const)[loc];
+    const cta = ({ en: 'Redeem now', de: 'Jetzt einl\u00F6sen', pt: 'Resgatar agora', nl: 'Nu inwisselen', es: 'Canjear ahora' } as const)[loc];
+    const noCodeNote = ({
+      en: 'We are temporarily out of reward codes. We will email you a code as soon as our pool is restocked.',
+      de: 'Wir haben vor\u00FCbergehend keine Reward-Codes mehr. Sobald unser Pool wieder aufgef\u00FCllt ist, schicken wir dir einen Code per E-Mail.',
+      pt: 'Estamos temporariamente sem c\u00F3digos de recompensa. Vamos enviar-te um c\u00F3digo por e-mail assim que o nosso pool for reabastecido.',
+      nl: 'We zijn tijdelijk door onze beloningscodes heen. Zodra onze voorraad is aangevuld, sturen we je een code per e-mail.',
+      es: 'Estamos temporalmente sin c\u00F3digos de recompensa. Te enviaremos un c\u00F3digo por correo electr\u00F3nico en cuanto reabastezcamos nuestro pool.',
+    } as const)[loc];
+    const footnote = reservation
+      ? ({
+          en: `One redemption per Apple ID. Code expires ${reservation.expirationISO}. Bug #${issueNumber}.`,
+          de: `Eine Einl\u00F6sung pro Apple-ID. Code l\u00E4uft am ${reservation.expirationISO} ab. Bug #${issueNumber}.`,
+          pt: `Um resgate por ID Apple. O c\u00F3digo expira em ${reservation.expirationISO}. Bug #${issueNumber}.`,
+          nl: `\u00C9\u00E9n inwisseling per Apple ID. Code verloopt op ${reservation.expirationISO}. Bug #${issueNumber}.`,
+          es: `Un canje por ID de Apple. El c\u00F3digo vence el ${reservation.expirationISO}. Bug #${issueNumber}.`,
+        } as const)[loc]
+      : `Bug #${issueNumber}`;
+
+    const closing = ({
+      en: 'The Sorting History Team',
+      de: 'Das Sorting History Team',
+      pt: 'A equipa do Sorting History',
+      nl: 'Het Sorting History team',
+      es: 'El equipo de Sorting History',
+    } as const)[loc];
+
+    const escHtml = (s: string): string => s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+    const codeBlockHtml = reservation
+      ? `<div style="background: #f0f7fa; border-left: 4px solid #1a3a4a; padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0;">
+      <p style="margin: 0 0 8px; line-height: 1.6;"><strong>${escHtml(codeLabel)}:</strong> <code style="font-size: 18px; letter-spacing: 1px;">${escHtml(reservation.code)}</code></p>
+      <p style="margin: 0;"><a href="${escHtml(reservation.redeemUrl)}" style="display:inline-block;padding:10px 16px;background:#1a3a4a;color:#fff;text-decoration:none;border-radius:6px;">${escHtml(cta)}</a></p>
+    </div>`
+      : `<div style="background: #fff8e1; border-left: 4px solid #d97706; padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0;">
+      <p style="margin: 0; line-height: 1.6;">${escHtml(noCodeNote)}</p>
+    </div>`;
+
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+  <div style="text-align: center; padding: 20px 0; border-bottom: 2px solid #1a3a4a;">
+    <h1 style="color: #1a3a4a; margin: 0; font-size: 24px;">Sorting History</h1>
+  </div>
+  <div style="padding: 30px 0;">
+    <h2 style="color: #1a3a4a;">${escHtml(heading)}</h2>
+    <p style="line-height: 1.6;">${escHtml(bodyText)}</p>
+    <p style="line-height: 1.6;">${escHtml(rewardText)}</p>
+    ${codeBlockHtml}
+    <p style="color: #666; font-size: 13px; line-height: 1.6;">${escHtml(footnote)}</p>
+  </div>
+  <div style="border-top: 1px solid #e0e0e0; padding-top: 16px; text-align: center; color: #999; font-size: 13px;">
+    <p>\u2014 ${escHtml(closing)}</p>
+  </div>
+</body></html>`;
+
+    const text = [
+      heading,
+      '',
+      bodyText,
+      '',
+      rewardText,
+      '',
+      reservation
+        ? `${codeLabel}: ${reservation.code}\n${cta}: ${reservation.redeemUrl}`
+        : noCodeNote,
+      '',
+      footnote,
+      '',
+      `\u2014 ${closing}`,
+    ].join('\n');
+
+    let sendOk = false;
     try {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',
@@ -4155,24 +4261,24 @@ export default {
           to: [email],
           subject,
           html,
+          text,
         }),
       });
 
       if (!res.ok) {
         const err = await res.text();
         console.error(`FR-160: Email send failed: ${res.status} ${err}`);
-        // AC5: Comment on GitHub issue about email failure
         await fetch(
           `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/comments`,
           {
             method: 'POST',
             headers: { 'Authorization': `token ${env.GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'SortingHistory-Bug-Webhook' },
-            body: JSON.stringify({ body: `⚠️ Email delivery failed for ${email.substring(0, 3)}***@${email.split('@')[1] || '...'} (${res.status})` }),
+            body: JSON.stringify({ body: `\u26A0\uFE0F Email delivery failed for ${email.substring(0, 3)}***@${email.split('@')[1] || '...'} (${res.status})` }),
           }
         ).catch(() => {});
       } else {
-        console.log(`FR-160: Thank-you email sent to ${email.substring(0, 3)}***`);
-        // AC6: Add email-sent label to prevent duplicates on retry
+        sendOk = true;
+        console.log(`FR-160: Thank-you email sent to ${email.substring(0, 3)}***${reservation ? ` with code ${reservation.code}` : ' (no code reserved)'}`);
         await fetch(
           `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/labels`,
           {
@@ -4184,15 +4290,28 @@ export default {
       }
     } catch (err) {
       console.error('FR-160: Email send error:', err);
-      // AC5: Comment on GitHub issue about email error
       await fetch(
         `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/comments`,
         {
           method: 'POST',
           headers: { 'Authorization': `token ${env.GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'SortingHistory-Bug-Webhook' },
-          body: JSON.stringify({ body: `⚠️ Email delivery error for ${email.substring(0, 3)}***@${email.split('@')[1] || '...'}: ${err}` }),
+          body: JSON.stringify({ body: `\u26A0\uFE0F Email delivery error for ${email.substring(0, 3)}***@${email.split('@')[1] || '...'}: ${err}` }),
         }
       ).catch(() => {});
+    }
+
+    // BBE-003: settle the reservation. On success: mark used. On failure:
+    // release the code back to the pool so it can be re-issued.
+    if (reservation && env2) {
+      try {
+        if (sendOk) {
+          await bbeMarkUsed(env2, reservation.code);
+        } else {
+          await bbeReleaseCode(env2, reservation.code, `intake email send failed for #${issueNumber}`);
+        }
+      } catch (err) {
+        console.error(`BBE-003: failed to settle reservation ${reservation.code}:`, err);
+      }
     }
   },
 

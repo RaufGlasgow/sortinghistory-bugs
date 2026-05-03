@@ -765,6 +765,49 @@ export async function dispatchReward(
 }
 
 // ---------------------------------------------------------------------------
+// BBE-003: Intake-time code reservation
+//
+// Per BBE-003 (PM/Ra'uf decision Option B, 2026-05-02): the intake
+// acknowledgement email must embed the reward code immediately at bug
+// submission time, not on a later `approved-for-fix` label event. This
+// helper reserves a code from the bug-bounty pool without sending any
+// email -- the caller (the intake `sendThankYouEmail` in index.ts)
+// renders its own template and is responsible for calling
+// `markUsed(env, code)` on Resend success or `releaseCode(...)` on
+// failure.
+//
+// Duplicate-protection: `claimCode` already guards on bug_report_id,
+// so a retry for the same issue returns null after the first claim.
+// The label-trigger `dispatchReward` path remains in place as a
+// safety net; it will return `duplicate` once intake has already
+// burned a code for the issue.
+// ---------------------------------------------------------------------------
+
+export interface IntakeReservation {
+  code: string;
+  redeemUrl: string;
+  expirationISO: string;
+}
+
+export async function reserveIntakeCode(
+  env: BBEEnv,
+  bugReportId: string,
+  recipientEmail: string
+): Promise<IntakeReservation | null> {
+  const code = await claimCode(env, bugReportId, recipientEmail);
+  if (!code) return null;
+  const redeemBase =
+    env.BBE_REDEEM_BASE ||
+    'https://apps.apple.com/redeem?ctx=offercodes&id=6760428599&code=';
+  const redeemUrl = `${redeemBase}${encodeURIComponent(code)}`;
+  const expirationMs = env.BBE_BATCH_EXPIRATION ? Date.parse(env.BBE_BATCH_EXPIRATION) : NaN;
+  const expirationISO = Number.isFinite(expirationMs)
+    ? new Date(expirationMs).toISOString().slice(0, 10)
+    : 'TBD';
+  return { code, redeemUrl, expirationISO };
+}
+
+// ---------------------------------------------------------------------------
 // Resend wrapper + alerts
 // ---------------------------------------------------------------------------
 
