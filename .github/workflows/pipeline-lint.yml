@@ -1,0 +1,97 @@
+name: pipeline-lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run custom hook tests
+        env:
+          IN_SCOPE_TS: workers/bug-webhook/fixture.ts
+          IN_SCOPE_TS_BAD: workers/bug-webhook/bad-fixture.ts
+          IN_SCOPE_WF: .github/workflows/bug-fixture.yml
+          IN_SCOPE_MD: .github/workflows/bug-fixture.md
+        run: bash Scripts/lint/tests/run-tests.sh
+      # PIPE-LINT v1: scope to the LAST commit on the branch only. Existing
+      # codebase is dirty by design (see story "Out of scope": no retro
+      # cleanup). Each new commit must be clean; long-lived feature branches
+      # aren't penalized for accumulated pre-existing violations. A separate
+      # cleanup story will lift this to --all-files later.
+      - name: Install pre-commit
+        run: pip install pre-commit==4.6.0
+      - name: Run pre-commit on last commit
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          # Resolve the actual tip-of-branch commit (PRs run on a synthetic
+          # merge commit, so HEAD~1 is the merge base, not the prior branch tip).
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            head_sha="$PR_HEAD_SHA"
+          else
+            head_sha="$(git rev-parse HEAD)"
+          fi
+          if [ -z "$head_sha" ]; then
+            echo "No HEAD sha resolvable; skipping."
+            exit 0
+          fi
+          # Fetch the branch tip explicitly (PR checkout uses the merge ref).
+          git fetch --no-tags --prune --depth=2 origin "$head_sha" 2>/dev/null || true
+          parent="$(git rev-parse "$head_sha^" 2>/dev/null || true)"
+          if [ -z "$parent" ] || [ "$parent" = "0000000000000000000000000000000000000000" ]; then
+            echo "No parent for $head_sha; skipping (root commit)."
+            exit 0
+          fi
+          # Per-commit enforcement on the actual top commit of the branch.
+          pre-commit run --from-ref "$parent" --to-ref "$head_sha" --show-diff-on-failure
+
+      # zizmor runs separately because the pre-commit hook audits the whole
+      # repo regardless of file filters. Scoped to last-commit workflow files.
+      - name: Compute changed workflow files
+        id: changed-wf
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            head_sha="$PR_HEAD_SHA"
+          else
+            head_sha="$(git rev-parse HEAD)"
+          fi
+          parent="$(git rev-parse "$head_sha^" 2>/dev/null || true)"
+          if [ -z "$parent" ]; then
+            files=""
+          else
+            files=$(git diff --name-only --diff-filter=AM "$parent" "$head_sha" -- '.github/workflows/*.yml' '.github/workflows/*.yaml' || true)
+          fi
+          {
+            echo "files<<EOF"
+            printf '%s\n' "$files"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+      - name: Install zizmor
+        if: steps.changed-wf.outputs.files != ''
+        run: pipx install zizmor==1.17.0
+      - name: zizmor (changed workflows only)
+        if: steps.changed-wf.outputs.files != ''
+        env:
+          FILES: ${{ steps.changed-wf.outputs.files }}
+        run: |
+          # shellcheck disable=SC2086
+          zizmor --persona=regular --no-online-audits --min-severity=medium $FILES

@@ -1,0 +1,40 @@
+# PIPE-LINT - adopted-OSS lint stack for the bug automation repo.
+# Story: docs/stories/PIPE-LINT.story.codify-dont-repeat-rules.md
+# All hook revs are pinned. Update via: `pre-commit autoupdate` then PR.
+
+repos:
+  # GitHub Actions YAML linter (syntax + expression length + common mistakes)
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # NOTE: zizmor (GitHub Actions security audits) is run in CI only, not as a
+  # pre-commit hook. The pre-commit hook audits the whole repo regardless of
+  # the file list passed in, which conflicts with PIPE-LINT v1 scope (no retro
+  # cleanup of existing workflows). See .github/workflows/pipeline-lint.yml.
+
+  # Shell script linting (catches unquoted vars, `|| true` swallowing, etc.)
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        # Exclude vendored / third-party shell if any
+        exclude: ^(node_modules/|Scripts/sdk/dist/)
+
+  # Custom regex hooks. Kept as local scripts so we own the source.
+  - repo: local
+    hooks:
+      - id: ascii-ids
+        name: ASCII-only IDs and refs
+        entry: Scripts/lint/check-ascii-ids.sh
+        language: script
+        types_or: [markdown, yaml, swift, ts, javascript, shell, python]
+        exclude: ^(node_modules/|Data/Events/|Localization/)
+      - id: no-claude-models
+        name: No Claude model names in bug pipeline
+        entry: Scripts/lint/check-no-claude-models.sh
+        language: script
+        # Run on every file; the script itself filters by scope path.
+        pass_filenames: true
+        exclude: ^(node_modules/|Scripts/sdk/dist/)
