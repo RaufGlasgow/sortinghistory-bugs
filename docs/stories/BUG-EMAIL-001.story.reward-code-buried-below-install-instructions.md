@@ -23,7 +23,7 @@ related: BBE-001-v4 (install instructions block), BUG-229 (mitigation that added
 5. Reader scrolls down expecting the code immediately after step 3, but the code block is rendered AFTER all 6 install steps complete and a styled div boundary closes
 6. Code block is `Your code: 88AXXFWW6RM38L8WNX [Redeem now]`, blue-bordered
 
-Reporter's verbatim title (#253): "Just started program the email have have the Ward code" — paraphrased: "Just started [the rewards] program. The email [should] have [the re]ward code [but I can't find it]."
+Reporter's verbatim title (#253): "Just started program the email have have the Ward code" - paraphrased: "Just started [the rewards] program. The email [should] have [the re]ward code [but I can't find it]."
 
 ## Root Cause
 
@@ -44,7 +44,7 @@ Two reporters filed #253 in the same morning (2026-05-05) reporting the same con
 
 1. **AC1 (code visible at-a-glance):** The redemption code block is rendered BEFORE the install-instructions block in the HTML email body. Reader sees the code within the first viewport on a typical iPhone email render.
 2. **AC2 (install instructions still present):** All 6 install steps remain in the email, in the same order, with the same EN/DE/PT/NL/ES translations. No content lost.
-3. **AC3 (locale step 3 wording grace period):** The locale step 3 text still says "the code below" / "den unten stehenden Code" / "código de abajo" / "onderstaande code" / "código em baixo" — these become slightly imprecise when the code is also above. Acceptable trade-off until LOC ships translated step 3 text. LOC follow-up filed in BUG-EMAIL-001-LOC-FU.
+3. **AC3 (locale step 3 wording grace period):** The locale step 3 text still says "the code below" / "den unten stehenden Code" / "código de abajo" / "onderstaande code" / "código em baixo" - these become slightly imprecise when the code is also above. Acceptable trade-off until LOC ships translated step 3 text. LOC follow-up filed in BUG-EMAIL-001-LOC-FU.
 4. **AC4 (notification continuity smoke):** Per CLAUDE.md standing rule, change touching email path requires same-commit smoke. Smoke: import `renderRewardEmail`, render with synthetic inputs, send rendered HTML to raufglasgow@gmail.com via Resend, verify code block appears above install block in actual delivered email.
 5. **AC5 (unit test):** Add a vitest case that renders the email and asserts `html.indexOf(codeLabel) < html.indexOf(installHeading)` for at least the EN locale.
 6. **AC6 (no logic changes):** Pure HTML structure reorder. No changes to email-locale selection, code generation, redemption URL construction, or the install instructions text itself.

@@ -1,5 +1,5 @@
 /**
- * BBE-001 — Bug Bounty Reward Email Automation
+ * BBE-001 - Bug Bounty Reward Email Automation
  *
  * Extends the existing bug-webhook Cloudflare Worker to automatically send a
  * 2-month Historian reward code to validated bug reporters when their issue
@@ -593,15 +593,17 @@ export function renderRewardEmail(inputs: RewardEmailInputs): RenderedEmail {
     '',
     ...s.installSteps.map((step, i) => `${i + 1}. ${step}`),
   ].join('\n');
+  // BUG-EMAIL-001: text fallback mirrors HTML order - code block precedes
+  // install block so plain-text readers also see the code at-a-glance.
   const text = [
     s.heading,
     '',
     bodyText,
     '',
-    installText,
-    '',
     `${s.codeLabel}: ${code}`,
     `${s.cta}: ${redeemUrl}`,
+    '',
+    installText,
     '',
     s.footnote,
     '',
@@ -728,7 +730,7 @@ export async function dispatchReward(
       bug_report_id: bugReportId,
       recipient_email: email,
     });
-    await sendAlert(env, 'BBE: inventory empty', `Could not reserve a code for bug #${bugReportId} — no available codes in bug_bounty_codes.`);
+    await sendAlert(env, 'BBE: inventory empty', `Could not reserve a code for bug #${bugReportId} - no available codes in bug_bounty_codes.`);
     return { status: 'inventory-empty' };
   }
 
