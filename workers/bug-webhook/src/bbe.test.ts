@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   claimCode,
   fetchReporterEmailFromIssue,
+  renderRewardEmail,
   type BBEEnv,
   type D1DatabaseLike,
   type D1PreparedStatementLike,
@@ -170,5 +171,43 @@ describe('fetchReporterEmailFromIssue', () => {
       gameLanguage: 'pt',
       locale: 'pt_PT',
     });
+  });
+});
+
+describe('renderRewardEmail (BUG-EMAIL-001)', () => {
+  const inputs = {
+    code: 'TESTCODE12345',
+    redeemUrl: 'https://apps.apple.com/redeem?code=TESTCODE12345',
+    issueNumber: 999,
+    expirationISO: '2026-10-24',
+  };
+
+  for (const locale of ['en', 'de', 'pt', 'nl', 'es'] as const) {
+    it(`places the code block before the install instructions block (${locale})`, () => {
+      const out = renderRewardEmail({ ...inputs, locale });
+      const codePos = out.html.indexOf('TESTCODE12345');
+      const installHeadingMarker = locale === 'en' ? 'Before redeeming this code:' :
+        locale === 'de' ? 'Bevor du diesen Code' :
+        locale === 'pt' ? 'Antes de resgatar' :
+        locale === 'nl' ? 'Voordat je deze code' :
+        'Antes de canjear';
+      const installPos = out.html.indexOf(installHeadingMarker);
+      expect(codePos).toBeGreaterThan(0);
+      expect(installPos).toBeGreaterThan(0);
+      expect(codePos).toBeLessThan(installPos);
+    });
+  }
+
+  it('still includes all 6 install steps in the HTML', () => {
+    const out = renderRewardEmail({ ...inputs, locale: 'en' });
+    expect(out.html).toContain('Install Sorting History from the App Store first.');
+    expect(out.html).toContain('email hello@sortinghistory.com with your Apple ID email');
+  });
+
+  it('keeps the subject and code value unchanged from prior behavior', () => {
+    const out = renderRewardEmail({ ...inputs, locale: 'en' });
+    expect(out.subject).toBe('Thanks for the bug report - 2 months of Historian on us');
+    expect(out.html).toContain('TESTCODE12345');
+    expect(out.html).toContain('apps.apple.com/redeem?code=TESTCODE12345');
   });
 });
