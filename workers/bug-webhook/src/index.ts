@@ -10,6 +10,7 @@
  */
 
 import { truncateDescription, WORKER_LABEL_TO_SDK_CLASSIFICATION } from './utils';
+import { sendOwnerEmail } from './lib/send-owner-email';
 import {
   initSchemaAndImport as bbeInitSchemaAndImport,
   dispatchReward as bbeDispatchReward,
@@ -1391,18 +1392,11 @@ async function handlePipelineComment(request: Request, env: Env): Promise<Respon
       let emailFailed = false;
       let emailStatus = '';
       if (reporterEmail && env.RESEND_API_KEY) {
-        try {
-          const emailResp = await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              from: 'Sorting History <hello@sortinghistory.com>',
-              to: [reporterEmail],
-              subject: `Re: Your bug report #${issueNumber} \u2014 Sorting History`,
-              html: `
+        const emailResult = await sendOwnerEmail(env, {
+          from: 'Sorting History <hello@sortinghistory.com>',
+          to: reporterEmail,
+          subject: `Re: Your bug report #${issueNumber} \u2014 Sorting History`,
+          html: `
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"></head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
@@ -1421,21 +1415,15 @@ async function handlePipelineComment(request: Request, env: Env): Promise<Respon
     <p>\u2014 The Sorting History Team</p>
   </div>
 </body></html>`,
-            }),
-          });
-          if (emailResp.ok) {
-            emailSent = true;
-            emailStatus = ' Email sent to reporter.';
-            console.log(`Pipeline comment: follow-up email sent to ${reporterEmail.substring(0, 3)}***`);
-          } else {
-            emailFailed = true;
-            emailStatus = ` Email to reporter failed (${emailResp.status}).`;
-            console.error(`Pipeline comment: email send failed: ${emailResp.status}`);
-          }
-        } catch (emailErr) {
+        });
+        if (emailResult.ok) {
+          emailSent = true;
+          emailStatus = ' Email sent to reporter.';
+          console.log(`Pipeline comment: follow-up email sent to ${reporterEmail.substring(0, 3)}***`);
+        } else {
           emailFailed = true;
-          emailStatus = ' Email to reporter failed.';
-          console.error('Pipeline comment: email error:', emailErr);
+          emailStatus = ` Email to reporter failed (${emailResult.error || 'unknown'}).`;
+          console.error(`Pipeline comment: email send failed: ${emailResult.error}`);
         }
       } else if (!reporterEmail) {
         emailStatus = ' No contact email on this issue \u2014 reporter cannot be reached.';
@@ -3921,18 +3909,11 @@ async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: s
     return;
   }
 
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: 'Sorting History Pipeline <hello@sortinghistory.com>',
-        to: [env.OWNER_EMAIL],
-        subject: 'ALERT: Digest dispatch failed',
-        html: `
+  const result = await sendOwnerEmail(env, {
+    from: 'Sorting History Pipeline <hello@sortinghistory.com>',
+    to: env.OWNER_EMAIL,
+    subject: 'ALERT: Digest dispatch failed',
+    html: `
           <h2 style="color:#cb2431;">Digest Dispatch Failed</h2>
           <p><strong>Time:</strong> ${triggeredAt}</p>
           <p><strong>Error:</strong></p>
@@ -3941,16 +3922,12 @@ async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: s
           <hr style="margin-top:24px;border:none;border-top:1px solid #e1e4e8;">
           <p style="color:#6a737d;font-size:12px;">Sorting History Pipeline Monitor</p>
         `,
-      }),
-    });
+  });
 
-    if (res.ok) {
-      console.log('Digest failure alert email sent');
-    } else {
-      console.error(`Digest failure alert email failed: ${res.status}`);
-    }
-  } catch (emailErr) {
-    console.error('Digest failure alert email error:', emailErr);
+  if (result.ok) {
+    console.log('Digest failure alert email sent');
+  } else {
+    console.error(`Digest failure alert email failed: ${result.error}`);
   }
 }
 
@@ -4144,30 +4121,22 @@ export default {
     } catch { /* proceed if label check fails */ }
 
     try {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: 'Sorting History <hello@sortinghistory.com>',
-          to: [email],
-          subject,
-          html,
-        }),
+      const result = await sendOwnerEmail(env, {
+        from: 'Sorting History <hello@sortinghistory.com>',
+        to: email,
+        subject,
+        html,
       });
 
-      if (!res.ok) {
-        const err = await res.text();
-        console.error(`FR-160: Email send failed: ${res.status} ${err}`);
+      if (!result.ok) {
+        console.error(`FR-160: Email send failed: ${result.error}`);
         // AC5: Comment on GitHub issue about email failure
         await fetch(
           `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}/comments`,
           {
             method: 'POST',
             headers: { 'Authorization': `token ${env.GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'User-Agent': 'SortingHistory-Bug-Webhook' },
-            body: JSON.stringify({ body: `⚠️ Email delivery failed for ${email.substring(0, 3)}***@${email.split('@')[1] || '...'} (${res.status})` }),
+            body: JSON.stringify({ body: `⚠️ Email delivery failed for ${email.substring(0, 3)}***@${email.split('@')[1] || '...'} (${result.error || 'unknown'})` }),
           }
         ).catch(() => {});
       } else {
@@ -4266,30 +4235,18 @@ export default {
   <p style="color: #666; font-size: 13px; margin: 0;">Approve/Reject buttons return when PIPE-FIX ships. During interim: read the issue, dispatch dev sub-agent, or fix locally.</p>
 </body></html>`;
 
-    try {
-      const res = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${env.RESEND_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: 'Sorting History <hello@sortinghistory.com>',
-          to: [env.OWNER_EMAIL],
-          subject,
-          html,
-        }),
-      });
+    const result = await sendOwnerEmail(env, {
+      from: 'Sorting History <hello@sortinghistory.com>',
+      to: env.OWNER_EMAIL,
+      subject,
+      html,
+    });
 
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        console.error(`BUG_${issueNumber}_NOTIFY_FAILED: ${res.status} ${errText}`);
-        return;
-      }
-      console.log(`PIPE-NOTIFY: owner notify email sent for #${issueNumber}`);
-    } catch (err) {
-      console.error(`BUG_${issueNumber}_NOTIFY_FAILED: ${err instanceof Error ? err.message : String(err)}`);
+    if (!result.ok) {
+      console.error(`BUG_${issueNumber}_NOTIFY_FAILED: ${result.error}`);
+      return;
     }
+    console.log(`PIPE-NOTIFY: owner notify email sent for #${issueNumber}`);
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
