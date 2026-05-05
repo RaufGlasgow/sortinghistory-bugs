@@ -568,13 +568,17 @@ export function renderRewardEmail(inputs: RewardEmailInputs): RenderedEmail {
   <div style="padding:30px 0;">
     <h2 style="color:#1a3a4a;">${escapeHtml(s.heading)}</h2>
     ${s.body.map((p) => `<p style="line-height:1.6;">${escapeHtml(p)}</p>`).join('')}
-    <div style="background:#fff8e1;border-left:4px solid #d97706;padding:16px 20px;margin:24px 0;border-radius:0 8px 8px 0;">
-      <p style="margin:0 0 12px;line-height:1.6;"><strong>${escapeHtml(s.installHeading)}</strong></p>
-      <ol style="margin:0;padding-left:20px;">${installStepsHtml}</ol>
-    </div>
+    <!-- BUG-EMAIL-001 (2026-05-05): code block rendered BEFORE install instructions
+         so the redemption code is visible at-a-glance. Two from-app reporters filed
+         issue #253 in one morning because the code was buried after ~700 words of
+         install/troubleshooting prose. -->
     <div style="background:#f0f7fa;border-left:4px solid #1a3a4a;padding:16px 20px;margin:24px 0;border-radius:0 8px 8px 0;">
       <p style="margin:0 0 8px;line-height:1.6;"><strong>${escapeHtml(s.codeLabel)}:</strong> <code style="font-size:18px;letter-spacing:1px;">${escapeHtml(code)}</code></p>
       <p style="margin:0;"><a href="${escapeAttr(redeemUrl)}" style="display:inline-block;padding:10px 16px;background:#1a3a4a;color:#fff;text-decoration:none;border-radius:6px;">${escapeHtml(s.cta)}</a></p>
+    </div>
+    <div style="background:#fff8e1;border-left:4px solid #d97706;padding:16px 20px;margin:24px 0;border-radius:0 8px 8px 0;">
+      <p style="margin:0 0 12px;line-height:1.6;"><strong>${escapeHtml(s.installHeading)}</strong></p>
+      <ol style="margin:0;padding-left:20px;">${installStepsHtml}</ol>
     </div>
     <p style="color:#666;font-size:13px;line-height:1.6;">${escapeHtml(s.footnote)}</p>
   </div>
