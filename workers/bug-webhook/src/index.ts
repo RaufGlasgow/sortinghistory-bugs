@@ -4059,31 +4059,31 @@ export default {
       : isPT ? 'Obrigado pelo teu feedback \u2014 Sorting History'
       : isNL ? 'Bedankt voor je feedback \u2014 Sorting History'
       : isES ? 'Gracias por tu feedback \u2014 Sorting History'
-      : 'Thank you for your feedback \u2014 Sorting History';
+      : 'Thanks for the bug report \u2014 we\u2019re on it';
 
     const heading = isDE ? 'Vielen Dank!'
       : isPT ? 'Muito obrigado!'
       : isNL ? 'Heel erg bedankt!'
       : isES ? '\u00A1Muchas gracias!'
-      : 'Thank you!';
+      : 'Hi,';
 
     const bodyText = isDE ? 'Wir haben deinen Fehlerbericht erhalten und sch\u00E4tzen es sehr, dass du dir die Zeit genommen hast. Dein Feedback hilft uns, Sorting History f\u00FCr alle zu verbessern.'
       : isPT ? 'Recebemos o teu relat\u00F3rio e agradecemos por teres dedicado o teu tempo. O teu feedback ajuda-nos a melhorar o Sorting History para todos.'
       : isNL ? 'We hebben je bugrapport ontvangen en waarderen het enorm dat je de tijd hebt genomen. Je feedback helpt ons Sorting History voor iedereen te verbeteren.'
       : isES ? 'Recibimos tu reporte y agradecemos que te hayas tomado el tiempo. Tu feedback nos ayuda a mejorar Sorting History para todos.'
-      : 'We received your bug report and truly appreciate you taking the time. Your feedback helps us make Sorting History better for everyone.';
+      : 'Thanks for taking the time to report a bug in Sorting History. Reports from real players are the fastest way we improve the game, and we genuinely appreciate it.<br><br>We can usually address bug fixes within a week. You\u2019ll only hear from us again about this report if it\u2019s confirmed, if we need more info, or when the fix ships.';
 
     const rewardText = isDE ? 'Als Dankesch\u00F6n m\u00F6chten wir dir einen Monat Historian-Zugang schenken \u2014 alle Epic-Kategorien und den exklusiven History Pinpoint Spielmodus.'
       : isPT ? 'Como agradecimento, gostar\u00EDamos de te oferecer um m\u00EAs de acesso Historian \u2014 todas as categorias Epic e o modo de jogo exclusivo History Pinpoint.'
       : isNL ? 'Als bedankje willen we je een maand Historian-toegang aanbieden \u2014 alle Epic-categorie\u00EBn en de exclusieve History Pinpoint-spelmodus.'
       : isES ? 'Como agradecimiento, nos gustar\u00EDa ofrecerte un mes de acceso Historian \u2014 todas las categor\u00EDas Epic y el modo de juego exclusivo History Pinpoint.'
-      : 'As a thank you, we\u2019d like to offer you one month of Historian access \u2014 all Epic categories and the exclusive History Pinpoint game mode.';
+      : 'If your report leads to a fix or improvement, we\u2019ll send you a one-time code for 2 free months of Historian Monthly as a thank-you, along with confirmation that the fix has shipped.';
 
     const closing = isDE ? 'Das Sorting History Team'
       : isPT ? 'A equipa do Sorting History'
       : isNL ? 'Het Sorting History team'
       : isES ? 'El equipo de Sorting History'
-      : 'The Sorting History Team';
+      : 'The Sorting History team';
 
     const html = `
 <!DOCTYPE html>
