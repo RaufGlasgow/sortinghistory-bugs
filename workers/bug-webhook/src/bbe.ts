@@ -1,5 +1,5 @@
 /**
- * BBE-001 — Bug Bounty Reward Email Automation
+ * BBE-001 - Bug Bounty Reward Email Automation
  *
  * Extends the existing bug-webhook Cloudflare Worker to automatically send a
  * 2-month Historian reward code to validated bug reporters when their issue
