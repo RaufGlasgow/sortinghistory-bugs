@@ -4055,28 +4055,28 @@ export default {
     const isNL = lang.startsWith('nl');
     const isES = lang.startsWith('es');
 
-    const subject = isDE ? 'Danke f\u00FCr dein Feedback \u2014 Sorting History'
-      : isPT ? 'Obrigado pelo teu feedback \u2014 Sorting History'
-      : isNL ? 'Bedankt voor je feedback \u2014 Sorting History'
-      : isES ? 'Gracias por tu feedback \u2014 Sorting History'
+    const subject = isDE ? 'Danke f\u00FCr den Bugreport \u2014 wir sind dran'
+      : isPT ? 'Obrigado pelo bug report \u2014 estamos nisso'
+      : isNL ? 'Dank voor je melding \u2014 we pakken het op'
+      : isES ? 'Gracias por el reporte \u2014 lo revisamos'
       : 'Thanks for the bug report \u2014 we\u2019re on it';
 
-    const heading = isDE ? 'Vielen Dank!'
-      : isPT ? 'Muito obrigado!'
-      : isNL ? 'Heel erg bedankt!'
-      : isES ? '\u00A1Muchas gracias!'
+    const heading = isDE ? 'Hallo,'
+      : isPT ? 'Ol\u00E1,'
+      : isNL ? 'Hoi,'
+      : isES ? 'Hola,'
       : 'Hi,';
 
-    const bodyText = isDE ? 'Wir haben deinen Fehlerbericht erhalten und sch\u00E4tzen es sehr, dass du dir die Zeit genommen hast. Dein Feedback hilft uns, Sorting History f\u00FCr alle zu verbessern.'
-      : isPT ? 'Recebemos o teu relat\u00F3rio e agradecemos por teres dedicado o teu tempo. O teu feedback ajuda-nos a melhorar o Sorting History para todos.'
-      : isNL ? 'We hebben je bugrapport ontvangen en waarderen het enorm dat je de tijd hebt genomen. Je feedback helpt ons Sorting History voor iedereen te verbeteren.'
-      : isES ? 'Recibimos tu reporte y agradecemos que te hayas tomado el tiempo. Tu feedback nos ayuda a mejorar Sorting History para todos.'
+    const bodyText = isDE ? 'Danke, dass du dir die Zeit genommen hast, einen Fehler in Sorting History zu melden. Berichte von echten Spielern sind der schnellste Weg, das Spiel zu verbessern, und wir sch\u00E4tzen das wirklich.<br><br>Fehler beheben wir meist innerhalb einer Woche. Du h\u00F6rst nur dann wieder von uns zu diesem Bericht, wenn er best\u00E4tigt ist, wenn wir mehr Infos brauchen, oder wenn der Fix ausgeliefert wird.'
+      : isPT ? 'Obrigado por dedicares o teu tempo a reportar um bug no Sorting History. Os relat\u00F3rios de jogadores reais s\u00E3o a forma mais r\u00E1pida de melhorarmos o jogo, e agradecemos genuinamente.<br><br>Normalmente conseguimos corrigir bugs numa semana. S\u00F3 voltar\u00E1s a ouvir de n\u00F3s sobre este relat\u00F3rio se for confirmado, se precisarmos de mais informa\u00E7\u00F5es, ou quando o fix for lan\u00E7ado.'
+      : isNL ? 'Bedankt dat je de tijd hebt genomen om een bug in Sorting History te melden. Rapporten van echte spelers zijn de snelste manier waarop we het spel verbeteren, en we waarderen het oprecht.<br><br>Bugfixes regelen we meestal binnen een week. Je hoort alleen weer van ons over dit rapport als het bevestigd is, als we meer info nodig hebben, of wanneer de fix wordt uitgebracht.'
+      : isES ? 'Gracias por tomarte el tiempo de reportar un error en Sorting History. Los reportes de jugadores reales son la forma m\u00E1s r\u00E1pida en que mejoramos el juego, y de verdad lo apreciamos.<br><br>Normalmente podemos resolver errores en una semana. Solo volver\u00E1s a saber de nosotros sobre este reporte si se confirma, si necesitamos m\u00E1s informaci\u00F3n, o cuando el fix se publique.'
       : 'Thanks for taking the time to report a bug in Sorting History. Reports from real players are the fastest way we improve the game, and we genuinely appreciate it.<br><br>We can usually address bug fixes within a week. You\u2019ll only hear from us again about this report if it\u2019s confirmed, if we need more info, or when the fix ships.';
 
-    const rewardText = isDE ? 'Als Dankesch\u00F6n m\u00F6chten wir dir einen Monat Historian-Zugang schenken \u2014 alle Epic-Kategorien und den exklusiven History Pinpoint Spielmodus.'
-      : isPT ? 'Como agradecimento, gostar\u00EDamos de te oferecer um m\u00EAs de acesso Historian \u2014 todas as categorias Epic e o modo de jogo exclusivo History Pinpoint.'
-      : isNL ? 'Als bedankje willen we je een maand Historian-toegang aanbieden \u2014 alle Epic-categorie\u00EBn en de exclusieve History Pinpoint-spelmodus.'
-      : isES ? 'Como agradecimiento, nos gustar\u00EDa ofrecerte un mes de acceso Historian \u2014 todas las categor\u00EDas Epic y el modo de juego exclusivo History Pinpoint.'
+    const rewardText = isDE ? 'Wenn dein Bericht zu einem Fix oder einer Verbesserung f\u00FChrt, schicken wir dir einen einmaligen Code f\u00FCr 2 Monate Historiker Monatlich gratis und die Best\u00E4tigung, dass der Fix live ist.'
+      : isPT ? 'Se o teu relat\u00F3rio levar a um fix ou melhoria, enviamos-te um c\u00F3digo \u00FAnico para 2 meses gr\u00E1tis de Historiador Mensal como agradecimento, junto com a confirma\u00E7\u00E3o de que o fix foi lan\u00E7ado.'
+      : isNL ? 'Als je rapport leidt tot een fix of verbetering, sturen we je als bedankje een eenmalige code voor 2 maanden gratis Historicus Maandelijks, plus bevestiging dat de fix is uitgebracht.'
+      : isES ? 'Si tu reporte lleva a un fix o mejora, te enviaremos un c\u00F3digo \u00FAnico para 2 meses gratis de Historiador Mensual como agradecimiento, junto con la confirmaci\u00F3n de que el fix se public\u00F3.'
       : 'If your report leads to a fix or improvement, we\u2019ll send you a one-time code for 2 free months of Historian Monthly as a thank-you, along with confirmation that the fix has shipped.';
 
     const closing = isDE ? 'Das Sorting History Team'
