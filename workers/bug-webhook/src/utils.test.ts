@@ -126,8 +126,8 @@ describe('WORKER_LABEL_TO_SDK_CLASSIFICATION', () => {
   });
 
   it('does not include routing/state labels', () => {
-    // These are NOT classifications — they must NOT appear in the mapping
-    const routingLabels = ['needs-claude-code', 'low-confidence'];
+    // These are NOT classifications - they must NOT appear in the mapping
+    const routingLabels = ['needs-agent-fix', 'low-confidence'];
     for (const label of routingLabels) {
       expect(WORKER_LABEL_TO_SDK_CLASSIFICATION[label],
         `Routing label '${label}' should NOT be in the classification mapping`

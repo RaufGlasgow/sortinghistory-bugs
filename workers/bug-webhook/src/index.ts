@@ -264,7 +264,7 @@ function isSDKContentPipelineIssue(labels: GitHubLabel[]): boolean {
 
 // Check if issue labels indicate an SDK bug fix pipeline issue (code/UX bugs)
 // SDK-BF.3: ui-bug, gameplay-bug, content-duplication, and code-bug are routed through sdk-bug-fix
-// content-duplication = duplicate events across JSON files — Opus removes the duplicate
+// content-duplication = duplicate events across JSON files - the dedup agent removes the duplicate
 // Story 3.14: Added code-bug (was missing, preventing approved code-bug issues from routing to fix pipeline)
 function isSDKBugFixIssue(labels: GitHubLabel[]): boolean {
   return labels.some(l => l.name === 'ui-bug' || l.name === 'gameplay-bug' || l.name === 'content-duplication' || l.name === 'code-bug');
@@ -958,7 +958,7 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
 
         if (!pr) {
           // ── Gate 1: No PR → dispatch agent-fix ──
-          console.log(`PIPE-SDK-4: Gate 1 approve for issue #${issueNumber} — dispatching agent-fix`);
+          console.log(`PIPE-SDK-4: Gate 1 approve for issue #${issueNumber} - dispatching agent-fix`);
 
           const dispatchResp = await fetch(`https://api.github.com/repos/${env.BUGS_REPO}/dispatches`, {
             method: 'POST',
@@ -1021,7 +1021,7 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
 
         } else {
           // ── Gate 2: PR exists → merge it ──
-          console.log(`PIPE-SDK-4: Gate 2 approve for issue #${issueNumber} — merging PR #${pr.number}`);
+          console.log(`PIPE-SDK-4: Gate 2 approve for issue #${issueNumber} - merging PR #${pr.number}`);
 
           // Merge the PR via GitHub API
           const mergeResp = await fetch(
@@ -1071,7 +1071,7 @@ async function handlePipelineAction(request: Request, env: Env, action: string):
         }
 
       } else if (action === 'reject') {
-        // PIPE-SDK-4: Reject at either gate — close PR (if any), delete branch, close issue
+        // PIPE-SDK-4: Reject at either gate - close PR (if any), delete branch, close issue
         const pr = await getPRForIssue(env, issueNum);
 
         if (pr) {
@@ -1650,7 +1650,7 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
           // Routing/state labels that must be cleared on reclassification
           'sdk-routed', 'needs-human-review', 'needs-handoff-review',
           'needs-dev-handoff', 'category-mismatch', 'fix-failed', 'approved', 'pr-created',
-          'needs-claude-code', 'low-confidence',
+          'needs-agent-fix', 'low-confidence',
         ];
         for (const label of ALL_CLASSIFICATION_LABELS) {
           await fetch(
@@ -1666,7 +1666,7 @@ async function handlePipelineRework(request: Request, env: Env): Promise<Respons
           body: JSON.stringify({ labels: [newClassification] }),
         });
 
-        // 4. PIPE-SDK-4: Route to agent-fix (simplified — agent handles classification internally)
+        // 4. PIPE-SDK-4: Route to agent-fix (simplified - agent handles classification internally)
         // Feature requests and handoff-only classifications still get special handling
         const HANDOFF_ONLY_LABELS = new Set([
           'crash-bug', 'purchase-error', 'data-corruption',
@@ -1919,7 +1919,7 @@ async function dispatchRepositoryEvent(
 }
 
 // ---------------------------------------------------------------------------
-// PIPE-011 AC-8/AC-9: Review Build — build + upload to TestFlight (Empty Cup)
+// PIPE-011 AC-8/AC-9: Review Build - build + upload to TestFlight (Empty Cup)
 // ---------------------------------------------------------------------------
 
 function reviewBuildConfirmHtml(issueNumber: string, token: string, actionUrl: string): string {
@@ -2095,7 +2095,7 @@ async function handleReviewBuild(request: Request, env: Env): Promise<Response> 
 }
 
 // ---------------------------------------------------------------------------
-// PIPE-011 AC-15: Approve Merge — merge PR to main after device testing
+// PIPE-011 AC-15: Approve Merge - merge PR to main after device testing
 // ---------------------------------------------------------------------------
 
 function approveMergeConfirmHtml(issueNumber: string, token: string, actionUrl: string): string {
