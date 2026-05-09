@@ -2616,13 +2616,15 @@ async function handleCommandsWebhook(
 
   const eventType = request.headers.get('X-GitHub-Event');
 
-  // BBE-002: Reward-code dispatch on `issues.labeled` events.
-  // Fires when GitHub adds the trigger label (`approved-for-fix` or the
-  // legacy `approved` label) to an issue. Runs in background so GitHub
-  // does not retry on Resend latency.
+  // BBE-002 / BUG-REWARD-EMAIL-OVERHAUL-001 (Option C):
+  // Reward-code dispatch on `issues.labeled` events. Fires ONLY when the
+  // `reward-approved` label is added (manual PM action). The previous
+  // `approved-for-fix` / `approved` triggers were retired so reward
+  // dispatch no longer fires automatically when triage approves a fix.
+  // Runs in background so GitHub does not retry on Resend latency.
   if (eventType === 'issues' && payload.action === 'labeled') {
     const labelName = ((payload as { label?: { name?: string } }).label?.name || '').toLowerCase();
-    if (labelName === 'approved-for-fix' || labelName === 'approved') {
+    if (labelName === 'reward-approved') {
       const env2 = bbeEnv(env);
       const issueNumber = (payload as { issue?: { number?: number } }).issue?.number;
       if (!env2 || !issueNumber) {
@@ -4045,7 +4047,7 @@ export default {
   },
 
   // FR-160: Send thank-you email to bug reporters via Resend
-  async sendThankYouEmail(env: Env, email: string, gameLanguage: string | undefined, locale: string | undefined, issueNumber: number): Promise<void> {
+  async sendThankYouEmail(env: Env, email: string, gameLanguage: string | undefined, locale: string | undefined, issueNumber: number, confirmationId?: string): Promise<void> {
     if (!env.RESEND_API_KEY || !email) return;
 
     // Prefer in-game language over device locale for email language
@@ -4098,7 +4100,7 @@ export default {
     <div style="background: #f0f7fa; border-left: 4px solid #1a3a4a; padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0;">
       <p style="margin: 0; line-height: 1.6;">${rewardText}</p>
     </div>
-    <p style="color: #666; font-size: 14px;">Bug #${issueNumber}</p>
+    <p style="color: #666; font-size: 14px;">${confirmationId ?? `Bug #${issueNumber}`}</p>
   </div>
   <div style="border-top: 1px solid #e0e0e0; padding-top: 16px; text-align: center; color: #999; font-size: 13px;">
     <p>\u2014 ${closing}</p>
@@ -4386,7 +4388,7 @@ export default {
           if (isOwner) {
             console.log(`FR-160: Skipping thank-you for owner-submitted duplicate report #${dedup.originalIssueNumber}`);
           } else {
-            ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, dedup.originalIssueNumber));
+            ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, dedup.originalIssueNumber, confirmationId));
           }
         }
 
@@ -4447,7 +4449,7 @@ export default {
         if (isOwner) {
           console.log(`FR-160: Skipping thank-you for owner-submitted report #${result.issueNumber}`);
         } else {
-          ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, result.issueNumber));
+          ctx.waitUntil(this.sendThankYouEmail(env, report.email, report.deviceInfo?.gameLanguage, report.deviceInfo?.locale, result.issueNumber, confirmationId));
         }
       }
 
