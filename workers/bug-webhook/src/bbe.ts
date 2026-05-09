@@ -384,6 +384,12 @@ export interface RewardEmailInputs {
   issueNumber: number;
   expirationISO: string;        // Human-readable expiration date (YYYY-MM-DD)
   locale: EmailLocale;
+  /**
+   * BUG-REWARD-EMAIL-OVERHAUL-001 (Option C): when present, surfaces in the
+   * footnote in place of the legacy `Bug #<issueNumber>` reference. Falls
+   * back to `Bug #<issueNumber>` if not provided.
+   */
+  confirmationId?: string;
 }
 
 export interface RenderedEmail {
@@ -402,162 +408,55 @@ export function detectLocale(langOrLocale: string | undefined | null): EmailLoca
 }
 
 /**
- * Render the reward email in one of 5 locales. Copy intentionally makes NO
- * claim about stacking behavior for existing Historian subscribers (D4).
+ * BUG-REWARD-EMAIL-OVERHAUL-001 (Option C, ships 2026-05-09):
+ *
+ * Locked single-template English reward email. The previous 5-locale
+ * implementation (with TestFlight-vs-App-Store install instructions) is
+ * REPLACED by a single English template that warns every recipient up front
+ * about the Apple intro-trial stacking constraint — Apple silently ignores
+ * a redemption performed during an active free trial of the same
+ * subscription, so we tell every recipient to wait until their trial ends
+ * before redeeming.
+ *
+ * Translation of this new template to DE/PT/NL/ES is tracked in follow-up
+ * story BUG-REWARD-EMAIL-LOCALE-OVERHAUL-001. Until that ships, all
+ * locales receive the English template — accepted temporary regression.
+ *
+ * The `locale` parameter is preserved on the input shape (still consumed by
+ * `detectLocale` upstream) but ignored by this renderer for now.
+ *
+ * The runtime case-1/case-2 split (calling Apple to detect whether the
+ * recipient is currently on an intro trial and customising the email) is
+ * deferred to ASR-REWARD-RUNTIME-CASE-SPLIT-001. Apple has no email-keyed
+ * subscription-state API, so that split requires `originalTransactionId`
+ * plumbing on the iOS side first.
  */
 export function renderRewardEmail(inputs: RewardEmailInputs): RenderedEmail {
-  const { code, redeemUrl, issueNumber, expirationISO, locale } = inputs;
+  // TODO: BUG-REWARD-EMAIL-LOCALE-OVERHAUL-001 - translate this template to
+  // DE/PT/NL/ES; locale param currently ignored (Option C ships English-only
+  // for all 5 locales as accepted temporary regression).
+  const { code, redeemUrl, issueNumber, expirationISO, confirmationId } = inputs;
+  const reference = confirmationId ?? `Bug #${issueNumber}`;
 
-  // BUG-229 mitigation (2026-04-25): every email MUST include install
-  // instructions BEFORE the redemption link. Source of truth (verbatim):
-  // SortingHistory-mkt/docs/marketing/OfferCode-Distribution-Walkthrough-20260425.md
-  // Section 2.1 "Required text block (English)".
-  // BBE-001-v4 v2 (2026-04-26): de/pt/nl/es translations applied per
-  // docs/marketing/handoffs/Mara-BBE-001-v4-Install-Instructions-20260426-v2.md.
-  // Tier name "Historian" is locale-mapped to match LocalizationHelper.swift:
-  //   de -> Historiker (line 3308), pt -> Historiador (line 4642),
-  //   nl -> Historicus (line 5977), es -> Historiador (line 2141, reversed 2026-04-26).
-  const installHeadingEN = 'Before redeeming this code:';
-  const installStepsEN: string[] = [
-    'Install Sorting History from the App Store first. Search "Sorting History" in the App Store on your iPhone or iPad, or use this link: https://apps.apple.com/app/id6760428599. Tap Get / Install / Update.',
-    'If you currently have Sorting History installed via TestFlight, you must ALSO install the App Store version. They are separate builds and your subscription only activates in the App Store version. The App Store install will replace or coexist with the TestFlight install.',
-    'Then redeem the code. Open the App Store app -> tap your profile photo (top right) -> tap Redeem Gift Card or Code -> enter the code below. Alternatively, tap the redemption link included in this message.',
-    'Open Sorting History (the App Store version, not TestFlight) and wait up to 60 seconds for your Historian subscription to appear. You can confirm it under Settings -> Subscription inside the app.',
-    'If your subscription does not activate within 60 seconds: force-quit Sorting History (swipe up from the home indicator and flick the app card up) and reopen it. Then check Settings -> Subscription again.',
-    'If after 5 minutes you still do not see Historian access: email hello@sortinghistory.com with your Apple ID email and the date you redeemed. Do NOT redeem the code a second time - it is a one-time code and will fail.',
-  ];
+  // OPTION-C BODY START
+  // Locked English subject + body. The legacy multi-locale install-instructions
+  // template lived here previously; it has been removed in favour of the
+  // single-template overhaul. See header docblock for follow-up story IDs.
+  const subject = 'Your fix shipped — and a thank-you from Sorting History';
 
-  const installHeadingDE = 'Bevor du diesen Code einlöst:';
-  const installStepsDE: string[] = [
-    'Installiere Sorting History zuerst aus dem App Store. Suche "Sorting History" im App Store auf deinem iPhone oder iPad, oder nutze diesen Link: https://apps.apple.com/app/id6760428599. Tippe auf Laden / Installieren / Aktualisieren.',
-    'Falls du Sorting History aktuell über TestFlight installiert hast, musst du AUSSERDEM die App-Store-Version installieren. Es sind getrennte Builds, und dein Abonnement wird nur in der App-Store-Version aktiviert. Die App-Store-Installation ersetzt die TestFlight-Installation oder existiert parallel dazu.',
-    'Löse danach den Code ein. Öffne die App-Store-App -> tippe auf dein Profilbild (oben rechts) -> tippe auf Geschenkkarte oder Code einlösen -> gib den unten stehenden Code ein. Alternativ kannst du den Einlöse-Link in dieser Nachricht antippen.',
-    'Öffne Sorting History (die App-Store-Version, nicht TestFlight) und warte bis zu 60 Sekunden, bis dein Historiker-Abonnement erscheint. Du kannst dies in der App unter Einstellungen -> Abonnement bestätigen.',
-    'Falls dein Abonnement nicht innerhalb von 60 Sekunden aktiviert wird: Beende Sorting History vollständig (vom Home-Indikator nach oben wischen und die App-Karte nach oben wegschieben) und öffne die App erneut. Prüfe dann erneut Einstellungen -> Abonnement.',
-    'Falls du nach 5 Minuten immer noch keinen Historiker-Zugang siehst: Schreibe eine E-Mail an hello@sortinghistory.com mit deiner Apple-ID-E-Mail und dem Datum der Einlösung. Löse den Code NICHT ein zweites Mal ein - es ist ein Einmal-Code und schlägt fehl.',
-  ];
+  const para1 = `Hi,`;
+  const para2 = `Quick update — the bug you reported (${reference}) has been fixed and the update is live on the App Store.`;
+  const para3 = `We genuinely couldn't keep improving Sorting History without players who take the time to write reports like yours, so as a thank-you we'd like to give you 2 free months of Historian Monthly:`;
 
-  const installHeadingPT = 'Antes de resgatar este código:';
-  const installStepsPT: string[] = [
-    'Instala primeiro o Sorting History a partir da App Store. Procura "Sorting History" na App Store no teu iPhone ou iPad, ou usa este link: https://apps.apple.com/app/id6760428599. Toca em Obter / Instalar / Atualizar.',
-    'Se tens o Sorting History instalado atualmente via TestFlight, tens TAMBÉM de instalar a versão da App Store. São builds separadas e a tua subscrição só é ativada na versão da App Store. A instalação da App Store substitui a instalação do TestFlight ou coexiste com ela.',
-    'Depois resgata o código. Abre a app App Store -> toca na tua foto de perfil (canto superior direito) -> toca em Resgatar cartão-presente ou código -> introduz o código em baixo. Em alternativa, toca no link de resgate incluído nesta mensagem.',
-    'Abre o Sorting History (a versão da App Store, não a do TestFlight) e aguarda até 60 segundos para que a tua subscrição Historiador apareça. Podes confirmar em Definições -> Subscrição dentro da app.',
-    'Se a tua subscrição não for ativada em 60 segundos: força o encerramento do Sorting History (desliza para cima a partir do indicador de início e empurra o cartão da app para cima) e reabre. Depois verifica novamente Definições -> Subscrição.',
-    'Se ao fim de 5 minutos ainda não vires acesso Historiador: envia um e-mail para hello@sortinghistory.com com o e-mail da tua Apple ID e a data em que resgataste. NÃO resgates o código uma segunda vez - é um código de utilização única e irá falhar.',
-  ];
+  const warningHeading = 'Important — please read this before redeeming:';
+  const warningPara1 = `If you're currently in an Apple free trial of Historian (the 1-week trial that comes with a fresh Historian Monthly subscription), Apple's system will silently ignore the code if you redeem it during your trial. You'll get nothing.`;
+  const warningPara2 = `Save this email and redeem the code AFTER your current trial ends. You can find your trial end date in iPhone Settings → [your name] → Subscriptions → Historian Monthly.`;
+  const warningPara3 = `If you're NOT in a free trial (you've been a Historian subscriber for a while, or you've never subscribed), the code applies normally — open the link in Safari on iPhone or iPad, no waiting needed.`;
 
-  const installHeadingNL = 'Voordat je deze code inwisselt:';
-  const installStepsNL: string[] = [
-    'Installeer Sorting History eerst vanuit de App Store. Zoek "Sorting History" in de App Store op je iPhone of iPad, of gebruik deze link: https://apps.apple.com/app/id6760428599. Tik op Download / Installeer / Werk bij.',
-    'Als je Sorting History momenteel via TestFlight hebt geïnstalleerd, moet je OOK de App Store-versie installeren. Het zijn aparte builds en je abonnement wordt alleen geactiveerd in de App Store-versie. De App Store-installatie vervangt de TestFlight-installatie of bestaat ernaast.',
-    'Wissel daarna de code in. Open de App Store-app -> tik op je profielfoto (rechtsboven) -> tik op Cadeaubon of code inwisselen -> voer de onderstaande code in. Of tik op de inwissellink in dit bericht.',
-    'Open Sorting History (de App Store-versie, niet TestFlight) en wacht tot 60 seconden totdat je Historicus-abonnement verschijnt. Je kunt dit bevestigen onder Instellingen -> Abonnement in de app.',
-    'Als je abonnement niet binnen 60 seconden wordt geactiveerd: sluit Sorting History geforceerd af (veeg omhoog vanaf de home-indicator en schuif de app-kaart krachtig naar boven) en open de app opnieuw. Controleer daarna opnieuw Instellingen -> Abonnement.',
-    'Zie je na 5 minuten nog steeds geen Historicus-toegang: stuur een e-mail naar hello@sortinghistory.com met je Apple ID-e-mailadres en de datum waarop je de code hebt ingewisseld. Wissel de code NIET een tweede keer in - het is een eenmalige code en zal mislukken.',
-  ];
-
-  const installHeadingES = 'Antes de canjear este código:';
-  const installStepsES: string[] = [
-    'Instala primero Sorting History desde la App Store. Busca "Sorting History" en la App Store de tu iPhone o iPad, o usa este enlace: https://apps.apple.com/app/id6760428599. Toca Obtener / Instalar / Actualizar.',
-    'Si actualmente tienes Sorting History instalado mediante TestFlight, TAMBIÉN debes instalar la versión de la App Store. Son builds separados y tu suscripción solo se activa en la versión de la App Store. La instalación de la App Store reemplaza la instalación de TestFlight o coexiste con ella.',
-    'Después canjea el código. Abre la app App Store -> toca tu foto de perfil (arriba a la derecha) -> toca Canjear tarjeta de regalo o código -> ingresa el código de abajo. O bien, toca el enlace de canje incluido en este mensaje.',
-    'Abre Sorting History (la versión de la App Store, no TestFlight) y espera hasta 60 segundos a que aparezca tu suscripción Historiador. Puedes confirmarlo en Ajustes -> Suscripción dentro de la app.',
-    'Si tu suscripción no se activa en 60 segundos: cierra Sorting History por completo (desliza hacia arriba desde el indicador de inicio y arrastra la tarjeta de la app hacia arriba) y vuelve a abrirla. Luego revisa de nuevo Ajustes -> Suscripción.',
-    'Si después de 5 minutos todavía no ves acceso Historiador: envía un correo a hello@sortinghistory.com con el correo de tu Apple ID y la fecha en que canjeaste. NO canjees el código una segunda vez - es un código de un solo uso y fallará.',
-  ];
-
-  const strings: Record<EmailLocale, {
-    subject: string;
-    heading: string;
-    body: string[];
-    installHeading: string;
-    installSteps: string[];
-    cta: string;
-    codeLabel: string;
-    footnote: string;
-    signoff: string;
-  }> = {
-    en: {
-      subject: `Thanks for the bug report - 2 months of Historian on us`,
-      heading: 'Thank you for making Sorting History better',
-      body: [
-        `We received your bug report and truly appreciate you taking the time. I built Sorting History for my family, and every bug report makes it better for everyone.`,
-        `As a thank you, here are 2 months of Historian, our premier subscription, free with no auto-renewal. You will not be charged. Historian unlocks all Epic categories and the exclusive History Pinpoint game mode.`,
-      ],
-      installHeading: installHeadingEN,
-      installSteps: installStepsEN,
-      cta: 'Redeem now',
-      codeLabel: 'Your code',
-      footnote: `One redemption per Apple ID. Code expires ${expirationISO}. Bug #${issueNumber}.`,
-      signoff: '- Sorting History',
-    },
-    // de/pt/nl/es body copy: BBE-001 v3 translations applied 2026-04-25
-    // (handoff: docs/marketing/handoffs/Mara-BBE-Reward-Email-v3-Translations-20260425.md).
-    // installHeading/installSteps remain EN pending Mara translation handoff.
-    de: {
-      subject: `Danke für deinen Fehlerbericht - 2 Monate Historian gehen auf uns`,
-      heading: 'Danke, dass du Sorting History besser machst',
-      body: [
-        `Wir haben deinen Fehlerbericht erhalten und sind dir wirklich dankbar, dass du dir die Zeit genommen hast. Ich habe Sorting History für meine Familie entwickelt, und jeder Fehlerbericht macht es für alle besser.`,
-        `Als Dankeschön schenken wir dir 2 Monate Historian, unser Premium-Abonnement - kostenlos und ohne automatische Verlängerung. Es wird dir nichts berechnet. Historian schaltet alle epischen Kategorien und den exklusiven Spielmodus History Pinpoint frei.`,
-      ],
-      installHeading: installHeadingDE,
-      installSteps: installStepsDE,
-      cta: 'Jetzt einlösen',
-      codeLabel: 'Dein Code',
-      footnote: `Eine Einlösung pro Apple-ID. Code läuft am ${expirationISO} ab. Bug #${issueNumber}.`,
-      signoff: '- Sorting History',
-    },
-    pt: {
-      subject: `Obrigado pelo relato de bug - 2 meses de Historian por conta da casa`,
-      heading: 'Obrigado por tornares o Sorting History melhor',
-      body: [
-        `Recebemos o teu relato de bug e agradecemos sinceramente o tempo que dedicaste. Criei o Sorting History para a minha família, e cada relato de bug torna o jogo melhor para todos.`,
-        `Como agradecimento, aqui ficam 2 meses de Historian, a nossa subscrição premium - grátis e sem renovação automática. Não há qualquer cobrança. O Historian desbloqueia todas as categorias épicas e o modo de jogo exclusivo History Pinpoint.`,
-      ],
-      installHeading: installHeadingPT,
-      installSteps: installStepsPT,
-      cta: 'Resgatar agora',
-      codeLabel: 'O teu código',
-      footnote: `Um resgate por ID Apple. O código expira em ${expirationISO}. Bug #${issueNumber}.`,
-      signoff: '- Sorting History',
-    },
-    nl: {
-      subject: `Bedankt voor je bugrapport - 2 maanden Historian van ons`,
-      heading: 'Bedankt dat je Sorting History beter maakt',
-      body: [
-        `We hebben je bugrapport ontvangen en we waarderen het echt dat je de tijd hebt genomen. Ik heb Sorting History voor mijn familie gemaakt, en elk bugrapport maakt het voor iedereen beter.`,
-        `Als bedankje geven we je 2 maanden Historian, ons premium-abonnement - gratis en zonder automatische verlenging. Je wordt niets in rekening gebracht. Historian ontgrendelt alle epische categorieën en de exclusieve spelmodus History Pinpoint.`,
-      ],
-      installHeading: installHeadingNL,
-      installSteps: installStepsNL,
-      cta: 'Nu inwisselen',
-      codeLabel: 'Jouw code',
-      footnote: `Eén inwisseling per Apple ID. Code verloopt op ${expirationISO}. Bug #${issueNumber}.`,
-      signoff: '- Sorting History',
-    },
-    es: {
-      subject: `Gracias por el reporte de bug - 2 meses de Historian de regalo`,
-      heading: 'Gracias por hacer mejor Sorting History',
-      body: [
-        `Recibimos tu reporte de bug y de verdad apreciamos que te hayas tomado el tiempo. Creé Sorting History para mi familia, y cada reporte de bug lo mejora para todos.`,
-        `Como agradecimiento, aquí tienes 2 meses de Historian, nuestra suscripción premium - gratis y sin renovación automática. No se te cobrará nada. Historian desbloquea todas las categorías épicas y el modo de juego exclusivo History Pinpoint.`,
-      ],
-      installHeading: installHeadingES,
-      installSteps: installStepsES,
-      cta: 'Canjear ahora',
-      codeLabel: 'Tu código',
-      footnote: `Un canje por ID de Apple. El código vence el ${expirationISO}. Bug #${issueNumber}.`,
-      signoff: '- Sorting History',
-    },
-  };
-
-  const s = strings[locale];
-
-  const installStepsHtml = s.installSteps
-    .map((step) => `<li style="margin:0 0 8px;line-height:1.6;">${escapeHtml(step)}</li>`)
-    .join('');
+  const closingPara = `If anything doesn't work as expected, just reply to this email.`;
+  const signoff = '— The Sorting History team';
+  const cta = 'Redeem code';
+  const footnote = `One redemption per Apple ID. Code expires ${expirationISO}. ${reference}.`;
 
   const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -566,46 +465,50 @@ export function renderRewardEmail(inputs: RewardEmailInputs): RenderedEmail {
     <h1 style="color:#1a3a4a;margin:0;font-size:24px;">Sorting History</h1>
   </div>
   <div style="padding:30px 0;">
-    <h2 style="color:#1a3a4a;">${escapeHtml(s.heading)}</h2>
-    ${s.body.map((p) => `<p style="line-height:1.6;">${escapeHtml(p)}</p>`).join('')}
+    <p style="line-height:1.6;">${escapeHtml(para1)}</p>
+    <p style="line-height:1.6;">${escapeHtml(para2)}</p>
+    <p style="line-height:1.6;">${escapeHtml(para3)}</p>
+    <p style="margin:16px 0 24px;"><a href="${escapeAttr(redeemUrl)}" style="display:inline-block;padding:12px 20px;background:#1a3a4a;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">${escapeHtml(cta)}</a></p>
     <div style="background:#fff8e1;border-left:4px solid #d97706;padding:16px 20px;margin:24px 0;border-radius:0 8px 8px 0;">
-      <p style="margin:0 0 12px;line-height:1.6;"><strong>${escapeHtml(s.installHeading)}</strong></p>
-      <ol style="margin:0;padding-left:20px;">${installStepsHtml}</ol>
+      <p style="margin:0 0 12px;line-height:1.6;"><strong>${escapeHtml(warningHeading)}</strong></p>
+      <p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(warningPara1)}</p>
+      <p style="margin:0 0 12px;line-height:1.6;">${escapeHtml(warningPara2)}</p>
+      <p style="margin:0;line-height:1.6;">${escapeHtml(warningPara3)}</p>
     </div>
-    <div style="background:#f0f7fa;border-left:4px solid #1a3a4a;padding:16px 20px;margin:24px 0;border-radius:0 8px 8px 0;">
-      <p style="margin:0 0 8px;line-height:1.6;"><strong>${escapeHtml(s.codeLabel)}:</strong> <code style="font-size:18px;letter-spacing:1px;">${escapeHtml(code)}</code></p>
-      <p style="margin:0;"><a href="${escapeAttr(redeemUrl)}" style="display:inline-block;padding:10px 16px;background:#1a3a4a;color:#fff;text-decoration:none;border-radius:6px;">${escapeHtml(s.cta)}</a></p>
-    </div>
-    <p style="color:#666;font-size:13px;line-height:1.6;">${escapeHtml(s.footnote)}</p>
-  </div>
-  <div style="border-top:1px solid #e0e0e0;padding-top:16px;text-align:center;color:#999;font-size:13px;">
-    <p>${escapeHtml(s.signoff)}</p>
+    <p style="line-height:1.6;">${escapeHtml(closingPara)}</p>
+    <p style="line-height:1.6;">${escapeHtml(signoff)}</p>
+    <p style="color:#666;font-size:13px;line-height:1.6;margin-top:24px;">${escapeHtml(footnote)}</p>
+    <p style="color:#666;font-size:12px;line-height:1.6;word-break:break-all;">If the button does not work, copy this link into Safari: ${escapeHtml(redeemUrl)}</p>
   </div>
 </body></html>`;
 
-  const bodyText = s.body.join('\n\n');
-  const installText = [
-    s.installHeading,
-    '',
-    ...s.installSteps.map((step, i) => `${i + 1}. ${step}`),
-  ].join('\n');
   const text = [
-    s.heading,
+    para1,
     '',
-    bodyText,
+    para2,
     '',
-    installText,
+    para3,
     '',
-    `${s.codeLabel}: ${code}`,
-    `${s.cta}: ${redeemUrl}`,
+    `${cta}: ${redeemUrl}`,
     '',
-    s.footnote,
+    warningHeading,
     '',
-    s.signoff,
+    warningPara1,
+    '',
+    warningPara2,
+    '',
+    warningPara3,
+    '',
+    closingPara,
+    '',
+    signoff,
+    '',
+    footnote,
   ].join('\n');
 
-  return { subject: s.subject, html, text };
+  return { subject, html, text };
 }
+
 
 function escapeHtml(v: string): string {
   return v
@@ -658,8 +561,12 @@ export async function dispatchReward(
 ): Promise<RewardDispatchResult> {
   const labels = new Set((inputs.labels || []).map((l) => (l || '').toLowerCase()));
 
-  // D2: trigger on `approved-for-fix` OR legacy `approved` (integration branch).
-  const isTrigger = labels.has('approved-for-fix') || labels.has('approved');
+  // BUG-REWARD-EMAIL-OVERHAUL-001 (Option C, supersedes D2):
+  // Trigger ONLY on `reward-approved` label. The legacy `approved-for-fix`
+  // and `approved` triggers were retired — those labels no longer dispatch
+  // a reward email. PM applies `reward-approved` manually after confirming
+  // the fix shipped to the App Store.
+  const isTrigger = labels.has('reward-approved');
   if (!isTrigger) {
     return { status: 'skipped', reason: 'no trigger label' };
   }
