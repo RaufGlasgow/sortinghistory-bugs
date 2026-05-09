@@ -432,6 +432,9 @@ export function detectLocale(langOrLocale: string | undefined | null): EmailLoca
  * plumbing on the iOS side first.
  */
 export function renderRewardEmail(inputs: RewardEmailInputs): RenderedEmail {
+  // TODO: BUG-REWARD-EMAIL-LOCALE-OVERHAUL-001 - translate this template to
+  // DE/PT/NL/ES; locale param currently ignored (Option C ships English-only
+  // for all 5 locales as accepted temporary regression).
   const { code, redeemUrl, issueNumber, expirationISO, confirmationId } = inputs;
   const reference = confirmationId ?? `Bug #${issueNumber}`;
 
