@@ -1393,7 +1393,7 @@ async function handlePipelineComment(request: Request, env: Env): Promise<Respon
       let emailStatus = '';
       if (reporterEmail && env.RESEND_API_KEY) {
         const emailResult = await sendOwnerEmail(env, {
-          from: 'Sorting History <hello@sortinghistory.com>',
+          from: 'Sorting History <hello@send.sortinghistory.com>',
           to: reporterEmail,
           subject: `Re: Your bug report #${issueNumber} \u2014 Sorting History`,
           html: `
@@ -3912,7 +3912,7 @@ async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: s
   }
 
   const result = await sendOwnerEmail(env, {
-    from: 'Sorting History Pipeline <hello@sortinghistory.com>',
+    from: 'Sorting History Pipeline <hello@send.sortinghistory.com>',
     to: env.OWNER_EMAIL,
     subject: 'ALERT: Digest dispatch failed',
     html: `
@@ -4124,7 +4124,7 @@ export default {
 
     try {
       const result = await sendOwnerEmail(env, {
-        from: 'Sorting History <hello@sortinghistory.com>',
+        from: 'Sorting History <hello@send.sortinghistory.com>',
         to: email,
         subject,
         html,
@@ -4238,7 +4238,7 @@ export default {
 </body></html>`;
 
     const result = await sendOwnerEmail(env, {
-      from: 'Sorting History <hello@sortinghistory.com>',
+      from: 'Sorting History <hello@send.sortinghistory.com>',
       to: env.OWNER_EMAIL,
       subject,
       html,

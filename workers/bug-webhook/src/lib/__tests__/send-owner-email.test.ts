@@ -30,7 +30,7 @@ describe('sendOwnerEmail', () => {
     expect(body.to).toEqual(['recipient@example.com']);
     expect(body.subject).toBe('hi');
     expect(body.html).toBe('<p>body</p>');
-    expect(body.from).toBe('Sorting History <hello@sortinghistory.com>');
+    expect(body.from).toBe('Sorting History <hello@send.sortinghistory.com>');
   });
 
   it('returns no-api-key when RESEND_API_KEY missing, does not call fetch', async () => {
@@ -86,10 +86,10 @@ describe('sendOwnerEmail', () => {
     fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
     await sendOwnerEmail(
       { RESEND_API_KEY: 'rk_test', OWNER_EMAIL: 'owner@example.com' },
-      { subject: 's', html: 'h', from: 'Sorting History Pipeline <hello@sortinghistory.com>' }
+      { subject: 's', html: 'h', from: 'Sorting History Pipeline <hello@send.sortinghistory.com>' }
     );
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
-    expect(body.from).toBe('Sorting History Pipeline <hello@sortinghistory.com>');
+    expect(body.from).toBe('Sorting History Pipeline <hello@send.sortinghistory.com>');
   });
 
   it('catches network errors and returns ok:false', async () => {
