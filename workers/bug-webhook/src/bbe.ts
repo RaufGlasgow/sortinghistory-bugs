@@ -691,7 +691,7 @@ async function sendResendEmail(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'Sorting History <hello@sortinghistory.com>',
+        from: 'Sorting History <hello@send.sortinghistory.com>',
         to: [msg.to],
         subject: msg.subject,
         html: msg.html,
