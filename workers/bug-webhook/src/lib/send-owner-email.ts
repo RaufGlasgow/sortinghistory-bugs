@@ -14,12 +14,12 @@
 // Default `from` matches the most common existing call site (3 of 4 used this address).
 // Callers can override via payload.from to preserve any pre-existing per-site value.
 
-// FROM must be on send.sortinghistory.com (Resend-verified subdomain).
-// Root sortinghistory.com SPF only authorizes Cloudflare Email Routing,
-// not Resend/SES — sends from <X>@sortinghistory.com SPF-fail and land
-// in spam. send.sortinghistory.com SPF includes amazonses.com (Resend's
-// underlying provider) and FBL MX is feedback-smtp.us-east-1.amazonses.com.
-const DEFAULT_FROM = 'Sorting History <hello@send.sortinghistory.com>';
+// FROM uses apex sortinghistory.com (Resend-verified) until send.sortinghistory.com
+// subdomain DNS is fully published. Apex SPF-fails (only Cloudflare Email Routing
+// is authorized) so sends land in spam. Subdomain rollout pending DNS work.
+// Reverted 2026-05-10 from 'hello@send.sortinghistory.com' which 403'd as
+// "domain is not verified" — see BUG-PIPELINE-EMAIL-DOWN-001 in handoff.
+const DEFAULT_FROM = 'Sorting History <hello@sortinghistory.com>';
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 const ERROR_BODY_MAX = 500;
 
