@@ -92,6 +92,27 @@ describe('sendOwnerEmail', () => {
     expect(body.from).toBe('Sorting History Pipeline <hello@sortinghistory.com>');
   });
 
+  it('includes plain-text fallback (text field) when payload.text provided', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    await sendOwnerEmail(
+      { RESEND_API_KEY: 'rk_test', OWNER_EMAIL: 'owner@example.com' },
+      { subject: 's', html: '<p>h</p>', text: 'plain body' }
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.text).toBe('plain body');
+    expect(body.html).toBe('<p>h</p>');
+  });
+
+  it('omits text field when payload.text not provided', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+    await sendOwnerEmail(
+      { RESEND_API_KEY: 'rk_test', OWNER_EMAIL: 'owner@example.com' },
+      { subject: 's', html: '<p>h</p>' }
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect('text' in body).toBe(false);
+  });
+
   it('catches network errors and returns ok:false', async () => {
     fetchMock.mockRejectedValueOnce(new Error('network down'));
     const result = await sendOwnerEmail(

@@ -18,7 +18,7 @@
 // subdomain DNS is fully published. Apex SPF-fails (only Cloudflare Email Routing
 // is authorized) so sends land in spam. Subdomain rollout pending DNS work.
 // Reverted 2026-05-10 from 'hello@send.sortinghistory.com' which 403'd as
-// "domain is not verified" — see BUG-PIPELINE-EMAIL-DOWN-001 in handoff.
+// "domain is not verified" - see BUG-PIPELINE-EMAIL-DOWN-001 in handoff.
 const DEFAULT_FROM = 'Sorting History <hello@sortinghistory.com>';
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 const ERROR_BODY_MAX = 500;
@@ -33,6 +33,10 @@ export interface SendOwnerEmailPayload {
   subject: string;
   html: string;
   from?: string;
+  // Optional plain-text fallback. Some mail clients (e.g. text-only modes,
+  // accessibility tooling) render this in preference to HTML. Setting both
+  // is recommended for player-facing transactional mail.
+  text?: string;
 }
 
 export interface SendOwnerEmailResult {
@@ -69,6 +73,7 @@ export async function sendOwnerEmail(
         to: [recipient],
         subject: payload.subject,
         html: payload.html,
+        ...(payload.text ? { text: payload.text } : {}),
       }),
     });
 
