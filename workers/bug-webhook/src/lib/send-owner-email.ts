@@ -33,6 +33,10 @@ export interface SendOwnerEmailPayload {
   subject: string;
   html: string;
   from?: string;
+  // Optional plain-text fallback. Some mail clients (e.g. text-only modes,
+  // accessibility tooling) render this in preference to HTML. Setting both
+  // is recommended for player-facing transactional mail.
+  text?: string;
 }
 
 export interface SendOwnerEmailResult {
@@ -69,6 +73,7 @@ export async function sendOwnerEmail(
         to: [recipient],
         subject: payload.subject,
         html: payload.html,
+        ...(payload.text ? { text: payload.text } : {}),
       }),
     });
 

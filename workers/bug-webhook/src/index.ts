@@ -4069,17 +4069,53 @@ export default {
       : isES ? 'Hola,'
       : 'Hi,';
 
-    const bodyText = isDE ? 'Danke, dass du dir die Zeit genommen hast, einen Fehler in Sorting History zu melden. Berichte von echten Spielern sind der schnellste Weg, das Spiel zu verbessern, und wir sch\u00E4tzen das wirklich.<br><br>Fehler beheben wir meist innerhalb einer Woche. Du h\u00F6rst nur dann wieder von uns zu diesem Bericht, wenn er best\u00E4tigt ist, wenn wir mehr Infos brauchen, oder wenn der Fix ausgeliefert wird.'
-      : isPT ? 'Obrigado por dedicares o teu tempo a reportar um bug no Sorting History. Os relat\u00F3rios de jogadores reais s\u00E3o a forma mais r\u00E1pida de melhorarmos o jogo, e agradecemos genuinamente.<br><br>Normalmente conseguimos corrigir bugs numa semana. S\u00F3 voltar\u00E1s a ouvir de n\u00F3s sobre este relat\u00F3rio se for confirmado, se precisarmos de mais informa\u00E7\u00F5es, ou quando o fix for lan\u00E7ado.'
-      : isNL ? 'Bedankt dat je de tijd hebt genomen om een bug in Sorting History te melden. Rapporten van echte spelers zijn de snelste manier waarop we het spel verbeteren, en we waarderen het oprecht.<br><br>Bugfixes regelen we meestal binnen een week. Je hoort alleen weer van ons over dit rapport als het bevestigd is, als we meer info nodig hebben, of wanneer de fix wordt uitgebracht.'
-      : isES ? 'Gracias por tomarte el tiempo de reportar un error en Sorting History. Los reportes de jugadores reales son la forma m\u00E1s r\u00E1pida en que mejoramos el juego, y de verdad lo apreciamos.<br><br>Normalmente podemos resolver errores en una semana. Solo volver\u00E1s a saber de nosotros sobre este reporte si se confirma, si necesitamos m\u00E1s informaci\u00F3n, o cuando el fix se publique.'
-      : 'Thanks for taking the time to report a bug in Sorting History. Reports from real players are the fastest way we improve the game, and we genuinely appreciate it.<br><br>We can usually address bug fixes within a week. You\u2019ll only hear from us again about this report if it\u2019s confirmed, if we need more info, or when the fix ships.';
+    // BUG-REWARD-DISABLE-AUTO-ISSUANCE-001: structured copy with locked
+    // "What happens next" bullets. No inline redeem links, no offer code in
+    // this email -- that path is gated behind the manual `reward-approved`
+    // label (see BBE-002 in this file). The reward sentence below is a
+    // PROMISE of a possible future reward, not an offer code.
+    const leadIn = isDE ? 'Danke, dass du dir die Zeit genommen hast, einen Fehler in Sorting History zu melden. Berichte von echten Spielern sind der schnellste Weg, das Spiel zu verbessern, und wir sch\u00E4tzen das wirklich.'
+      : isPT ? 'Obrigado por dedicares o teu tempo a reportar um bug no Sorting History. Os relat\u00F3rios de jogadores reais s\u00E3o a forma mais r\u00E1pida de melhorarmos o jogo, e agradecemos genuinamente.'
+      : isNL ? 'Bedankt dat je de tijd hebt genomen om een bug in Sorting History te melden. Rapporten van echte spelers zijn de snelste manier waarop we het spel verbeteren, en we waarderen het oprecht.'
+      : isES ? 'Gracias por tomarte el tiempo de reportar un error en Sorting History. Los reportes de jugadores reales son la forma m\u00E1s r\u00E1pida en que mejoramos el juego, y de verdad lo apreciamos.'
+      : 'Thanks for taking the time to report a bug in Sorting History. Reports from real players are the fastest way we improve the game, and we genuinely appreciate it.';
 
-    const rewardText = isDE ? 'Wenn dein Bericht zu einem Fix oder einer Verbesserung f\u00FChrt, schicken wir dir einen einmaligen Code f\u00FCr 2 Monate Historiker Monatlich gratis und die Best\u00E4tigung, dass der Fix live ist.'
+    const whatNextLabel = isDE ? 'Was als N\u00E4chstes passiert:'
+      : isPT ? 'O que acontece a seguir:'
+      : isNL ? 'Wat er nu gebeurt:'
+      : isES ? 'Qu\u00E9 sucede a continuaci\u00F3n:'
+      : 'What happens next:';
+
+    const bulletWeek = isDE ? 'Fehler beheben wir meist innerhalb einer Woche.'
+      : isPT ? 'Normalmente conseguimos corrigir bugs numa semana.'
+      : isNL ? 'Bugfixes regelen we meestal binnen een week.'
+      : isES ? 'Normalmente podemos resolver errores en una semana.'
+      : 'We can usually address bug fixes within a week.';
+
+    const bulletReward = isDE ? 'Wenn dein Bericht zu einem Fix oder einer Verbesserung f\u00FChrt, schicken wir dir einen einmaligen Code f\u00FCr 2 Monate Historiker Monatlich gratis als Dankesch\u00F6n, zusammen mit der Best\u00E4tigung, dass der Fix ausgeliefert ist.'
       : isPT ? 'Se o teu relat\u00F3rio levar a um fix ou melhoria, enviamos-te um c\u00F3digo \u00FAnico para 2 meses gr\u00E1tis de Historiador Mensal como agradecimento, junto com a confirma\u00E7\u00E3o de que o fix foi lan\u00E7ado.'
       : isNL ? 'Als je rapport leidt tot een fix of verbetering, sturen we je als bedankje een eenmalige code voor 2 maanden gratis Historicus Maandelijks, plus bevestiging dat de fix is uitgebracht.'
       : isES ? 'Si tu reporte lleva a un fix o mejora, te enviaremos un c\u00F3digo \u00FAnico para 2 meses gratis de Historiador Mensual como agradecimiento, junto con la confirmaci\u00F3n de que el fix se public\u00F3.'
       : 'If your report leads to a fix or improvement, we\u2019ll send you a one-time code for 2 free months of Historian Monthly as a thank-you, along with confirmation that the fix has shipped.';
+
+    const bulletOnlyHear = isDE ? 'Du h\u00F6rst nur dann wieder von uns zu diesem Bericht, wenn er best\u00E4tigt ist, wenn wir mehr Infos brauchen, oder wenn der Fix ausgeliefert wird.'
+      : isPT ? 'S\u00F3 voltar\u00E1s a ouvir de n\u00F3s sobre este relat\u00F3rio se for confirmado, se precisarmos de mais informa\u00E7\u00F5es, ou quando o fix for lan\u00E7ado.'
+      : isNL ? 'Je hoort alleen weer van ons over dit rapport als het bevestigd is, als we meer info nodig hebben, of wanneer de fix wordt uitgebracht.'
+      : isES ? 'Solo volver\u00E1s a saber de nosotros sobre este reporte si se confirma, si necesitamos m\u00E1s informaci\u00F3n, o cuando el fix se publique.'
+      : 'You\u2019ll only hear from us again about this report if it\u2019s confirmed, if we need more info, or when the fix ships.';
+
+    const refId = confirmationId ?? `BUG-${issueNumber}`;
+    const refLine = isDE ? `Deine Berichts-ID ist ${refId} \u2014 zur Referenz aufbewahren.`
+      : isPT ? `O teu ID de relat\u00F3rio \u00E9 ${refId} \u2014 guarda-o para refer\u00EAncia.`
+      : isNL ? `Je rapport-ID is ${refId} \u2014 bewaar het ter referentie.`
+      : isES ? `Tu ID de reporte es ${refId} \u2014 gu\u00E1rdalo como referencia.`
+      : `Your report ID is ${refId} \u2014 keep it for reference.`;
+
+    const thanksAgain = isDE ? 'Nochmals danke,'
+      : isPT ? 'Mais uma vez, obrigado,'
+      : isNL ? 'Nogmaals bedankt,'
+      : isES ? 'Gracias de nuevo,'
+      : 'Thanks again,';
 
     const closing = isDE ? 'Das Sorting History Team'
       : isPT ? 'A equipa do Sorting History'
@@ -4096,16 +4132,19 @@ export default {
   </div>
   <div style="padding: 30px 0;">
     <h2 style="color: #1a3a4a;">${heading}</h2>
-    <p style="line-height: 1.6;">${bodyText}</p>
-    <div style="background: #f0f7fa; border-left: 4px solid #1a3a4a; padding: 16px 20px; margin: 24px 0; border-radius: 0 8px 8px 0;">
-      <p style="margin: 0; line-height: 1.6;">${rewardText}</p>
-    </div>
-    <p style="color: #666; font-size: 14px;">${confirmationId ?? `Bug #${issueNumber}`}</p>
-  </div>
-  <div style="border-top: 1px solid #e0e0e0; padding-top: 16px; text-align: center; color: #999; font-size: 13px;">
-    <p>\u2014 ${closing}</p>
+    <p style="line-height: 1.6;">${leadIn}</p>
+    <p style="line-height: 1.6; margin-top: 20px;"><strong>${whatNextLabel}</strong></p>
+    <ul style="line-height: 1.6; padding-left: 20px;">
+      <li style="margin-bottom: 8px;">${bulletWeek}</li>
+      <li style="margin-bottom: 8px;">${bulletReward}</li>
+      <li style="margin-bottom: 8px;">${bulletOnlyHear}</li>
+    </ul>
+    <p style="line-height: 1.6; margin-top: 20px;">${refLine}</p>
+    <p style="line-height: 1.6; margin-top: 20px;">${thanksAgain}<br>${closing}</p>
   </div>
 </body></html>`;
+
+    const text = `${heading}\n\n${leadIn}\n\n${whatNextLabel}\n\n- ${bulletWeek}\n- ${bulletReward}\n- ${bulletOnlyHear}\n\n${refLine}\n\n${thanksAgain}\n${closing}\n`;
 
     // AC6: Check for duplicate — skip if email-sent label already on issue
     try {
@@ -4128,6 +4167,7 @@ export default {
         to: email,
         subject,
         html,
+        text,
       });
 
       if (!result.ok) {
@@ -4442,7 +4482,15 @@ export default {
       // Dispatch analysis to public repo in background (don't block user response)
       ctx.waitUntil(dispatchAnalysis(env, result.issueNumber));
 
-      // FR-160: Send thank-you email in background (non-blocking)
+      // FR-160 / BUG-REWARD-DISABLE-AUTO-ISSUANCE-001:
+      // Send acknowledgment (thank-you) email in background. This email is
+      // INTENTIONALLY a thank-you only: it does NOT carry a redeem code or
+      // inline reward link. Apple silently no-ops FREE_TRIAL+REPLACE_INTRO_OFFERS
+      // for any reporter in an active intro trial, so auto-issuance on
+      // submission was retired (PR #53 + BUG-REWARD-DISABLE-AUTO-ISSUANCE-001).
+      // Actual reward dispatch is gated behind the manual `reward-approved`
+      // label (see BBE-002 issues.labeled handler above) -- do NOT add
+      // auto-dispatch here without first reading BUG-REWARD-DISABLE-AUTO-ISSUANCE-001.
       // PIPE-011: Skip if reporter is the pipeline owner
       if (report.email) {
         const isOwner = env.OWNER_EMAIL && report.email.toLowerCase() === env.OWNER_EMAIL.toLowerCase();
