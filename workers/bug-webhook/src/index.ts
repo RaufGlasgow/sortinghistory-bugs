@@ -13,7 +13,7 @@ import { truncateDescription, WORKER_LABEL_TO_SDK_CLASSIFICATION } from './utils
 import { sendOwnerEmail } from './lib/send-owner-email';
 import {
   initSchemaAndImport as bbeInitSchemaAndImport,
-  dispatchReward as bbeDispatchReward,
+  // dispatchReward as bbeDispatchReward, // LEGACY: removed next release per BUG-267A
   fetchReporterEmailFromIssue as bbeFetchReporterEmail,
   handleManualSend as bbeHandleManualSend,
   invalidateAvailableCodes as bbeInvalidateAvailableCodes,
@@ -23,6 +23,17 @@ import {
   type BBEEnv,
   type D1DatabaseLike,
 } from './bbe';
+// BUG-267A: server-granted Historian bonus replaces the broken ASC offer-code path.
+import {
+  initBonusSchema,
+  dispatchBonus,
+  grantBonus,
+  resolveBonusState,
+  claimBonusForDevice,
+  lookupByEmail as bonusLookupByEmail,
+  revokeClaim as bonusRevokeClaim,
+  type BonusEnv,
+} from './bonus';
 
 interface Env {
   GITHUB_TOKEN: string;      // PAT for private repo issues (Sorting-History)
@@ -48,6 +59,11 @@ interface Env {
   BBE_REDEEM_BASE?: string;                // Apple redeem URL prefix
   BBE_LOW_INVENTORY_THRESHOLD?: string;    // Default "100"
   BBE_EXPIRATION_WARN_DAYS?: string;       // Default "30"
+
+  // BUG-267A: Server-granted Historian bonus.
+  // BBE_DB above is REUSED (same `bbe-rewards` D1 database, new tables).
+  BONUS_CLAIM_HMAC_SECRET?: string;        // HMAC secret for claim deep-link tokens
+  BONUS_CLAIM_BASE_URL?: string;           // Defaults to https://sortinghistory.com
 }
 
 // BBE-002: Adapter from Worker Env to BBE module's minimal D1 interface.
@@ -68,6 +84,23 @@ function bbeEnv(env: Env): BBEEnv | null {
     BBE_REDEEM_BASE: env.BBE_REDEEM_BASE,
     BBE_LOW_INVENTORY_THRESHOLD: env.BBE_LOW_INVENTORY_THRESHOLD,
     BBE_EXPIRATION_WARN_DAYS: env.BBE_EXPIRATION_WARN_DAYS,
+  };
+}
+
+// BUG-267A: Adapter from Worker Env to Bonus module's Env shape. Returns
+// null if either the D1 binding or the HMAC secret is missing so callers
+// can short-circuit gracefully instead of crashing the worker.
+function bonusEnv(env: Env): BonusEnv | null {
+  if (!env.BBE_DB) return null;
+  if (!env.BONUS_CLAIM_HMAC_SECRET) return null;
+  return {
+    BBE_DB: env.BBE_DB as unknown as D1DatabaseLike,
+    BONUS_CLAIM_HMAC_SECRET: env.BONUS_CLAIM_HMAC_SECRET,
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    BBE_ADMIN_TOKEN: env.BBE_ADMIN_TOKEN,
+    BBE_ALERT_EMAIL: env.BBE_ALERT_EMAIL,
+    BONUS_CLAIM_BASE_URL: env.BONUS_CLAIM_BASE_URL,
+    PIPELINE_KV: env.PIPELINE_KV as unknown as BonusEnv['PIPELINE_KV'],
   };
 }
 
@@ -2547,6 +2580,138 @@ async function handleBBEAdmin(request: Request, env: Env, path: string): Promise
   return jsonResponse({ error: `Unknown BBE route: ${path}` }, 404);
 }
 
+// ============================================================================
+// BUG-267A: /api/bonus/* endpoints — server-granted Historian bonus
+// ============================================================================
+
+async function handleBonusRoute(request: Request, env: Env, url: URL): Promise<Response> {
+  const path = url.pathname;
+  const benv = bonusEnv(env);
+  if (!benv) {
+    return jsonResponse({ error: 'Bonus subsystem not configured (BBE_DB or BONUS_CLAIM_HMAC_SECRET missing)' }, 500);
+  }
+  await initBonusSchema(benv);
+
+  // GET /api/bonus/state?identity_hash=... — public, identity-hash-keyed read
+  if (path === '/api/bonus/state' && request.method === 'GET') {
+    const ih = (url.searchParams.get('identity_hash') || '').toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(ih)) {
+      return jsonResponse({ error: 'identity_hash must be 64-char lowercase hex (sha256)' }, 400);
+    }
+    const state = await resolveBonusState(benv, ih);
+    if (!state) {
+      // Indistinguishable shape whether unknown or no grant — caller sees inactive.
+      return jsonResponse({
+        ok: true,
+        state: { identity_hash: ih, bonus_until: 0, total_months: 0, lifetime_grants: 0, last_bug_report_id: null, is_active: false },
+      });
+    }
+    return jsonResponse({ ok: true, state });
+  }
+
+  // POST /api/bonus/claim — exchange HMAC token for entitlement
+  if (path === '/api/bonus/claim' && request.method === 'POST') {
+    let body: { token?: string; idfv?: string };
+    try { body = await request.json(); }
+    catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
+    const token = (body.token || '').trim();
+    if (!token) return jsonResponse({ error: 'token required' }, 400);
+    const result = await claimBonusForDevice(benv, token, body.idfv);
+    if (!result.ok) {
+      const httpStatus =
+        result.reason === 'malformed' ? 400 :
+        result.reason === 'bad_signature' ? 401 :
+        result.reason === 'expired' ? 410 :
+        result.reason === 'not_found' ? 404 :
+        result.reason === 'revoked' ? 410 :
+        409; // already_claimed
+      return jsonResponse({ ok: false, reason: result.reason }, httpStatus);
+    }
+    return jsonResponse({
+      ok: true,
+      identity_hash: result.identity_hash,
+      bonus_until: result.bonus_until,
+      state: result.state,
+    });
+  }
+
+  // POST /api/bonus/lookup-by-email — rate-limited resend
+  if (path === '/api/bonus/lookup-by-email' && request.method === 'POST') {
+    let body: { email?: string };
+    try { body = await request.json(); }
+    catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
+    const email = (body.email || '').trim();
+    if (!email.includes('@')) {
+      // Same response shape as the happy path — no enumeration.
+      return jsonResponse({ accepted: true });
+    }
+    await bonusLookupByEmail(benv, email);
+    return jsonResponse({ accepted: true });
+  }
+
+  // POST /api/bonus/grant — admin (used by backfill script). Bearer auth.
+  if (path === '/api/bonus/grant' && request.method === 'POST') {
+    const auth = request.headers.get('Authorization') || '';
+    const match = /^Bearer\s+(.+)$/.exec(auth.trim());
+    if (!env.BBE_ADMIN_TOKEN || !match || match[1] !== env.BBE_ADMIN_TOKEN) {
+      return jsonResponse({ error: 'Unauthorized' }, 401);
+    }
+    let body: {
+      bug_report_id?: string;
+      email?: string;
+      months_added?: number;
+      github_issue_num?: number;
+      reason?: string;
+      granted_by?: string;
+      send_claim_email?: boolean;
+    };
+    try { body = await request.json(); }
+    catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
+    if (!body.bug_report_id || !body.email) {
+      return jsonResponse({ error: 'bug_report_id and email required' }, 400);
+    }
+    try {
+      const r = await grantBonus(benv, {
+        bug_report_id: body.bug_report_id,
+        email: body.email,
+        months_added: body.months_added ?? 2,
+        github_issue_num: body.github_issue_num,
+        reason: body.reason,
+        granted_by: body.granted_by || 'admin:api',
+      });
+      return jsonResponse({
+        ok: true,
+        idempotent: r.idempotent,
+        grant_id: r.grant.id,
+        bonus_until: r.state.bonus_until,
+        identity_hash: r.state.identity_hash,
+      });
+    } catch (err) {
+      return jsonResponse({ ok: false, error: String(err) }, 400);
+    }
+  }
+
+  // POST /api/bonus/admin/revoke
+  if (path === '/api/bonus/admin/revoke' && request.method === 'POST') {
+    const auth = request.headers.get('Authorization') || '';
+    const match = /^Bearer\s+(.+)$/.exec(auth.trim());
+    if (!env.BBE_ADMIN_TOKEN || !match || match[1] !== env.BBE_ADMIN_TOKEN) {
+      return jsonResponse({ error: 'Unauthorized' }, 401);
+    }
+    let body: { token?: string; reason?: string };
+    try { body = await request.json(); }
+    catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
+    if (!body.token) return jsonResponse({ error: 'token required' }, 400);
+    const r = await bonusRevokeClaim(benv, body.token, body.reason || 'admin revoke');
+    return jsonResponse(r);
+  }
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { headers: corsHeaders });
+  }
+  return jsonResponse({ error: `Unknown bonus route: ${path}` }, 404);
+}
+
 // BBE-002: Public read-only inventory status. Consumed by
 // .github/workflows/daily-analysis-digest.yml so the digest banner can
 // report accurate pool size instead of falling back to "EMPTY". No auth:
@@ -2625,32 +2790,64 @@ async function handleCommandsWebhook(
   if (eventType === 'issues' && payload.action === 'labeled') {
     const labelName = ((payload as { label?: { name?: string } }).label?.name || '').toLowerCase();
     if (labelName === 'reward-approved') {
-      const env2 = bbeEnv(env);
+      // BUG-267A: dispatch to server-granted bonus (bonus.ts) instead of
+      // ASC offer-code (bbe.ts). The legacy `bbeDispatchReward` call site
+      // is intentionally retained as commented LEGACY for one release of
+      // rollback safety per dev brief. Remove next release once the
+      // bonus path is verified across the full reporter cohort.
+      //
+      // LEGACY (kept for one-release rollback per BUG-267A):
+      //   const env2 = bbeEnv(env);
+      //   ... bbeDispatchReward(env2, { issueNumber, labels, recipientEmail: email, gameLanguage, locale })
+      const benv = bonusEnv(env);
+      const env2 = bbeEnv(env);  // still needed for fetchReporterEmailFromIssue (shared GH helper)
       const issueNumber = (payload as { issue?: { number?: number } }).issue?.number;
-      if (!env2 || !issueNumber) {
-        return jsonResponse({ ignored: true, reason: 'BBE not configured or no issue number' });
+      if (!benv || !env2 || !issueNumber) {
+        return jsonResponse({ ignored: true, reason: 'Bonus / BBE not configured or no issue number' });
       }
       ctx.waitUntil((async () => {
         try {
-          await bbeInitSchemaAndImport(env2);
+          await initBonusSchema(benv);
           const { email, gameLanguage, locale } = await bbeFetchReporterEmail(env2, issueNumber);
           const issueLabels = ((payload as { issue?: { labels?: { name?: string }[] } }).issue?.labels || [])
             .map((l) => l?.name || '');
-          const result = await bbeDispatchReward(env2, {
+          // Extract confirmation ID from the issue body if present so the
+          // grant row carries the user-visible BUG-XXXX-XXXX reference.
+          let confirmationId: string | undefined;
+          try {
+            const issueRes = await fetch(
+              `https://api.github.com/repos/${env.GITHUB_REPO}/issues/${issueNumber}`,
+              {
+                headers: {
+                  'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+                  'Accept': 'application/vnd.github+json',
+                  'User-Agent': 'SortingHistory-BugWebhook/1.0',
+                },
+              },
+            );
+            if (issueRes.ok) {
+              const data = await issueRes.json() as { body?: string };
+              const m = (data.body || '').match(/BUG-[A-Z0-9]+-[A-Z0-9]+/);
+              if (m) confirmationId = m[0];
+            }
+          } catch { /* best-effort */ }
+
+          const result = await dispatchBonus(benv, {
             issueNumber,
             labels: issueLabels,
             recipientEmail: email,
             gameLanguage,
             locale,
+            confirmationId,
           });
-          console.log(`BBE dispatchReward for #${issueNumber}: ${result.status}${result.code ? ` (${result.code})` : ''}`);
+          console.log(`BUG-267A dispatchBonus for #${issueNumber}: ${result.status}${result.grantId ? ` (grant=${result.grantId})` : ''}`);
         } catch (err) {
-          console.error('BBE dispatchReward error:', err);
+          console.error('BUG-267A dispatchBonus error:', err);
         }
       })());
-      return jsonResponse({ accepted: true, issue_number: issueNumber, bbe: 'queued' });
+      return jsonResponse({ accepted: true, issue_number: issueNumber, bonus: 'queued' });
     }
-    return jsonResponse({ ignored: true, reason: `Label '${labelName}' is not a BBE trigger` });
+    return jsonResponse({ ignored: true, reason: `Label '${labelName}' is not a bonus trigger` });
   }
 
   // Only handle issue_comment events with action "created"
@@ -4333,6 +4530,11 @@ export default {
     }
     if (url.pathname.startsWith('/api/bbe/')) {
       return handleBBEAdmin(request, env, url.pathname);
+    }
+
+    // BUG-267A: server-granted Historian bonus routes.
+    if (url.pathname.startsWith('/api/bonus/')) {
+      return handleBonusRoute(request, env, url);
     }
 
     // Handle CORS preflight

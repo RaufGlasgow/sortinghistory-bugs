@@ -11,6 +11,7 @@ routes = [
   { pattern = "sortinghistory.com/api/pipeline/*", zone_name = "sortinghistory.com" },
   { pattern = "sortinghistory.com/api/bbe/*", zone_name = "sortinghistory.com" },
   { pattern = "sortinghistory.com/api/reward-code/*", zone_name = "sortinghistory.com" },
+  { pattern = "sortinghistory.com/api/bonus/*", zone_name = "sortinghistory.com" },
   { pattern = "sortinghistory.com/screenshots/*", zone_name = "sortinghistory.com" }
 ]
 
@@ -76,3 +77,13 @@ crons = [
 #   Imported on first run only; safe to leave set.
 # - BBE_ADMIN_TOKEN: Bearer token for /api/bbe/* admin endpoints
 #   (manual-send, invalidate-batch, import-csv, run-alerts, run-digest, status).
+# BUG-267A secrets (Historian bonus, server-granted):
+# - BONUS_CLAIM_HMAC_SECRET: HMAC-SHA256 key used to sign claim deep-link
+#   tokens delivered in the reward email. Generate via:
+#     openssl rand -base64 48
+#   Then install with:
+#     wrangler secret put BONUS_CLAIM_HMAC_SECRET
+#   Reuses the BBE_DB binding above (new tables, same `bbe-rewards` D1).
+#   Rotation playbook: rotating this secret invalidates every outstanding
+#   unredeemed claim link. Users with unredeemed links must use
+#   /api/bonus/lookup-by-email to receive a fresh link.
