@@ -16,7 +16,7 @@
 
 // FROM must be on send.sortinghistory.com (Resend-verified subdomain).
 // Root sortinghistory.com SPF only authorizes Cloudflare Email Routing,
-// not Resend/SES — sends from <X>@sortinghistory.com SPF-fail and land
+// not Resend/SES - sends from <X>@sortinghistory.com SPF-fail and land
 // in spam. send.sortinghistory.com SPF includes amazonses.com (Resend's
 // underlying provider) and FBL MX is feedback-smtp.us-east-1.amazonses.com.
 const DEFAULT_FROM = 'Sorting History <hello@send.sortinghistory.com>';
