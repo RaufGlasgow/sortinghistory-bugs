@@ -39,19 +39,19 @@ jobs:
     steps:
       # ── Setup ──────────────────────────────────────────────────────────
       - name: Checkout public repo (automation scripts + agent)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout private repo (game source)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: RaufGlasgow/Sorting-History
           token: ${{ secrets.PRIVATE_REPO_PAT }}
           path: game-repo
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install agent dependencies
         working-directory: Scripts/agent
