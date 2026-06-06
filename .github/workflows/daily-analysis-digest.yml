@@ -1,14 +1,20 @@
-# Schedule DISABLED — cron triggers moved to Cloudflare Worker (bug-webhook)
-# for punctual delivery. GitHub Actions cron had 30-60 min delays.
-# Worker dispatches workflow_dispatch at exactly 10am, 2pm, 6pm UTC.
+# Schedule RE-ENABLED 2026-06-06 - decouples digest from the Cloudflare Worker
+# repository_dispatch path, which depended on BUGS_REPO_PAT and broke twice
+# in 8 days when fine-grained PATs expired (2026-05-18 dark, 2026-06-04 dark).
+# GitHub-native schedule trades 0-15 min punctuality for zero PAT dependency.
+# Worker cron entries for the 10/14/18 UTC digest dispatch were removed from
+# workers/bug-webhook/wrangler.toml in the same PR. repository_dispatch and
+# workflow_dispatch triggers retained so manual + (any future) Worker calls
+# still work, but the schedule is now the source of truth.
 
 name: Pipeline Digest
 
 on:
-  # schedule block removed — Cloudflare Worker cron handles timing
+  schedule:
+    - cron: '0 10,14,18 * * *'    # 10/14/18 UTC daily (matches previous Worker cadence)
   repository_dispatch:
-    types: [digest-cron]   # Triggered by Cloudflare Worker cron (uses BUGS_REPO_PAT contents:write)
-  workflow_dispatch: {}    # Manual trigger via gh CLI
+    types: [digest-cron]            # Backwards-compatible; Worker no longer fires this
+  workflow_dispatch: {}              # Manual trigger via gh CLI
 
 concurrency:
   group: pipeline-digest
