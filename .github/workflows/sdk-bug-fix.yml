@@ -104,11 +104,11 @@ jobs:
 
       - name: Checkout public repo (automation scripts + SDK)
         if: (steps.guard.outputs.blocked || 'false') != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout private repo (game source)
         if: (steps.guard.outputs.blocked || 'false') != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: RaufGlasgow/Sorting-History
           token: ${{ secrets.PRIVATE_REPO_PAT }}
@@ -118,9 +118,9 @@ jobs:
 
       - name: Setup Node.js
         if: (steps.guard.outputs.blocked || 'false') != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Select Xcode 16.2
         if: (steps.guard.outputs.blocked || 'false') != 'true'

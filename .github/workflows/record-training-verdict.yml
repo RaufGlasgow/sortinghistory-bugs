@@ -39,15 +39,15 @@ jobs:
           echo "Recording verdict '$VERDICT' for workflow '$WORKFLOW_ID'"
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         working-directory: Scripts/sdk
