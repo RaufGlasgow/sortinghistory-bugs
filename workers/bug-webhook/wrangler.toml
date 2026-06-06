@@ -58,10 +58,15 @@ migrations_dir = "migrations"
 # Times are UTC (Lisbon winter = UTC+0)
 [triggers]
 crons = [
-  "0 9 * * 1",    # BBE-002: Mon 09:00 Lisbon (winter) - weekly BBE digest to Ra'uf
-  "0 10 * * *",   # 10:00 AM Lisbon - morning pipeline digest + BBE inventory alert check
-  "0 14 * * *",   # 2:00 PM Lisbon - afternoon pipeline digest
-  "0 18 * * *",   # 6:00 PM Lisbon - evening pipeline digest
+  "0 9 * * 1",    # BBE-002: Mon 09:00 Lisbon - weekly BBE digest (no PAT dispatch; BBE runner only)
+  # The three daily pipeline-digest crons (10/14/18 UTC) were REMOVED 2026-06-06.
+  # They dispatched the Pipeline Digest workflow via repository_dispatch using
+  # BUGS_REPO_PAT, which expired silently and triggered "Digest dispatch HTTP 401"
+  # failure emails to Ra'uf every cron tick. Failure mode hit twice in 8 days.
+  # Digest scheduling moved to native GitHub Actions cron in
+  # .github/workflows/daily-analysis-digest.yml. Pipeline digest no longer
+  # depends on this Worker or on BUGS_REPO_PAT. BBE inventory alert was a
+  # best-effort piggy-back on the 10:00 cron; paused until/unless re-added.
 ]
 
 # Secrets (set via `wrangler secret put <NAME>`):
