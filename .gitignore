@@ -14,3 +14,8 @@ node_modules/
 
 # BMAD output
 _bmad-output/
+
+# Cost-meter ledger (PIPE-OBSERVE-FOUNDATION): local per-call runtime state on the
+# M4, high churn, read locally by cost-report.js + the daemons; summaries reach the
+# digest via the heartbeat KV, so the file does not need to be tracked.
+pipeline-cost-meter.jsonl
