@@ -84,14 +84,29 @@ jobs:
           echo "$ATTENTION_HTML" > /tmp/attention_section.html
           echo "Confidence data loaded: source=$(echo "$CONFIDENCE_JSON" | jq -r '.source'), attention=${ATTENTION_COUNT}"
 
+      # PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001: fail loudly if PRIVATE_REPO_PAT
+      # no longer authenticates. Every query below reads the private repo with
+      # it; a dead token used to produce a "0 bugs" digest instead of a failure.
+      - name: Verify PRIVATE_REPO_PAT authenticates
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
+        run: |
+          if ! gh api "repos/RaufGlasgow/Sorting-History" --jq '.full_name' > /dev/null; then
+            echo "::error::PRIVATE_REPO_PAT cannot read RaufGlasgow/Sorting-History (expired or revoked). Rotate the Actions secret; see docs/architecture/credentials-inventory.md in Sorting-History."
+            exit 1
+          fi
+          echo "PRIVATE_REPO_PAT OK"
+
       - name: Query issues needing review
         id: query
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_PAT }}
         run: |
           # Single query: all open issues with from-app label. No filtering.
-          # Close the issue when done — that's the only way it leaves the digest.
-          ALL_NUMBERS=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=from-app&state=open&per_page=100" --jq '.[].number' 2>/dev/null || echo "")
+          # Close the issue when done - that's the only way it leaves the digest.
+          # PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001: no error swallow here. A failed
+          # query must fail the run, never read as "no open from-app issues".
+          ALL_NUMBERS=$(gh api "repos/RaufGlasgow/Sorting-History/issues?labels=from-app&state=open&per_page=100" --jq '.[].number')
           ALL_NUMBERS=$(echo "$ALL_NUMBERS" | grep -v '^$' | sort -un || true)
 
           if [ -z "$ALL_NUMBERS" ]; then
@@ -141,7 +156,7 @@ jobs:
             echo "WARNING: Offer code pool running low — ${POOL_REMAINING} of ${POOL_TOTAL} codes remaining"
           fi
 
-      # BA-007.6: Query pipeline health — stuck issues, run counts, cost estimate
+      # BA-007.6: Query pipeline health - stuck issues, run counts, cost estimate
       - name: Query pipeline health
         id: pipeline_health
         env:
@@ -726,7 +741,7 @@ jobs:
 
           # =============================================
           # Section 2: PRs Ready for Review
-          # (merged from daily-fix-digest.yml — BA-010.8 AC2)
+          # (merged from daily-fix-digest.yml - BA-010.8 AC2)
           # =============================================
           PR_CARDS=""
           ACTUAL_PR_COUNT=0
@@ -1046,3 +1061,25 @@ jobs:
             -d "$PAYLOAD" || { echo "::error::Resend API call failed"; exit 1; }
 
           echo "Digest email sent successfully."
+
+  # PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001: keepalive. This repo is public, and
+  # GitHub disables scheduled workflows after 60 days with no repository
+  # activity (that is what stopped this digest on 2026-08-08). Re-enabling the
+  # workflow through the API on every run keeps it armed without dummy commits
+  # or a PAT (same approach as keepalive-workflow's API mode, written inline).
+  # Runs even when send-digest fails, so a failing digest stays visible
+  # instead of going silent.
+  keepalive:
+    needs: send-digest
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Re-arm schedule (reset inactivity timer)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api -X PUT "repos/${REPO}/actions/workflows/daily-analysis-digest.yml/enable"
+          echo "Pipeline Digest schedule re-armed."
