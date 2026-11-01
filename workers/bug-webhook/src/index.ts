@@ -4009,11 +4009,9 @@ export default {
       return;
     }
 
-    // BBE-002: piggy-back BBE inventory + expiration alert on the daily
-    // cron. Best-effort; never blocks the main dispatch. It rode the 10:00
-    // digest cron until a247d18 removed that cron; it now rides the digest
-    // watchdog cron (PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001).
-    if (cronExpr === DIGEST_WATCHDOG_CRON) {
+    // BBE-002: piggy-back BBE inventory + expiration alert on the morning
+    // pipeline-digest cron. Best-effort; never blocks the main dispatch.
+    if (cronExpr === '0 10 * * *') {
       const env2 = bbeEnv(env);
       if (env2) {
         ctx.waitUntil((async () => {
