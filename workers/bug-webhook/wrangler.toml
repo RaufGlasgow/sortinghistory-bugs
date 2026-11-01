@@ -17,6 +17,9 @@ routes = [
 [vars]
 GITHUB_REPO = "RaufGlasgow/Sorting-History"
 BUGS_REPO = "RaufGlasgow/sortinghistory-bugs"
+# PIPE-DISPATCH-PENDING-FALSE-STUCK-WHILE-FROZEN-001: triage is PIPE-FROZEN; no workflow
+# listens for the analyze/agent-triage dispatch. Set to "on" when triage is rebuilt.
+TRIAGE_DISPATCH = "off"
 AUTHORIZED_USERS = "RaufGlasgow"  # Comma-separated GitHub usernames allowed to /approve and /reject
 
 # BBE-002 vars (non-secret config). These do NOT contain code values -

@@ -38,6 +38,7 @@ interface Env {
   RESEND_API_KEY: string;    // FR-160: Resend API key for thank-you emails
   OWNER_EMAIL: string;       // Story 5.2: Owner email for digest failure alerts
   USE_AGENT_PIPELINE?: string; // PIPE-SDK-4: When truthy, dispatch agent-triage alongside old analyze. Default: "true"
+  TRIAGE_DISPATCH?: string;    // PIPE-DISPATCH-PENDING-FALSE-STUCK-WHILE-FROZEN-001: "off" while triage is PIPE-FROZEN
 
   // BBE-002: Bug bounty reward email automation (ported from private repo)
   BBE_DB?: D1Database;                     // Cloudflare D1 binding for bug_bounty_codes
@@ -630,7 +631,17 @@ async function createGitHubIssue(
 // This bypasses private repo Actions entirely (minutes exhausted)
 // C3 fix: retry dispatch + label fallback on failure
 // PIPE-SDK-4: Also dispatches agent-triage when USE_AGENT_PIPELINE is enabled
-async function dispatchAnalysis(env: Env, issueNumber: number): Promise<void> {
+export async function dispatchAnalysis(env: Env, issueNumber: number): Promise<void> {
+  // PIPE-DISPATCH-PENDING-FALSE-STUCK-WHILE-FROZEN-001: while triage is
+  // PIPE-FROZEN no workflow listens for the 'analyze' / 'agent-triage'
+  // repository_dispatch events, so a dispatch cannot do anything. Attempting
+  // it anyway 401s on the expired BUGS_REPO_PAT and labels every new bug
+  // dispatch-pending, which the digest then counts as "stuck".
+  if (env.TRIAGE_DISPATCH === 'off') {
+    console.log(`Triage dispatch off (PIPE-FREEZE) - not dispatching issue #${issueNumber}`);
+    return;
+  }
+
   if (!env.BUGS_REPO_PAT || !env.BUGS_REPO) {
     console.error('BUGS_REPO_PAT or BUGS_REPO not configured - skipping dispatch');
     return;
