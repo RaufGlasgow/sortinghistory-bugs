@@ -59,6 +59,7 @@ migrations_dir = "migrations"
 [triggers]
 crons = [
   "0 9 * * 1",    # BBE-002: Mon 09:00 Lisbon - weekly BBE digest (no PAT dispatch; BBE runner only)
+  "0 13 * * *",   # PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001: daily Pipeline Digest watchdog + BBE inventory/expiry check
   # The three daily pipeline-digest crons (10/14/18 UTC) were REMOVED 2026-06-06.
   # They dispatched the Pipeline Digest workflow via repository_dispatch using
   # BUGS_REPO_PAT, which expired silently and triggered "Digest dispatch HTTP 401"
@@ -66,7 +67,7 @@ crons = [
   # Digest scheduling moved to native GitHub Actions cron in
   # .github/workflows/daily-analysis-digest.yml. Pipeline digest no longer
   # depends on this Worker or on BUGS_REPO_PAT. BBE inventory alert was a
-  # best-effort piggy-back on the 10:00 cron; paused until/unless re-added.
+  # best-effort piggy-back on the 10:00 cron; it now rides the 13:00 watchdog cron.
 ]
 
 # Secrets (set via `wrangler secret put <NAME>`):

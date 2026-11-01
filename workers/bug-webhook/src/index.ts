@@ -11,6 +11,7 @@
 
 import { truncateDescription, WORKER_LABEL_TO_SDK_CLASSIFICATION } from './utils';
 import { sendOwnerEmail } from './lib/send-owner-email';
+import { checkDigestHealth, DIGEST_MAX_AGE_HOURS } from './lib/digest-watchdog';
 import {
   initSchemaAndImport as bbeInitSchemaAndImport,
   dispatchReward as bbeDispatchReward,
@@ -3933,6 +3934,56 @@ async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: s
   }
 }
 
+// PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001: daily Pipeline Digest watchdog.
+// Runs from a Cloudflare cron, which GitHub's inactivity rule cannot disable.
+// Writes health:digest (read by /api/pipeline/health) and emails the owner
+// through sendDigestFailureAlert when the digest is disabled or stale.
+const DIGEST_WATCHDOG_CRON = '0 13 * * *';
+
+async function runDigestWatchdog(env: Env): Promise<void> {
+  const checkedAt = new Date().toISOString();
+  const result = await checkDigestHealth(env);
+
+  let prev: DigestHealthData = { status: 'unknown' };
+  try {
+    const existing = await env.PIPELINE_KV.get('health:digest');
+    if (existing) prev = JSON.parse(existing) as DigestHealthData;
+  } catch {
+    // Unreadable previous row - overwrite it below
+  }
+
+  const health: DigestHealthData = result.ok
+    ? { last_success: result.lastSuccess, last_failure: result.lastFailure ?? prev.last_failure, status: 'ok' }
+    : {
+        last_success: result.lastSuccess ?? prev.last_success,
+        last_failure: result.lastFailure ?? prev.last_failure,
+        status: 'error',
+        error_message: result.problems.join(' | '),
+      };
+  try {
+    await env.PIPELINE_KV.put('health:digest', JSON.stringify(health));
+  } catch (err) {
+    console.error('Digest watchdog: health:digest write failed:', err);
+  }
+
+  if (result.ok) {
+    console.log(`Digest watchdog OK: state=${result.state} last_success=${result.lastSuccess}`);
+    return;
+  }
+
+  const errorMsg = [
+    `Pipeline Digest watchdog found ${result.problems.length} problem(s):`,
+    ...result.problems.map((p) => `- ${p}`),
+    `Workflow state: ${result.state ?? 'unknown'}`,
+    `Last success: ${result.lastSuccess ?? 'none'}`,
+    `Last failure: ${result.lastFailure ?? 'none'}`,
+    `Limit: a successful run within ${DIGEST_MAX_AGE_HOURS}h.`,
+    `Runs: https://github.com/${env.BUGS_REPO}/actions/workflows/daily-analysis-digest.yml`,
+  ].join('\n');
+  console.error(errorMsg);
+  await sendDigestFailureAlert(env, errorMsg, checkedAt);
+}
+
 // Main Router
 // ============================================================================
 
@@ -3958,9 +4009,11 @@ export default {
       return;
     }
 
-    // BBE-002: piggy-back BBE inventory + expiration alert on the morning
-    // pipeline-digest cron. Best-effort; never blocks the main dispatch.
-    if (cronExpr === '0 10 * * *') {
+    // BBE-002: piggy-back BBE inventory + expiration alert on the daily
+    // cron. Best-effort; never blocks the main dispatch. It rode the 10:00
+    // digest cron until a247d18 removed that cron; it now rides the digest
+    // watchdog cron (PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001).
+    if (cronExpr === DIGEST_WATCHDOG_CRON) {
       const env2 = bbeEnv(env);
       if (env2) {
         ctx.waitUntil((async () => {
@@ -3972,6 +4025,15 @@ export default {
           }
         })());
       }
+    }
+
+    if (cronExpr === DIGEST_WATCHDOG_CRON) {
+      try {
+        await runDigestWatchdog(env);
+      } catch (err) {
+        console.error('Digest watchdog failed:', err);
+      }
+      return;
     }
 
     // Dispatch the Pipeline Digest via repository_dispatch (not workflow_dispatch)
