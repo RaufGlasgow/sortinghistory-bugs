@@ -11,6 +11,7 @@
 
 import { truncateDescription, WORKER_LABEL_TO_SDK_CLASSIFICATION } from './utils';
 import { sendOwnerEmail } from './lib/send-owner-email';
+import { checkDigestHealth, DIGEST_MAX_AGE_HOURS } from './lib/digest-watchdog';
 import {
   initSchemaAndImport as bbeInitSchemaAndImport,
   dispatchReward as bbeDispatchReward,
@@ -37,6 +38,7 @@ interface Env {
   RESEND_API_KEY: string;    // FR-160: Resend API key for thank-you emails
   OWNER_EMAIL: string;       // Story 5.2: Owner email for digest failure alerts
   USE_AGENT_PIPELINE?: string; // PIPE-SDK-4: When truthy, dispatch agent-triage alongside old analyze. Default: "true"
+  TRIAGE_DISPATCH?: string;    // PIPE-DISPATCH-PENDING-FALSE-STUCK-WHILE-FROZEN-001: "off" while triage is PIPE-FROZEN
 
   // BBE-002: Bug bounty reward email automation (ported from private repo)
   BBE_DB?: D1Database;                     // Cloudflare D1 binding for bug_bounty_codes
@@ -629,7 +631,17 @@ async function createGitHubIssue(
 // This bypasses private repo Actions entirely (minutes exhausted)
 // C3 fix: retry dispatch + label fallback on failure
 // PIPE-SDK-4: Also dispatches agent-triage when USE_AGENT_PIPELINE is enabled
-async function dispatchAnalysis(env: Env, issueNumber: number): Promise<void> {
+export async function dispatchAnalysis(env: Env, issueNumber: number): Promise<void> {
+  // PIPE-DISPATCH-PENDING-FALSE-STUCK-WHILE-FROZEN-001: while triage is
+  // PIPE-FROZEN no workflow listens for the 'analyze' / 'agent-triage'
+  // repository_dispatch events, so a dispatch cannot do anything. Attempting
+  // it anyway 401s on the expired BUGS_REPO_PAT and labels every new bug
+  // dispatch-pending, which the digest then counts as "stuck".
+  if (env.TRIAGE_DISPATCH === 'off') {
+    console.log(`Triage dispatch off (PIPE-FREEZE) - not dispatching issue #${issueNumber}`);
+    return;
+  }
+
   if (!env.BUGS_REPO_PAT || !env.BUGS_REPO) {
     console.error('BUGS_REPO_PAT or BUGS_REPO not configured - skipping dispatch');
     return;
@@ -3933,6 +3945,56 @@ async function sendDigestFailureAlert(env: Env, errorMsg: string, triggeredAt: s
   }
 }
 
+// PIPE-BUG-ALERTS-DEAD-SINCE-AUGUST-001: daily Pipeline Digest watchdog.
+// Runs from a Cloudflare cron, which GitHub's inactivity rule cannot disable.
+// Writes health:digest (read by /api/pipeline/health) and emails the owner
+// through sendDigestFailureAlert when the digest is disabled or stale.
+const DIGEST_WATCHDOG_CRON = '0 13 * * *';
+
+async function runDigestWatchdog(env: Env): Promise<void> {
+  const checkedAt = new Date().toISOString();
+  const result = await checkDigestHealth(env);
+
+  let prev: DigestHealthData = { status: 'unknown' };
+  try {
+    const existing = await env.PIPELINE_KV.get('health:digest');
+    if (existing) prev = JSON.parse(existing) as DigestHealthData;
+  } catch {
+    // Unreadable previous row - overwrite it below
+  }
+
+  const health: DigestHealthData = result.ok
+    ? { last_success: result.lastSuccess, last_failure: result.lastFailure ?? prev.last_failure, status: 'ok' }
+    : {
+        last_success: result.lastSuccess ?? prev.last_success,
+        last_failure: result.lastFailure ?? prev.last_failure,
+        status: 'error',
+        error_message: result.problems.join(' | '),
+      };
+  try {
+    await env.PIPELINE_KV.put('health:digest', JSON.stringify(health));
+  } catch (err) {
+    console.error('Digest watchdog: health:digest write failed:', err);
+  }
+
+  if (result.ok) {
+    console.log(`Digest watchdog OK: state=${result.state} last_success=${result.lastSuccess}`);
+    return;
+  }
+
+  const errorMsg = [
+    `Pipeline Digest watchdog found ${result.problems.length} problem(s):`,
+    ...result.problems.map((p) => `- ${p}`),
+    `Workflow state: ${result.state ?? 'unknown'}`,
+    `Last success: ${result.lastSuccess ?? 'none'}`,
+    `Last failure: ${result.lastFailure ?? 'none'}`,
+    `Limit: a successful run within ${DIGEST_MAX_AGE_HOURS}h.`,
+    `Runs: https://github.com/${env.BUGS_REPO}/actions/workflows/daily-analysis-digest.yml`,
+  ].join('\n');
+  console.error(errorMsg);
+  await sendDigestFailureAlert(env, errorMsg, checkedAt);
+}
+
 // Main Router
 // ============================================================================
 
@@ -3972,6 +4034,15 @@ export default {
           }
         })());
       }
+    }
+
+    if (cronExpr === DIGEST_WATCHDOG_CRON) {
+      try {
+        await runDigestWatchdog(env);
+      } catch (err) {
+        console.error('Digest watchdog failed:', err);
+      }
+      return;
     }
 
     // Dispatch the Pipeline Digest via repository_dispatch (not workflow_dispatch)
